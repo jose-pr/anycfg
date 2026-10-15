@@ -25,7 +25,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install package with all extras
-        run: python -m pip install -e ".[dev,yaml,toml,jinja2]"
+        run: python -m pip install -e ".[dev]"
       - name: Run tests
         run: python -m pytest -q -rs
 
@@ -46,10 +46,10 @@ jobs:
         run: python -m pip install --no-deps -e .
       - name: Derive the floor constraints
         run: |
-          python .github/scripts/floor_constraints.py yaml toml jinja2 > "$RUNNER_TEMP/floors.txt"
+          python .github/scripts/floor_constraints.py yaml toml templates > "$RUNNER_TEMP/floors.txt"
           cat "$RUNNER_TEMP/floors.txt"
       - name: Install at the floors
-        run: python -m pip install -c "$RUNNER_TEMP/floors.txt" -e ".[yaml,toml,jinja2]" pytest
+        run: python -m pip install -c "$RUNNER_TEMP/floors.txt" -e ".[yaml,toml,templates]" pytest
       - name: Show what resolved
         run: python -m pip list
       - name: Run tests
@@ -86,7 +86,7 @@ jobs:
         with:
           python-version: "3.x"
       - name: Install package with docs tooling
-        run: python -m pip install -e ".[dev,docs,yaml,toml,jinja2]"
+        run: python -m pip install -e ".[dev,docs]"
       - name: Build docs
         run: mkdocs build --strict
 

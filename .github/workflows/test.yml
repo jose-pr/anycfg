@@ -64,7 +64,45 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install package with all extras
-        run: python -m pip install -e ".[dev,yaml,toml,jinja2]"
+        run: python -m pip install -e ".[dev]"
+      - name: Run tests
+        run: python -m pytest -q -rs
+
+  # What ships: the built wheel, with no extra. It must import without any
+  # optional dependency and name the extra a format needs when it is used.
+  bare-wheel:
+    name: Bare wheel install (py3.14)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Build the wheel
+        run: |
+          python -m pip install --upgrade build
+          python -m build --wheel --outdir "$RUNNER_TEMP/dist" .
+      - name: Install it alone and check it
+        run: |
+          python -m venv "$RUNNER_TEMP/bare"
+          "$RUNNER_TEMP/bare/bin/python" -m pip install "$RUNNER_TEMP"/dist/*.whl
+          "$RUNNER_TEMP/bare/bin/python" -I .github/scripts/bare_install_check.py
+
+  # Hydration into a real Pydantic model, which the default install leaves out.
+  pydantic:
+    name: Test with pydantic (py3.14)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Install package with all extras and pydantic
+        run: python -m pip install -e ".[dev]" pydantic
       - name: Run tests
         run: python -m pytest -q -rs
 
@@ -87,10 +125,10 @@ jobs:
         run: python -m pip install --no-deps -e .
       - name: Derive the floor constraints
         run: |
-          python .github/scripts/floor_constraints.py yaml toml jinja2 > "$RUNNER_TEMP/floors.txt"
+          python .github/scripts/floor_constraints.py yaml toml templates > "$RUNNER_TEMP/floors.txt"
           cat "$RUNNER_TEMP/floors.txt"
       - name: Install at the floors
-        run: python -m pip install -c "$RUNNER_TEMP/floors.txt" -e ".[yaml,toml,jinja2]" pytest
+        run: python -m pip install -c "$RUNNER_TEMP/floors.txt" -e ".[yaml,toml,templates]" pytest
       - name: Show what resolved
         run: python -m pip list
       - name: Run tests
