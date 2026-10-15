@@ -15,8 +15,8 @@ Generated from the docstrings. Everything public is importable from
   `Command` and the scheme registry.
 - **[Merging and typed results](merging.md)** — `DELETE`, `register_merge`,
   `hydrate`, `dehydrate`, `typed_merge` and its hooks, `DotAccessibleDict`.
-- **[Interpolation](templating.md)** — the `Interpolator` protocol and
-  `TemplateInterpolator`.
+- **[Interpolation](templating.md)** — the `Interpolator` protocol,
+  `TemplateInterpolator` and `VarsInterpolator`.
 - **[Exceptions](exceptions.md)** — the `ConfigError` family.
 - **[Testing](testing.md)** — `FormatContract`, the suite every format
   passes.

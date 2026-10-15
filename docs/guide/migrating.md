@@ -58,7 +58,7 @@ below. Three changes affect code that otherwise looks fine:
 | `key_factory=` (callable or `"%<jinja>"`) | `key=`, a callable `(name, document) -> key` |
 | `transform=` (a Jinja string) | `transform=`, a callable `(document, name) -> document` |
 | `interpolate=True` on `yaconfiglib.load()` | `Loader(interpolate=True).load(...)` |
-| `environment=` (a Jinja environment for `.j2`) | removed; `interpolator=` for interpolation |
+| `environment=` (a Jinja environment for `.j2`) | removed; `interpolate=<engine or interpolator>` for values |
 | `ini_interpolation=` | `interpolation=` (INI format option) |
 | `ini_default_section=` | `default_section=` (INI format option) |
 | `dotenv_strict=` | `strict=` (dotenv format option) |
@@ -342,7 +342,8 @@ Under the default sandbox, engines that cannot be sandboxed (Mako, Cheetah,
 ERB, EPP) are refused, `pathname` is the path's text — write `{{ filename }}`
 for `{{ pathname.name }}` — and a template includes files only from the
 confinement roots. There is no `environment=` for template files; for values,
-`interpolator=` takes your own interpolator.
+`interpolate=` takes an engine name (`"liquid"`, `"vars"`) or your own
+interpolator.
 
 ### `DotAccessibleDict` → `wrap=True`
 

@@ -2,14 +2,16 @@
 
 yaconfiglib renders templates in two places, and they are separate features:
 
-- **Interpolation** renders `{{ ... }}` inside the *values* of the loaded,
-  merged document, so one value can refer to another.
+- **Interpolation** renders template text inside the *values* of the loaded,
+  merged document, so one value can refer to another. It runs at value time,
+  after merging, with the engine `interpolate=` names.
 - **Template files** — `app.yaml.j2`, `app.toml.liquid` — are rendered as a
   whole *before* they are parsed, so a template can produce the structure
   itself.
 
-Both run on [tplx](https://github.com/jose-pr/tplx), and both are governed by
-the load's [`Policy`](security.md). The `templates` extra
+Both run on [tplx](https://github.com/jose-pr/tplx) — except
+`interpolate="vars"`, which is built in — and both are governed by the load's
+[`Policy`](security.md). The `templates` extra
 (`pip install "yaconfiglib[templates]"`) installs tplx 0.1.5+ with Jinja, the
 default engine; another engine needs its own tplx extra (`pip install
 "tplx[liquid]"`). Without the engine's extra, using it raises
@@ -164,25 +166,45 @@ Sandboxed or not, a value template can include no file. The sandbox is the
 template engine's, not the operating system's: it does not limit time or
 memory.
 
-### Your own interpolator
+### Choosing the engine
 
-`interpolator=` takes any object with the `yaconfiglib.Interpolator` shape:
-`references(text) -> frozenset[str]` (the top-level names a template reads,
-used to order rendering) and `render(text, scope) -> value`.
+`interpolate=` names what renders the values:
 
-The default is `yaconfiglib.TemplateInterpolator(engine="jinja", *,
-sandbox=True, strict=False)`, built from the policy's `sandbox` and `strict`.
-Another tplx engine with expressions renders values in another template
-language, given its tplx extra:
+| `interpolate=` | Renders | Needs |
+| --- | --- | --- |
+| `False` (default) | nothing | — |
+| `True` | Jinja: `{{ db.host }}`, filters, expressions | `templates` extra |
+| `"liquid"`, `"go"`, `"mustache"`, `"envsubst"`, ... or a tplx engine class | that engine's syntax | `templates`, plus the engine's tplx extra |
+| `"vars"` | `${db.host}`, `${hosts.0}` references only | nothing |
+| an object with `render` and `references` | whatever it does | — |
+
+The choice is checked when the `Loader` is built: an unknown engine, a missing
+extra, an engine the sandbox cannot hold (mako, Cheetah, ERB, EPP) or one that
+runs a program without `allow_commands` raises there, not at the first value.
+Only strings holding the engine's own syntax are rendered, so with
+`interpolate="envsubst"` a `{{ ... }}` value is left alone.
+
+`"vars"` is for documents that only need to refer to other values. It runs no
+code and reads no attribute — each step of a reference is a mapping key or a
+list index — so it needs neither tplx nor a sandbox:
 
 ```python
-from yaconfiglib import Loader, TemplateInterpolator
+from yaconfiglib import Loader
 
-loader = Loader(interpolate=True, interpolator=TemplateInterpolator("liquid"))   # needs tplx[liquid]
+doc = {"db": {"host": "db", "ports": [5432]}, "url": "pg://${db.host}:${db.ports.0}/app", "port": "${db.ports.0}"}
+print(Loader(interpolate="vars").load(doc))
+# {'db': {'host': 'db', 'ports': [5432]}, 'url': 'pg://db:5432/app', 'port': 5432}
 ```
 
-Compiled templates are cached per instance. An interpolator of your own runs
-instead of tplx, so it needs no extra:
+A value that is exactly one reference keeps its type, `$${` writes a literal
+`${`, and an undefined reference renders empty — or raises with
+`Policy(strict=True)`.
+
+An interpolator of your own is any object with `references(text) ->
+frozenset[str]` (the top-level names a template reads, used to order
+rendering) and `render(text, scope) -> value`; an optional
+`is_template(text) -> bool` says which strings it wants, and without it
+strings holding `{{`, `{%` or `{#` are offered:
 
 ```python
 import re
@@ -202,12 +224,11 @@ class NameInterpolator:
         return self.pattern.sub(lambda match: str(scope[match.group(1)]), text)
 
 
-loader = Loader(interpolate=True, interpolator=NameInterpolator())
+loader = Loader(interpolate=NameInterpolator())
 print(loader.load({"host": "db", "url": "pg://{{ host }}/app"}))   # {'host': 'db', 'url': 'pg://db/app'}
 ```
 
-Only strings containing `{{`, `{%` or `{#` are offered to it. An exception it
-raises becomes a `TemplateError`, like an engine's.
+An exception it raises becomes a `TemplateError`, like an engine's.
 
 ## Template files
 

@@ -75,7 +75,10 @@ replacement.
   sandbox render (Jinja, Liquid, Mustache, Handlebars, Go, shell, envsubst), and a
   sandboxed template sees plain data (a path or a date as its text) and includes
   files only under the confinement roots. Value interpolation uses
-  `TemplateInterpolator` (Jinja by default, any tplx engine with expressions).
+  `TemplateInterpolator`. `interpolate=` names the engine — `True` (Jinja), a tplx
+  engine's name or class, `"vars"` (`${a.b}` references, `VarsInterpolator`, no extra
+  needed) or an interpolator object — and only strings holding that engine's syntax
+  render. `interpolator=` is gone; the choice is checked when the `Loader` is built.
   `JinjaInterpolator`, `utils.jinja2` and its caches are gone. `transform=` and
   `key=` take callables; their Jinja-string forms are gone.
 - **Extras**: `jinja2` and `transform` became `templates` (`tplx[jinja]` 0.1.5 or

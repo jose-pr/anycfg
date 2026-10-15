@@ -33,9 +33,10 @@ trust policy that is **untrusted by default**. Documentation:
   detection and a load budget.
 - **Typed results.** `load(..., into=Model)` builds a dataclass, a Pydantic
   model or any class, coercing every field without losing data.
-- **Templates.** `Loader(interpolate=True)` renders `{{ ... }}` in values;
-  `app.yaml.j2` (or any engine [tplx](https://github.com/jose-pr/tplx) knows)
-  renders whole files.
+- **Templates.** `Loader(interpolate=True)` renders `{{ ... }}` in values after
+  merging — or `interpolate="liquid"` (any [tplx](https://github.com/jose-pr/tplx)
+  engine), or `interpolate="vars"` for `${a.b}` references with no extra; a file
+  named `app.yaml.j2` (any engine's suffix) is rendered whole before parsing.
 - **Safe by default.** Commands and templates are off, interpolation is
   sandboxed, includes can be confined to directories, and errors never carry
   document text.
@@ -140,7 +141,7 @@ else must be allowed by its `Policy`:
 | `allow_commands` | off | command sources and script files |
 | `allow_templates` | off | template files |
 | `allow_includes` | on | `!include` / `!load` |
-| `sandbox` | on | sandboxed interpolation and Jinja templates only |
+| `sandbox` | on | interpolation and template files in tplx's sandbox; engines it cannot hold refused |
 | `confine_to` | none | every file read inside these directories |
 | `max_includes`, `max_depth`, `max_bytes` | 1000, 64, 64 MiB | the load's budget |
 
