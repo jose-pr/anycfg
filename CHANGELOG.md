@@ -151,6 +151,8 @@ replacement.
 - `typed_merge`/`hydrate` (and `into=`) build a node reached twice once, so an
   aliased document costs its distinct nodes instead of every path through it; data
   that contains itself raises `ConfigValueError` instead of `RecursionError`.
+- `max_bytes` stops a file or stream read one 64 KiB chunk past the budget
+  instead of after the whole source is in memory.
 - An `encoding` must name a text codec; a document's include could name
   `zlib_codec` and inflate past `max_bytes`.
 - A glob pattern is checked against `confine_to` before the loader asks whether a

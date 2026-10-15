@@ -8,7 +8,8 @@ attributes; pytest collects the inherited tests::
     class TestMyFormat(FormatContract):
         format = MyFormat
         samples = [{"a": "1"}, {"nested": {"b": "2"}}]
-        malformed = "a = = 1"
+        document = "a = 1"
+        malformed = "a = = {secret}"
 
 Needs pytest. A format is not done until it passes this suite unmodified.
 """

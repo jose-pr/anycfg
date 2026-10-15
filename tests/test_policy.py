@@ -582,3 +582,56 @@ class TestTextCodecsOnly:
     def test_unknown_codec(self):
         with pytest.raises(yaconfiglib.ConfigValueError, match="unknown encoding"):
             yaconfiglib.loads(b"{}", format="json", encoding="no-such-codec")
+
+
+class TestBudgetStopsTheRead:
+    """``max_bytes`` stops a read one chunk past the budget, not after it."""
+
+    def test_an_io_stream_is_read_in_chunks(self):
+        import io
+
+        class Counting(io.BytesIO):
+            served = 0
+
+            def read(self, size=-1):
+                data = super().read(size)
+                Counting.served += len(data)
+                return data
+
+        stream = Counting(b"[" + b"0," * 5_000_000 + b"0]")
+        with pytest.raises(BudgetExceededError):
+            yaconfiglib.Loader(policy=Policy(max_bytes=100_000)).load(
+                stream, format="json"
+            )
+        assert Counting.served < 300_000
+
+    def test_a_file_is_read_in_chunks(self, tmp_path, monkeypatch):
+        from pathapi import LocalPath
+
+        (tmp_path / "big.json").write_bytes(b"[" + b"0," * 5_000_000 + b"0]")
+        served = []
+        real_open = LocalPath.open
+
+        def spying_open(self, *args, **kwargs):
+            handle = real_open(self, *args, **kwargs)
+            real_read = handle.read
+
+            class Spy:
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *exc):
+                    handle.close()
+
+                def read(self, size=-1):
+                    data = real_read(size)
+                    served.append(len(data))
+                    return data
+
+            return Spy()
+
+        monkeypatch.setattr(LocalPath, "open", spying_open)
+        loader = yaconfiglib.Loader(base_dir=tmp_path, policy=Policy(max_bytes=100_000))
+        with pytest.raises(BudgetExceededError):
+            loader.load("big.json")
+        assert sum(served) < 300_000

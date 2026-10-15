@@ -238,7 +238,9 @@ policy of the load that reached them. Refusals are `PolicyError` subclasses (als
   by its **pattern**, not the file found.
 - `max_includes` (each `!include` directive counts once, however many files it
   names), `max_depth`, `max_bytes` — the load's budget; exceeding one is
-  `BudgetExceededError`.
+  `BudgetExceededError`. Files, io streams, `Chunks` and async sources are read in
+  64 KiB chunks, so `max_bytes` stops a read one chunk past the budget; a reader that
+  is not an `io` stream is called once with `read()`.
 - `command_timeout` — seconds before a command and its children are killed.
 
 ## Formats (`yaconfiglib.formats`)
@@ -566,6 +568,20 @@ rendered text carries a `render` frame.
   `config_model`, rendered as `[in <source>; included from <src>, line <n>; rendered
   from <src>; while merging <src>; at <a.b[0]> (<Model>)]`. A wrong argument raises a
   plain `TypeError`/`ValueError`.
+
+## Testing a format (`yaconfiglib.testing`)
+
+- **`FormatContract`** — subclass it in a pytest module and set the class attributes
+  `format` (the `Format` subclass), `document` (a small valid document, text),
+  `samples` (values `dumps` accepts; each must survive `loads(dumps(x)) == x`, used
+  only when the format writes) and `malformed` (an invalid document holding the
+  marker `{secret}`). The inherited tests check the class attributes, a BOM being
+  ignored, an unknown option raising `TypeError`, the round trip, that arbitrary
+  short text parses or raises `ParseError`, that an unwritable value raises
+  `ConfigTypeError`/`ConfigValueError`, and that the malformed document's
+  `ParseError` — message, args, attributes, cause chain and DEBUG logs — never holds
+  the secret. Needs pytest.
+- **`SECRET`** — the text `{secret}` is replaced with.
 
 ## Environment variables
 

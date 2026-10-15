@@ -5,6 +5,7 @@ from __future__ import annotations
 import codecs
 import collections.abc as _abc
 import dataclasses
+import io
 import logging
 import os
 import pathlib
@@ -50,6 +51,8 @@ __all__ = ["Loader", "LoadEvent"]
 logger = logging.getLogger(__name__)
 
 _COLLECT_MODES = ("last", "list", "hash")
+#: How much a file or stream is asked for at a time.
+_READ_CHUNK = 64 * 1024
 
 #: Options an ``!include`` mapping may set. Anything else a document supplies —
 #: policy fields, ``loader``, callables — is dropped with a warning: a document
@@ -435,7 +438,8 @@ class _Session:
                     raise ConfigValueError(
                         "include cycle: " + " -> ".join(context.trail + (name,))
                     )
-                data = path.read_bytes()
+                with path.open("rb") as handle:
+                    data = self.read_within(handle.read, name)
                 self.count_bytes(len(data), name)
                 return Payload(data, name=name, identity=identity, origin=path)
         if kind == "source":
@@ -457,14 +461,15 @@ class _Session:
         real = _stream_file(stream)
         if real is not None:
             self.check_confinement(real)
-        data = stream.read()
-        if not isinstance(data, (str, bytes, bytearray)):
-            raise TypeError(
-                f"{type(stream).__name__}.read() returned {type(data).__name__}; "
-                "a stream source must read as str or bytes"
-            )
-        data = bytes(data) if isinstance(data, bytearray) else data
         name = real or "<stream>"
+        data = self.read_within(
+            stream.read,
+            name,
+            kind=type(stream).__name__,
+            # Only an io stream promises what read(n) means; any other reader
+            # is called once, as it always was.
+            chunked=isinstance(stream, io.IOBase),
+        )
         self.count_bytes(len(data), name)
         return Payload(
             data,
@@ -472,6 +477,48 @@ class _Session:
             identity=f"stream:{id(stream)}",
             origin=LocalPath(real) if real else None,
         )
+
+    def read_within(
+        self,
+        read: _ty.Callable[..., _ty.Any],
+        name: str,
+        kind: str = "file",
+        chunked: bool = True,
+    ) -> _ty.Any:
+        """Everything *read* gives, asked for in chunks, stopping past the budget.
+
+        A source larger than what is left of ``max_bytes`` raises one chunk past
+        the budget, not after it has all been held in memory. Without *chunked*
+        ``read()`` is called once.
+        """
+        remaining = self.call.policy.max_bytes - self.state.bytes
+        parts: list = []
+        total = 0
+        parts_done = not chunked
+        chunk = read(_READ_CHUNK) if chunked else read()
+        while True:
+            if not isinstance(chunk, (str, bytes, bytearray)):
+                raise TypeError(
+                    f"{kind}.read() returned {type(chunk).__name__}; a stream "
+                    "source must read as str or bytes"
+                )
+            if not chunk:
+                break
+            if parts and type(chunk) is not type(parts[0]):
+                raise TypeError(f"{kind}.read() mixed str and bytes")
+            total += len(chunk)
+            if total > remaining:
+                raise BudgetExceededError(
+                    f"reading {name} takes the load past max_bytes="
+                    f"{self.call.policy.max_bytes}"
+                )
+            parts.append(chunk)
+            if parts_done:
+                break
+            chunk = read(_READ_CHUNK)
+        if parts and isinstance(parts[0], str):
+            return "".join(parts)
+        return b"".join(bytes(part) for part in parts)
 
     def count_bytes(self, size: int, name: str) -> None:
         self.state.bytes += size
