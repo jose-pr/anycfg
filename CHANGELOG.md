@@ -79,6 +79,9 @@ replacement.
   engine's name or class, `"vars"` (`${a.b}` references, `VarsInterpolator`, no extra
   needed) or an interpolator object — and only strings holding that engine's syntax
   render. `interpolator=` is gone; the choice is checked when the `Loader` is built.
+  An `Interpolator` is now just `render(text, scope)`, given every string: tplx's
+  `eval` is the only syntax check, and a top-level key renders the first time a
+  template reads it.
   `JinjaInterpolator`, `utils.jinja2` and its caches are gone. `transform=` and
   `key=` take callables; their Jinja-string forms are gone.
 - **Extras**: `jinja2` and `transform` became `templates` (`tplx[jinja]` 0.2 or

@@ -81,7 +81,8 @@ class TestVars:
     def test_a_document_without_references_is_returned_as_is(self):
         document = {"a": "{{ x }}", "b": [1]}
         assert Loader(interpolate="vars").load(document)["b"] == [1]
-        assert VarsInterpolator().references("${a.b} ${c} $${d}") == {"a", "c"}
+        text = "no reference"
+        assert VarsInterpolator().render(text, {}) is text
 
     @pytest.mark.usefixtures("needs_yaml")
     def test_yaml_document(self):
@@ -136,16 +137,10 @@ class TestChoice:
         with pytest.raises(TypeError):
             Loader(interpolator=VarsInterpolator())
 
-    def test_an_object_with_is_template_decides_what_renders(self):
+    def test_an_object_decides_what_it_renders(self):
         class Percent:
-            def is_template(self, text):
-                return text.startswith("%")
-
-            def references(self, text):
-                return frozenset()
-
             def render(self, text, scope):
-                return text[1:].upper()
+                return text[1:].upper() if text.startswith("%") else text
 
         assert Loader(interpolate=Percent()).load({"a": "%x", "b": "{{ y }}"}) == {
             "a": "X",

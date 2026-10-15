@@ -45,14 +45,11 @@ def yaml_text(text, name=""):
 
 
 class Recording:
-    """An interpolator that records each render and delegates to Jinja."""
+    """An interpolator that records each string it is given and delegates to Jinja."""
 
     def __init__(self):
         self.inner = TemplateInterpolator()
         self.rendered = []
-
-    def references(self, text):
-        return self.inner.references(text)
 
     def render(self, text, scope):
         self.rendered.append(text)
@@ -118,13 +115,21 @@ class TestTemplateInterpolator:
         assert interpolator.render("v={{ s }}", {"s": "first"}) == "v=first"
         assert interpolator.render("v={{ s }}", {"s": "second"}) == "v=second"
 
-    def test_references_names_top_level_variables(self):
-        interpolator = TemplateInterpolator()
-        assert interpolator.references("{{ a }}-{{ b.c }}") == {"a", "b"}
-        assert interpolator.references("{% set x = 1 %}{{ x }}") == frozenset()
+    def test_plain_text_comes_back_as_it_is(self):
+        text = "no template here"
+        assert TemplateInterpolator().render(text, {}) is text
 
-    def test_references_of_invalid_syntax_is_empty(self):
-        assert TemplateInterpolator().references("{{ x") == frozenset()
+    def test_the_template_sees_only_the_names_it_reads(self):
+        class Watched(dict):
+            read = []
+
+            def __getitem__(self, key):
+                Watched.read.append(key)
+                return super().__getitem__(key)
+
+        scope = Watched(a=1, b=2, c=3)
+        assert TemplateInterpolator().render("{{ a }}-{{ b }}", scope) == "1-2"
+        assert sorted(set(Watched.read)) == ["a", "b"]
 
     def test_sandbox_blocks_python_internals(self):
         with pytest.raises(TemplateError, match="unsafe"):
@@ -257,7 +262,8 @@ class TestInterpolateDocument:
         result = interpolate_document({"a": 5, "x": shared, "y": shared}, recording)
         assert result["x"] == [5]
         assert result["x"] is result["y"]
-        assert recording.rendered == ["{{ a }}"]
+        # Every string is offered once; each distinct node is visited once.
+        assert recording.rendered.count("{{ a }}") == 1
 
     def test_self_referencing_container_terminates(self):
         looped = ["{{ 1 + 1 }}"]
@@ -637,13 +643,14 @@ class TestLogging:
 class TestCustomInterpolator:
     def test_custom_interpolator_is_used(self):
         class Shout:
+            """Renders what it recognises; any other text comes back as it is."""
+
             def __init__(self):
                 self.seen = []
 
-            def references(self, text):
-                return frozenset()
-
             def render(self, text, scope):
+                if "{" not in text:
+                    return text
                 self.seen.append(text)
                 return text.upper()
 
@@ -652,17 +659,15 @@ class TestCustomInterpolator:
             {"a": "{{ x }}", "b": "plain", "c": ["{% y %}"]}
         )
         assert result == {"a": "{{ X }}", "b": "plain", "c": ["{% Y %}"]}
-        # Only strings holding a template marker are offered.
         assert sorted(shout.seen) == ["{% y %}", "{{ x }}"]
 
-    def test_references_decide_the_order(self):
+    def test_a_name_read_renders_first(self):
         class Lookup:
-            """``${name}`` style: renders after the names it refers to."""
-
-            def references(self, text):
-                return frozenset({text[3:-3]})
+            """Reads the scope; a name that is a template renders first."""
 
             def render(self, text, scope):
+                if not text.startswith("{{"):
+                    return text
                 return f"<{scope[text[3:-3]]}>"
 
         result = Loader(interpolate=Lookup()).load(

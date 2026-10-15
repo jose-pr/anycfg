@@ -142,8 +142,8 @@ a template such as `{{ env.DB_PASSWORD }}` exists to produce a secret.
 - **Templated keys.** A key may be a template too. Keys render after values; a
   key that renders to one that already exists raises `ConfigValueError` naming
   both, and a skip under `on_error` keeps that entry under its template text.
-- **Only strings holding a template marker** — `{{`, `{%` or `{#` — are
-  rendered; every other value is returned as it is.
+- **Only strings holding the engine's syntax** — `{{`, `{%` or `{#` for Jinja —
+  are rendered; the engine decides, and every other value is returned as it is.
 - **Aliases are rendered once.** A YAML anchor used in many places is one
   object, rendered once, and still one object afterwards.
 
@@ -176,7 +176,7 @@ memory.
 | `True` | Jinja: `{{ db.host }}`, filters, expressions | `templates` extra |
 | `"liquid"`, `"go"`, `"mustache"`, `"envsubst"`, ... or a tplx engine class | that engine's syntax | `templates`, plus the engine's tplx extra |
 | `"vars"` | `${db.host}`, `${hosts.0}` references only | nothing |
-| an object with `render` and `references` | whatever it does | — |
+| an object with `render` | whatever it does | — |
 
 The choice is checked when the `Loader` is built: an unknown engine, a missing
 extra, an engine the sandbox cannot hold (mako, Cheetah, ERB, EPP) or one that
@@ -200,11 +200,11 @@ A value that is exactly one reference keeps its type, `$${` writes a literal
 `${`, and an undefined reference renders empty — or raises with
 `Policy(strict=True)`.
 
-An interpolator of your own is any object with `references(text) ->
-frozenset[str]` (the top-level names a template reads, used to order
-rendering) and `render(text, scope) -> value`; an optional
-`is_template(text) -> bool` says which strings it wants, and without it
-strings holding `{{`, `{%` or `{#` are offered:
+An interpolator of your own is any object with `render(text, scope) ->
+value`. It is given every string and decides itself: text it does not render
+comes back as it is. `scope` holds the document's top-level names, and reading
+one whose value is itself a template renders that value first, so references
+resolve in any order:
 
 ```python
 import re
@@ -216,9 +216,6 @@ class NameInterpolator:
     """`{{ name }}` substitution only: no expressions."""
 
     pattern = re.compile(r"\{\{\s*([A-Za-z_]\w*)\s*\}\}")
-
-    def references(self, text):
-        return frozenset(self.pattern.findall(text))
 
     def render(self, text, scope):
         return self.pattern.sub(lambda match: str(scope[match.group(1)]), text)

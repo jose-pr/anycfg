@@ -539,16 +539,17 @@ per-call override is applied):
   (ERB, EPP) needs `allow_commands` (`CommandsDisabledError`); a missing engine
   extra is `MissingDependencyError`; an unknown name `ValueError`.
 - `"vars"`: `VarsInterpolator`, no extra needed.
-- an object with `render` and `references` (an `Interpolator`): used as it is.
+- an object with `render` (an `Interpolator`): used as it is.
 - anything else: `TypeError`.
 
-Which strings render is the engine's own syntax test (tplx's
-`Template.is_template`: `{{`/`{%`/`{#` for Jinja, `${` or `$name` for envsubst and
-shell, `<%` for ERB/EPP, ...; `${` for `"vars"`), so `cost $5` or `100%` is never
-rendered. A custom interpolator decides with an optional `is_template(text) ->
-bool`, else Jinja's markers. Top-level keys render after the
-keys they reference, so chains resolve in any order; a rendered value is never
-rendered again. A value that is one expression (`{{ expr }}`, `${name}`;
+Every string goes to the interpolator's `render`, which is the only syntax check:
+tplx's `eval` returns text holding none of the engine's syntax as it is (`{{`/`{%`/
+`{#` for Jinja, `${` or `$name` for envsubst and shell, `<%` for ERB/EPP; `${` for
+`"vars"`), so `cost $5` or `100%` is never rendered. A top-level key renders the first
+time a template reads it, so chains resolve in any order with no pass to find the
+references first; a rendered value is never rendered again. The template is given
+only the names it reads (the engine's `references()`, asked only once it is a
+template). A value that is one expression (`{{ expr }}`, `${name}`;
 whitespace around it allowed) keeps its type, through tplx's `eval`. Copy-on-write: the input is never modified, containers keep their types, and a
 document with no template marker is returned untouched. A templated key rendering to
 a key that already exists raises `ConfigValueError` naming both templates (a skip
@@ -559,8 +560,12 @@ loaded, so a sibling that is itself a template is not yet rendered. Every failur
 skip under `on_error` keeps that value's template text. Messages and DEBUG logs name
 the template, never the rendered value.
 
-- **`Interpolator`** — protocol: `references(text) -> frozenset[str]`,
-  `render(text, scope) -> Any`, optionally `is_template(text) -> bool`.
+- **`Interpolator`** — protocol: `render(text, scope) -> Any`, called with every
+  string; text it does not render comes back as it is (equal text counts as
+  unchanged). *scope* is a mapping of the document's top-level names (plus `env`);
+  reading a name whose value is a template renders that first; a name read while it
+  is being rendered is a cycle (`ConfigValueError` under strict, else its current
+  value).
 - **`VarsInterpolator(*, strict=False)`** — `${name}` and `${a.b.0}` references:
   each step a mapping key or a list index, no expressions, no attribute access, so
   no sandbox is needed. A value that is exactly one reference keeps its type; inside
@@ -568,8 +573,8 @@ the template, never the rendered value.
   Undefined: empty (`None` alone), or `TemplateError` when strict. A malformed
   reference (`${a..b}`) is `TemplateError`.
 - **`TemplateInterpolator(engine="jinja", *, sandbox=True, strict=False)`** — a tplx
-  engine by name or class; `.engine_class` is the class it resolved to, and
-  `is_template(text)` its syntax test. Sandboxed, a value cannot
+  engine by name or class; `.engine_class` is the class it resolved to. `render` is
+  tplx's `eval`. Sandboxed, a value cannot
   reach Python internals and sees plain data: a mapping or list as itself, any other
   non-plain value (a date) as its text; a container an expression builds comes back
   as plain `dict`/`list`/`tuple`. A sandboxed render is bounded by tplx's defaults

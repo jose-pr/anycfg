@@ -60,9 +60,6 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
-#: Jinja's markers: what an interpolator without ``is_template`` is asked about.
-_MARKERS = ("{{", "{%", "{#")
-
 
 def _tplx() -> _ty.Any:
     try:
@@ -115,16 +112,14 @@ def _plain(value: _ty.Any, memo: "_ty.Optional[dict]" = None) -> _ty.Any:
 class Interpolator(_ty.Protocol):
     """Renders template text found inside loaded values.
 
-    An interpolator may also define ``is_template(text) -> bool``, which says
-    whether *text* holds its syntax at all; without it, Jinja's markers
-    (``{{``, ``{%``, ``{#``) decide.
+    ``render`` is called with every string of the document and decides itself
+    whether the text is a template: text it does not render comes back as it is.
+    *scope* is the document's top-level names (plus ``env`` with
+    ``inject_env``); reading a name that is itself a template renders it first.
     """
 
-    def references(self, text: str) -> _ty.FrozenSet[str]:
-        """The top-level names *text* reads; empty for text that does not parse."""
-
     def render(self, text: str, scope: _ty.Mapping[str, _ty.Any]) -> _ty.Any:
-        """Render *text*; a bare expression returns the expression's own value."""
+        """*text* rendered; plain text as it is; one expression keeps its type."""
 
 
 def _engine_key(engine: type) -> str:
@@ -191,34 +186,62 @@ class TemplateInterpolator:
         #: The tplx engine class *engine* names.
         self.engine_class: type = type(probe)
 
-    def is_template(self, text: str) -> bool:
-        """Whether *text* holds this engine's syntax: the engine's own cheap test."""
-        return bool(self.engine_class.is_template(text))
-
-    def references(self, text: str) -> _ty.FrozenSet[str]:
-        try:
-            return frozenset(
-                self._lookup.compile(text, engine=self.engine).references()
-            )
-        except Exception:  # noqa: BLE001 - rendering reports a bad template better
-            return frozenset()
-
     def render(self, text: str, scope: _ty.Mapping[str, _ty.Any]) -> _ty.Any:
+        """tplx's ``eval``: plain text back as it is, one expression with its
+        type, anything else rendered to text. The engine is the only syntax
+        check, and the template sees only the names it reads."""
         tplx = _tplx()
+        names = _ReadNames(scope, self._lookup, text, self.engine_class)
         try:
-            template = self._lookup.compile(text, engine=self.engine)
-            # Only the names the template reads: a sandboxed engine converts all
-            # the data it is given on every render, so handing it the whole
-            # document would cost the whole document per value.
-            try:
-                names = template.references()
-            except NotImplementedError:
-                names = scope
-            values = {name: scope[name] for name in names if name in scope}
-            # One expression keeps its type; anything else renders to text.
-            return _plain(self._lookup.eval(text, values, engine=self.engine))
+            return _plain(self._lookup.eval(text, names, engine=self.engine_class))
         except tplx.TplxError as error:
-            raise _template_error(error) from _root(error)
+            root = _root(error)
+            if isinstance(root, ConfigError):
+                # A name it read failed to render (a cycle, say): that error.
+                raise root from None
+            raise _template_error(error) from root
+
+
+class _ReadNames(_abc.Mapping):
+    """The names a template reads, looked up only once the engine asks.
+
+    A sandboxed engine converts every name it is given, so handing it the whole
+    document would cost the document per value; plain text never asks at all.
+    An engine that cannot list its references gets every name.
+    """
+
+    __slots__ = ("_scope", "_lookup", "_text", "_engine", "_names")
+
+    def __init__(
+        self, scope: _ty.Mapping[str, _ty.Any], lookup: _ty.Any, text: str, engine: type
+    ) -> None:
+        self._scope = scope
+        self._lookup = lookup
+        self._text = text
+        self._engine = engine
+        self._names: "_ty.Optional[_ty.List[str]]" = None
+
+    def _read(self) -> "_ty.List[str]":
+        if self._names is None:
+            try:
+                wanted = self._lookup.compile(self._text, engine=self._engine)
+                names = list(wanted.references())
+            except NotImplementedError:
+                names = list(self._scope)
+            self._names = [name for name in names if name in self._scope]
+        return self._names
+
+    def __getitem__(self, key: str) -> _ty.Any:
+        return self._scope[key]
+
+    def __contains__(self, key: object) -> bool:
+        return key in self._scope
+
+    def __iter__(self) -> _ty.Iterator[str]:
+        return iter(self._read())
+
+    def __len__(self) -> int:
+        return len(self._read())
 
 
 def _engine_name(engine: _ty.Any) -> str:
@@ -245,17 +268,9 @@ class VarsInterpolator:
     def __init__(self, *, strict: bool = False) -> None:
         self.strict = strict
 
-    def is_template(self, text: str) -> bool:
-        return "${" in text
-
-    def references(self, text: str) -> _ty.FrozenSet[str]:
-        return frozenset(
-            match.group(1).strip().split(".", 1)[0]
-            for match in _VAR.finditer(text)
-            if match.group(1) is not None and match.group(1).strip()
-        )
-
     def render(self, text: str, scope: _ty.Mapping[str, _ty.Any]) -> _ty.Any:
+        if "${" not in text:
+            return text
         whole = _VAR.fullmatch(text.rstrip("\r\n"))
         if whole is not None and whole.group(1) is not None:
             return self._lookup(whole.group(1), scope)
@@ -330,8 +345,7 @@ def resolve_interpolator(choice: InterpolateChoice, policy: "Policy") -> _ty.Any
     """The interpolator ``interpolate=choice`` means under *policy*, or None for off.
 
     ``True`` is Jinja; a name or tplx engine class is that engine, sandboxed and
-    strict as the policy says; an object with ``render`` and ``references`` is
-    used as it is. An engine that runs a program (ERB, EPP) also needs
+    strict as the policy says; an object with ``render`` is used as it is. An engine that runs a program (ERB, EPP) also needs
     ``allow_commands``.
 
     Raises:
@@ -356,13 +370,11 @@ def resolve_interpolator(choice: InterpolateChoice, policy: "Policy") -> _ty.Any
                     "program: the policy does not allow commands"
                 )
         return default_interpolator(choice, policy.sandbox, policy.strict)
-    if callable(getattr(choice, "render", None)) and callable(
-        getattr(choice, "references", None)
-    ):
+    if callable(getattr(choice, "render", None)):
         return choice
     raise TypeError(
         "interpolate= takes a bool, an engine name or class, or an object with "
-        f"render() and references(), not {choice!r}"
+        f"render(), not {choice!r}"
     )
 
 
@@ -384,24 +396,75 @@ def _engine_class(engine: "_ty.Union[str, type]") -> "_ty.Optional[type]":
     return None
 
 
-def _is_template_for(interpolator: _ty.Any) -> "_ty.Callable[[str], bool]":
-    found = getattr(interpolator, "is_template", None)
-    if callable(found):
-        return found
-    return lambda text: any(marker in text for marker in _MARKERS)
+class _Scope(_abc.Mapping):
+    """A document's top-level names, each rendered the first time a template reads it.
 
-
-def _scope(document: _ty.Mapping, extra: _ty.Mapping[str, _ty.Any]) -> dict:
-    """Template names from *document*: string keys only, *extra* winning.
-
-    Values as the format read them: a scalar kept as text for a typed load is
-    still a number or a date to a template.
+    So a chain (``logs: "{{ base }}/logs"``, ``err: "{{ logs }}/err"``) resolves
+    whatever order it is written in, with no pass to find the references first.
+    A key read while it is being rendered is a cycle: its current value is read,
+    or, under *strict*, `ConfigValueError` is raised — except a key reading into
+    itself (``db.url: "{{ db.host }}"``), which sees its loaded value. *extra*
+    names win over keys of the same name. Values are as the format read them: a
+    scalar kept as text for a typed load is still a number or a date here.
     """
-    scope = {
-        key: resolved(value) for key, value in document.items() if isinstance(key, str)
-    }
-    scope.update(extra)
-    return scope
+
+    def __init__(
+        self,
+        document: _ty.Mapping,
+        extra: _ty.Mapping[str, _ty.Any],
+        walker: "_Pass",
+        strict: bool,
+        on_error: "_ty.Optional[_ty.Callable[[BaseException, tuple], bool]]",
+    ) -> None:
+        self.document = document
+        self.extra = extra
+        self.walker = walker
+        self.strict = strict
+        self.on_error = on_error
+        self.rendered: dict = {}
+        self.resolving: list = []
+
+    def resolve(self, key: _ty.Any) -> _ty.Any:
+        """*key*'s value rendered, rendering it now if no template read it yet."""
+        if key in self.rendered:
+            return self.rendered[key]
+        if key in self.resolving:
+            if self.strict and key != self.resolving[-1]:
+                chain = self.resolving[self.resolving.index(key) :] + [key]
+                error = ConfigValueError(
+                    "interpolation reference cycle: "
+                    + " -> ".join(str(item) for item in chain)
+                )
+                _errors._add_error_context(error, key=(key,))
+                if self.on_error is None or not self.on_error(error, (key,)):
+                    raise error
+            return self.document[key]
+        self.resolving.append(key)
+        try:
+            result = self.walker.value(self.document[key], self, (key,))
+        finally:
+            self.resolving.pop()
+        self.rendered[key] = result
+        return result
+
+    def __getitem__(self, key: str) -> _ty.Any:
+        if key in self.extra:
+            return self.extra[key]
+        if not isinstance(key, str) or key not in self.document:
+            raise KeyError(key)
+        return resolved(self.resolve(key))
+
+    def __contains__(self, key: object) -> bool:
+        return key in self.extra or (isinstance(key, str) and key in self.document)
+
+    def __iter__(self) -> _ty.Iterator[str]:
+        for key in self.document:
+            if isinstance(key, str) and key not in self.extra:
+                yield key
+        yield from self.extra
+
+    def __len__(self) -> int:
+        return sum(1 for _ in self)
 
 
 class _Pass:
@@ -413,7 +476,6 @@ class _Pass:
         on_error: "_ty.Optional[_ty.Callable[[BaseException, tuple], bool]]",
     ) -> None:
         self.interpolator = interpolator
-        self.is_template = _is_template_for(interpolator)
         self.on_error = on_error
         # id(original) -> (original, result): keeps the original alive so its
         # id() cannot be reused within the pass, and keeps aliases aliased.
@@ -454,8 +516,6 @@ class _Pass:
         return result
 
     def text(self, data: str, scope: _ty.Mapping, keypath: tuple) -> _ty.Any:
-        if not self.is_template(data):
-            return data
         try:
             try:
                 result = self.interpolator.render(data, scope)
@@ -475,65 +535,11 @@ class _Pass:
             if self.on_error is not None and self.on_error(error, keypath):
                 return data
             raise
+        if result is data or (type(result) is str and result == data):
+            return data  # not a template, to this interpolator
         # The template, never the result: the result may be a secret.
         logger.debug("interpolated %s from %r", _errors._render_key(keypath), data)
         return result
-
-
-def _has_template(
-    value: _ty.Any, seen: set, is_template: "_ty.Callable[[str], bool]"
-) -> bool:
-    """Whether any string in *value* holds template text; each node once."""
-    kind = type(value)
-    if kind is str:
-        return is_template(value)
-    if kind in (int, float, bool) or value is None:
-        return False
-    if id(value) in seen:
-        return False
-    seen.add(id(value))
-    if kind is dict or isinstance(value, _abc.Mapping):
-        return any(
-            _has_template(key, seen, is_template)
-            or _has_template(item, seen, is_template)
-            for key, item in value.items()
-        )
-    if isinstance(value, (_abc.Sequence, _abc.Set)) and not isinstance(
-        value, (bytes, bytearray)
-    ):
-        return any(_has_template(item, seen, is_template) for item in value)
-    return False
-
-
-def _references(
-    interpolator: Interpolator,
-    value: _ty.Any,
-    cache: dict,
-    is_template: "_ty.Callable[[str], bool]",
-) -> set:
-    """Names every template inside *value* refers to; containers once each."""
-    kind = type(value)
-    if kind is str:
-        if not is_template(value):
-            return set()
-        return set(interpolator.references(value))
-    if kind in (int, float, bool) or value is None:
-        return set()
-    if id(value) in cache:
-        return cache[id(value)]
-    cache[id(value)] = set()  # a self-referencing container terminates here
-    names: set = set()
-    if kind is dict or isinstance(value, _abc.Mapping):
-        for key, item in value.items():
-            names |= _references(interpolator, key, cache, is_template)
-            names |= _references(interpolator, item, cache, is_template)
-    elif isinstance(value, (_abc.Sequence, _abc.Set)) and not isinstance(
-        value, (str, bytes, bytearray)
-    ):
-        for item in value:
-            names |= _references(interpolator, item, cache, is_template)
-    cache[id(value)] = names
-    return names
 
 
 def interpolate_document(
@@ -546,12 +552,13 @@ def interpolate_document(
 ) -> _ty.Any:
     """Render every template in *document* once, against the document itself.
 
-    Each top-level key renders after the keys it refers to, so a chain
-    (``logs: "{{ base }}/logs"``, ``err: "{{ logs }}/err"``) resolves in one
-    pass whatever order it is written in. A rendered value is never rendered
-    again. A reference to a key still being resolved sees its current value; a
-    cycle raises when *strict* is set. *extra* names (``env``) win over keys
-    of the same name.
+    The interpolator's ``render`` gets every string and is the only syntax
+    check. A top-level key renders the first time a template reads it, so a
+    chain (``logs: "{{ base }}/logs"``, ``err: "{{ logs }}/err"``) resolves in
+    one pass whatever order it is written in. A rendered value is never
+    rendered again. A reference to a key still being rendered sees its current
+    value; a cycle raises when *strict* is set. *extra* names (``env``) win
+    over keys of the same name.
 
     Copy-on-write: *document* is never modified, containers keep their types,
     and a document with no template at all is returned as it is.
@@ -564,51 +571,17 @@ def interpolate_document(
             reference cycle under *strict*.
     """
     extra = dict(extra or {})
-    is_template = _is_template_for(interpolator)
-    if not _has_template(document, set(), is_template):
-        return document
     walker = _Pass(interpolator, on_error)
     if not isinstance(document, _abc.Mapping):
         return walker.value(document, extra, ())
 
-    scope = _scope(document, extra)
+    scope = _Scope(document, extra, walker, strict, on_error)
     rendered: dict = {}
-    resolving: list = []
-    references: dict = {}
-
-    def resolve(key: _ty.Any) -> None:
-        if key in rendered:
-            return
-        if key in resolving:
-            if strict:
-                chain = resolving[resolving.index(key) :] + [key]
-                error = ConfigValueError(
-                    "interpolation reference cycle: "
-                    + " -> ".join(str(item) for item in chain)
-                )
-                _errors._add_error_context(error, key=(key,))
-                if on_error is not None and on_error(error, (key,)):
-                    return
-                raise error
-            return  # lenient: the reference sees the key's current value
-        resolving.append(key)
-        try:
-            for name in _references(
-                interpolator, document[key], references, is_template
-            ):
-                # A value referring into its own key (`db.url: "{{ db.host }}"`)
-                # sees that key's current value; only another key can cycle.
-                if name != key and name in document and name not in extra:
-                    resolve(name)
-        finally:
-            resolving.pop()
-        result = walker.value(document[key], scope, (key,))
-        rendered[key] = result
-        if isinstance(key, str) and key not in extra:
-            scope[key] = resolved(result)
-
     for key in list(document):
-        resolve(key)
+        if isinstance(key, str):
+            rendered[key] = scope.resolve(key)
+        else:
+            rendered[key] = walker.value(document[key], scope, (key,))
 
     # Keys that are templates render last, so they see the rendered values.
     items = []
