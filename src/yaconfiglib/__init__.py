@@ -1,61 +1,110 @@
+"""Load, merge and write configuration in any registered format.
+
+One document::
+
+    config = yaconfiglib.load("app.yaml")          # format from the suffix
+    data = yaconfiglib.loads(text, format="toml")
+    yaconfiglib.dump(config, "app.json")           # written as JSON
+
+Layers::
+
+    loader = yaconfiglib.Loader(merge="deep")
+    config = loader.load("base.yaml", "conf.d/*.yaml", "local.toml")
+
+Formats live in :mod:`yaconfiglib.formats`, sources that are not files (commands,
+the environment, Python data, in-memory text) in :mod:`yaconfiglib.sources`.
+What a load may do beyond parsing is its :class:`Policy`, untrusted by default.
+"""
+
 from __future__ import annotations
 
-from .backends import ConfigBackend as ConfigBackend
-from .errors import (
-    CommandError as CommandError,
-    CommandsDisabledError as CommandsDisabledError,
-    CommandTimeoutError as CommandTimeoutError,
-    ConfigError as ConfigError,
-    ConfigTypeError as ConfigTypeError,
-    ConfigValueError as ConfigValueError,
-    ConfinementError as ConfinementError,
-    ErrorFrame as ErrorFrame,
-    UnknownLoaderError as UnknownLoaderError,
-    UnsupportedFormatError as UnsupportedFormatError,
-    load_error_types as load_error_types,
+from importlib.metadata import PackageNotFoundError as _PackageNotFoundError
+from importlib.metadata import version as _version
+
+from . import formats, sources
+from ._api import dump, dumps, load, load_all, loads, loads_all
+from ._context import LoadContext, Policy
+from ._dotaccess import DotAccessibleDict
+from ._hydrate import (
+    OpaqueMerge,
+    TypedNamespace,
+    dehydrate,
+    hydrate,
+    opaque,
+    typed_merge,
 )
-from .loader import (
-    ConfigLoader as ConfigLoader,
-    ConfigLoaderMergeMethod as ConfigLoaderMergeMethod,
-    DotAccessibleDict as DotAccessibleDict,
-    load as load,
-    loads as loads,
-    load_as as load_as,
-    dump as dump,
-    dumps as dumps,
-)
-from .utils.merge import (
-    MergeMethod as MergeMethod,
-    OpaqueMerge as OpaqueMerge,
-    TypedNamespace as TypedNamespace,
-    opaque as opaque,
-    typed_merge as typed_merge,
+from ._loader import LoadEvent, Loader
+from ._merge import DELETE, Merge, merge_strategies, register_merge
+from ._templating import Interpolator, TemplateInterpolator
+from .exceptions import (
+    BudgetExceededError,
+    CommandError,
+    CommandsDisabledError,
+    CommandTimeoutError,
+    ConfigError,
+    ConfigTypeError,
+    ConfigValueError,
+    ConfinementError,
+    ErrorFrame,
+    MissingDependencyError,
+    ParseError,
+    PolicyError,
+    TemplateError,
+    TemplatesDisabledError,
+    UnsupportedFormatError,
 )
 
+try:
+    __version__ = _version("yaconfiglib")
+except _PackageNotFoundError:  # pragma: no cover - a never-installed source tree
+    __version__ = "0.0.0"
+
 __all__ = [
-    "ConfigLoader",
-    "ConfigLoaderMergeMethod",
-    "ConfigError",
-    "ConfigValueError",
-    "ConfigTypeError",
-    "UnsupportedFormatError",
-    "UnknownLoaderError",
-    "CommandsDisabledError",
-    "ConfinementError",
-    "CommandError",
-    "CommandTimeoutError",
-    "ErrorFrame",
-    "load_error_types",
-    "DotAccessibleDict",
-    "MergeMethod",
+    "__version__",
+    # one document
+    "load",
+    "loads",
+    "load_all",
+    "loads_all",
+    "dump",
+    "dumps",
+    # layers
+    "Loader",
+    "LoadEvent",
+    "Policy",
+    "LoadContext",
+    # merging and typed results
+    "DELETE",
+    "Merge",
+    "register_merge",
+    "merge_strategies",
+    "hydrate",
+    "dehydrate",
     "typed_merge",
     "OpaqueMerge",
     "opaque",
     "TypedNamespace",
-    "ConfigBackend",
-    "load",
-    "loads",
-    "load_as",
-    "dump",
-    "dumps",
+    "DotAccessibleDict",
+    # interpolation
+    "Interpolator",
+    "TemplateInterpolator",
+    # registries
+    "formats",
+    "sources",
+    # errors
+    "ConfigError",
+    "ConfigValueError",
+    "ConfigTypeError",
+    "ParseError",
+    "TemplateError",
+    "UnsupportedFormatError",
+    "MissingDependencyError",
+    "PolicyError",
+    "CommandsDisabledError",
+    "TemplatesDisabledError",
+    "ConfinementError",
+    "BudgetExceededError",
+    "CommandError",
+    "CommandTimeoutError",
+    "ErrorFrame",
 ]

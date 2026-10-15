@@ -1,83 +1,95 @@
-"""Three things yaconfiglib does, runnable from any directory.
+"""What yaconfiglib does, runnable from any directory.
 
     python examples/example.py
 
-Every path is resolved against this file's own directory, so the working
-directory does not matter.
+Every path resolves against this file's own directory, so the working directory
+does not matter. The output is one JSON document with a section per demo.
 """
 
+import dataclasses
 import json
 import logging
-from dataclasses import dataclass
 from pathlib import Path
 
-from yaconfiglib import ConfigLoader, ConfigLoaderMergeMethod, typed_merge
+import yaconfiglib
 
 HERE = Path(__file__).resolve().parent
 
 logging.basicConfig(level=logging.INFO)
 
 
-def show(title, value):
-    print(f"\n=== {title} ===")
-    print(json.dumps(value, indent=2, default=str))
+def layered_load():
+    """Two layers, deep-merged, then interpolated once as a whole.
 
-
-def layered_load(loader):
-    """Several sources, deep-merged, then interpolated once as a whole.
-
-    `layered.yaml` pulls in a JSON and an INI document with `!load`, and
-    `hiera.yaml` contributes Jinja expressions. With `interpolate=True` the
-    expressions are rendered against the *merged* document, so a value in one
-    file can refer to a key that came from another.
+    `layered.yaml` includes a JSON and an INI document, and `hiera.yaml`
+    overrides a few values. Interpolation runs on the *merged* document, so
+    `log_dir` follows the root `hiera.yaml` set, and so does the INI value
+    that refers to it.
     """
-    return loader.load(
-        "layered.yaml",
-        "hiera.yaml",
-        interpolate=True,
-        merge=ConfigLoaderMergeMethod.Deep,
-    )
+    loader = yaconfiglib.Loader(base_dir=HERE, merge="deep", interpolate=True)
+    return loader.load("layered.yaml", "hiera.yaml")
 
 
-def templated_source(loader):
+def template_file():
     """A `.j2` source is rendered first, then parsed as the format it names.
 
-    `jinja.yaml.j2` renders to YAML, so it is parsed as YAML.
+    Templates are off by default; `allow_templates` turns them on, and the
+    default sandbox keeps the template away from Python internals and files.
     """
+    loader = yaconfiglib.Loader(
+        base_dir=HERE, policy=yaconfiglib.Policy(allow_templates=True)
+    )
     return loader.load("jinja.yaml.j2")
 
 
-@dataclass
-class ServerConfig:
+@dataclasses.dataclass
+class Server:
     host: str
     port: int
     scheme: str = "https"
 
 
-def typed_merge_demo():
-    """Merge several objects into one instance of a type, guided by its hints.
+@dataclasses.dataclass
+class AppConfig:
+    log_dir: str
+    workers: int
+    server: Server
 
-    The dict's `port` arrives as a string and is coerced to `int`, because
-    that is what the field is annotated as. A `None` is skipped rather than
-    overriding an earlier value.
+
+def typed_load():
+    """The same layers, built into a dataclass through its annotations.
+
+    `server.port` is the string "8443" in `hiera.yaml`; the model says `int`,
+    so it arrives as an int. Keys the model does not declare are dropped.
     """
-    return typed_merge(
-        ServerConfig,
-        ServerConfig(host="localhost", port=8080),
+    loader = yaconfiglib.Loader(base_dir=HERE, merge="deep", interpolate=True)
+    return loader.load("layered.yaml", "hiera.yaml", into=AppConfig)
+
+
+def typed_merge_demo():
+    """Merge several layers into one instance of a type, field by field.
+
+    A `None` is "no opinion": it does not override an earlier value.
+    """
+    return yaconfiglib.typed_merge(
+        Server,
+        Server(host="localhost", port=8080),
         {"host": "example.com", "port": "443"},
         {"scheme": None},
     )
 
 
 def main():
-    loader = ConfigLoader(base_dir=HERE)
-
-    show("Layered load with interpolation", layered_load(loader))
-    show("Jinja2-templated source", templated_source(loader))
-
+    typed = typed_load()
     merged = typed_merge_demo()
-    show("typed_merge into a dataclass", vars(merged))
-    print(f"port is {merged.port!r}, coerced to {type(merged.port).__name__}")
+    report = {
+        "layered load with interpolation": layered_load(),
+        "template file": template_file(),
+        "typed load": dataclasses.asdict(typed),
+        "typed_merge": dataclasses.asdict(merged),
+        "port type": type(typed.server.port).__name__,
+    }
+    print(json.dumps(report, indent=2, default=str))
 
 
 if __name__ == "__main__":

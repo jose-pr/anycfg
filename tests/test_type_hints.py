@@ -1,78 +1,97 @@
-"""Tests that every public annotation resolves, and says what the runtime accepts.
+"""Every public annotation resolves on the running interpreter, and says what the runtime accepts.
 
-Two separate problems live here. `typing.get_type_hints()` failed on Python 3.9 —
-the project's own floor — for most of the public API, because hints were spelled
-with PEP 604 unions and `typing.Self`. And several hints described something
-narrower than the documented behaviour, so a type checker rejected calls from the
-library's own README.
-
-The targets are **discovered**, not listed: a hand-written list silently stops
-covering new API, and the previous attempt at one was missing ten callables.
+The targets are **discovered** from the public namespaces, not listed: a
+hand-written list silently stops covering new API. This must pass on the 3.9
+floor, where ``X | Y`` and ``typing.Self`` are not evaluable.
 """
 
+import importlib.resources
 import inspect
-import os
-import pkgutil
-import sys
+import pathlib
 import typing
 
 import pytest
 
 import yaconfiglib
+import yaconfiglib.formats
+import yaconfiglib.sources
+import yaconfiglib.testing
 
-#: Modules that import an optional extra at module level. Only these may fail to
-#: import during discovery, mirroring the suite's needs_* fixture convention.
-_OPTIONAL_MODULES = frozenset(
-    {
-        "yaconfiglib.backends.yaml",
-        "yaconfiglib.backends.toml",
-        "yaconfiglib.backends.jinja2",
-        "yaconfiglib.utils.jinja2",
-    }
+_NAMESPACES = (
+    yaconfiglib,
+    yaconfiglib.formats,
+    yaconfiglib.sources,
+    yaconfiglib.testing,
 )
 
 
-def _public_callables():
-    """Every public callable the package defines, as ``{qualified name: object}``.
+def _is_ours(obj):
+    return (getattr(obj, "__module__", "") or "").startswith("yaconfiglib")
 
-    A name counts when it does not start with ``_`` (a dunder method does count)
-    and the object was defined in the module being walked — re-exports are
-    therefore visited once, where they are written.
+
+def _class_members(cls):
+    """``{attribute: function}`` for the methods *cls* itself defines.
+
+    Public names and dunders count; ``_private`` ones do not. Properties
+    contribute their getter.
     """
     found = {}
-    modules = [yaconfiglib]
-    for info in pkgutil.walk_packages(yaconfiglib.__path__, "yaconfiglib."):
-        try:
-            modules.append(__import__(info.name, fromlist=["_"]))
-        except ImportError:
-            if info.name in _OPTIONAL_MODULES:
-                continue
-            raise
-    for module in modules:
-        for name, obj in vars(module).items():
-            if name.startswith("_"):
-                continue
-            if inspect.isfunction(obj) and obj.__module__ == module.__name__:
-                found[f"{module.__name__}.{name}"] = obj
-            elif inspect.isclass(obj) and obj.__module__ == module.__name__:
-                for attr, member in vars(obj).items():
-                    if attr.startswith("_") and not (
-                        attr.startswith("__") and attr.endswith("__")
-                    ):
-                        continue
-                    function = member
-                    if isinstance(member, (classmethod, staticmethod)):
-                        function = member.__func__
-                    if (
-                        inspect.isfunction(function)
-                        and function.__module__ == module.__name__
-                    ):
-                        found[f"{module.__name__}.{obj.__name__}.{attr}"] = function
+    for attr, member in vars(cls).items():
+        if attr.startswith("_") and not (attr.startswith("__") and attr.endswith("__")):
+            continue
+        function = member
+        if isinstance(member, (classmethod, staticmethod)):
+            function = member.__func__
+        elif isinstance(member, property):
+            function = member.fget
+        if inspect.isfunction(function) and _is_ours(function):
+            found[attr] = function
     return found
 
 
+def _public_classes():
+    """Every public class reachable from the public namespaces, plus the built-in formats."""
+    classes = {}
+    for namespace in _NAMESPACES:
+        for name in getattr(namespace, "__all__", ()):
+            obj = getattr(namespace, name)
+            if inspect.isclass(obj) and _is_ours(obj):
+                classes.setdefault(f"{obj.__module__}.{obj.__qualname__}", obj)
+    # Built-in formats are public through formats.get(); their classes import
+    # nothing optional, so every one is listed whatever extras are installed.
+    for name in yaconfiglib.formats.names():
+        cls = yaconfiglib.formats.get(name)
+        classes.setdefault(f"{cls.__module__}.{cls.__qualname__}", cls)
+    return classes
+
+
+def _public_callables():
+    """Every public callable, as ``{qualified name: function}``."""
+    found = {}
+    for namespace in _NAMESPACES:
+        for name in getattr(namespace, "__all__", ()):
+            obj = getattr(namespace, name)
+            if inspect.isfunction(obj) and _is_ours(obj):
+                found[f"{obj.__module__}.{obj.__qualname__}"] = obj
+    for qualname, cls in _public_classes().items():
+        for attr, function in _class_members(cls).items():
+            found[f"{qualname}.{attr}"] = function
+    return found
+
+
+_CLASSES = _public_classes()
 _CALLABLES = _public_callables()
 _IDS = sorted(_CALLABLES)
+
+#: Hints naming `LoadContext`, which these modules import only under
+#: TYPE_CHECKING, so `get_type_hints` raises NameError on every interpreter.
+
+
+def _callable_params():
+    params = []
+    for qualname in _IDS:
+        params.append(pytest.param(qualname, id=qualname))
+    return params
 
 
 def _flatten_union(hint):
@@ -89,469 +108,182 @@ def _hints(obj):
     return typing.get_type_hints(obj)
 
 
-class TestFloorResolvableSignatures:
-    @pytest.mark.parametrize("qualname", _IDS)
-    def test_public_hints_resolve(self, qualname):
-        # The floor is 3.9, where `X | Y` and `typing.Self` are not evaluable;
-        # anything introspecting this API (docs tooling, pydantic, a checker at
-        # runtime) failed on most of it.
+class TestResolvable:
+    @pytest.mark.parametrize("qualname", _callable_params())
+    def test_public_callable_hints_resolve(self, qualname):
         typing.get_type_hints(_CALLABLES[qualname])
 
-    def test_hint_targets_cover_core_api(self):
-        # A pin on the discovery rule itself: these are the callables a consumer
-        # actually calls, and a rule that stops finding them is broken.
+    @pytest.mark.parametrize("qualname", sorted(_CLASSES))
+    def test_public_class_attribute_hints_resolve(self, qualname):
+        typing.get_type_hints(_CLASSES[qualname])
+
+    def test_discovery_covers_the_core_api(self):
+        # A pin on the discovery rule itself: a rule that stops finding these is
+        # broken, and every parametrized case above would still pass.
         core = [
-            "yaconfiglib.loader.load",
-            "yaconfiglib.loader.loads",
-            "yaconfiglib.loader.dump",
-            "yaconfiglib.loader.dumps",
-            "yaconfiglib.loader.load_as",
-            "yaconfiglib.loader.ConfigLoader.__init__",
-            "yaconfiglib.loader.ConfigLoader.load",
-            "yaconfiglib.loader.ConfigLoader.load_as",
-            "yaconfiglib.loader.ConfigLoader.load_all",
-            "yaconfiglib.loader.DotAccessibleDict.get",
-            "yaconfiglib.utils.source.parse_sources",
-            "yaconfiglib.utils.source.has_glob_pattern",
-            "yaconfiglib.utils.jinja2.interpolate",
-            "yaconfiglib.utils.jinja2.compile",
-            "yaconfiglib.utils.jinja2.eval",
-            "yaconfiglib.utils.jinja2.load_template",
-            "yaconfiglib.utils.merge.MergeMethod.__call__",
-            "yaconfiglib.utils.merge.is_array",
-            "yaconfiglib.utils.merge.is_scalar",
-            "yaconfiglib.utils.typing_merge.typed_merge",
-            "yaconfiglib.utils.enum.IntEnum.extend",
-            "yaconfiglib.backends.base.ConfigBackend.load",
-            "yaconfiglib.backends.base.ConfigBackend.load_all",
-            "yaconfiglib.backends.base.ConfigBackend.dumps",
-            "yaconfiglib.backends.base.ConfigBackend.__subclasses__",
-            "yaconfiglib.backends.base.ConfigBackend.get_class_by_name",
-            "yaconfiglib.backends.base.ConfigBackend.get_class_by_path",
-            "yaconfiglib.backends.base.ConfigBackend.can_load_path",
-            "yaconfiglib.backends.yaml.YamlConfig.load",
-            "yaconfiglib.backends.yaml.YamlConfig.dumps",
-            "yaconfiglib.backends.json.JsonConfig.load",
-            "yaconfiglib.backends.json.JsonConfig.dumps",
-            "yaconfiglib.backends.ini.IniConfig.load",
-            "yaconfiglib.backends.dotenv.DotenvBackend.load",
-            "yaconfiglib.backends.env.EnvVarBackend.__init__",
-            "yaconfiglib.backends.env.EnvVarBackend.load",
-            "yaconfiglib.backends.command.CommandBackend.load",
-            "yaconfiglib.backends.python_backend.PythonBackend.__init__",
-            "yaconfiglib.backends.python_backend.PythonBackend.load",
-            "yaconfiglib.errors.load_error_types",
+            "yaconfiglib._api.load",
+            "yaconfiglib._api.loads",
+            "yaconfiglib._api.load_all",
+            "yaconfiglib._api.loads_all",
+            "yaconfiglib._api.dump",
+            "yaconfiglib._api.dumps",
+            "yaconfiglib._loader.Loader.__init__",
+            "yaconfiglib._loader.Loader.load",
+            "yaconfiglib._loader.Loader.load_all",
+            "yaconfiglib._loader.Loader.policy",
+            "yaconfiglib._loader.Loader.base_dir",
+            "yaconfiglib._hydrate.hydrate",
+            "yaconfiglib._hydrate.typed_merge",
+            "yaconfiglib._hydrate.opaque",
+            "yaconfiglib._hydrate.OpaqueMerge.__merge__",
+            "yaconfiglib._hydrate.TypedNamespace.__init__",
+            "yaconfiglib._merge.register_merge",
+            "yaconfiglib._merge.merge_strategies",
+            "yaconfiglib._merge.Merge.__call__",
+            "yaconfiglib._dotaccess.DotAccessibleDict.get",
+            "yaconfiglib._dotaccess.DotAccessibleDict.__getattr__",
+            "yaconfiglib._context.LoadContext.include",
+            "yaconfiglib._context.LoadContext.derive",
+            "yaconfiglib._context.Policy.trusted",
+            "yaconfiglib._context.Policy.untrusted",
+            "yaconfiglib._context.Policy.replace",
+            "yaconfiglib.formats._base.Format.loads",
+            "yaconfiglib.formats._base.Format.loads_all",
+            "yaconfiglib.formats._base.Format.dumps",
+            "yaconfiglib.formats.register_format",
+            "yaconfiglib.formats.get",
+            "yaconfiglib.formats.for_filename",
+            "yaconfiglib.sources.register_scheme",
+            "yaconfiglib.sources.from_text",
+            "yaconfiglib.sources._base.Source.read",
+            "yaconfiglib.sources._command.Command.script",
         ]
         missing = [name for name in core if name not in _CALLABLES]
         assert not missing, f"discovery missed: {missing}"
-        # A NamedTuple's generated methods are not discovered, so its own field
-        # hints need checking directly.
-        typing.get_type_hints(yaconfiglib.errors.ErrorFrame)
 
-    def test_key_factory_hint_accepts_path_and_value(self):
-        from yaconfiglib.loader import ConfigLoader
+    def test_discovery_covers_every_builtin_format(self):
+        loads = {
+            qualname
+            for qualname in _CALLABLES
+            if qualname.startswith("yaconfiglib.formats._")
+            and qualname.endswith(".loads")
+        }
+        # Format.loads plus one per built-in format.
+        assert len(loads) >= 1 + len({"json", "yaml", "toml", "ini", "dotenv"}), sorted(
+            loads
+        )
 
-        hint = _hints(ConfigLoader.load)["key_factory"]
-        members = _flatten_union(hint)
-        assert str in members
-        # get_args(Callable[[A, B], R]) is ([A, B], R): the parameters are one
-        # list, so the arity check reads that list.
-        parameter_lists = [
-            typing.get_args(m)[0]
-            for m in members
-            if typing.get_origin(m) is not None and typing.get_args(m)
-        ]
-        # It is CALLED as key_factory(path, value); a one-argument hint made
-        # every documented callable an error.
-        assert any(
-            isinstance(params, list) and len(params) == 2 and params[1] is typing.Any
-            for params in parameter_lists
-        ), parameter_lists
+    def test_named_tuple_and_dataclass_fields_resolve(self):
+        for cls in (
+            yaconfiglib.LoadEvent,
+            yaconfiglib.ErrorFrame,
+            yaconfiglib.Policy,
+            yaconfiglib.LoadContext,
+            yaconfiglib.sources.Payload,
+        ):
+            assert typing.get_type_hints(cls), cls
 
-    def test_utils_star_exports_no_future_or_typevar(self):
-        import yaconfiglib.utils
 
-        # `from .enum import *` used to leak these, because enum.py has no
-        # __all__.
-        assert "annotations" not in dir(yaconfiglib.utils)
-        assert "T" not in dir(yaconfiglib.utils)
-
+class TestHintsSayWhatTheRuntimeAccepts:
     def test_entry_points_return_any(self):
-        from yaconfiglib.loader import ConfigLoader, DotAccessibleDict, load, loads
-
-        # A parsed document can be a mapping, a list or a scalar, so `object`
-        # made every documented attribute access an error.
-        for obj in (load, loads, ConfigLoader.load, DotAccessibleDict.get):
+        # A document can be a mapping, a list or a scalar, and `config.db.host`
+        # is documented; `object` would make every such access a type error.
+        for obj in (
+            yaconfiglib.load,
+            yaconfiglib.loads,
+            yaconfiglib.Loader.load,
+            yaconfiglib.DotAccessibleDict.get,
+            yaconfiglib.DotAccessibleDict.__getattr__,
+            yaconfiglib.typed_merge,
+        ):
             assert _hints(obj)["return"] is typing.Any, obj
-        assert typing.get_args(_hints(ConfigLoader.load_all)["return"]) == (typing.Any,)
-        assert _hints(DotAccessibleDict.__getattr__)["return"] is typing.Any
+        for obj in (
+            yaconfiglib.load_all,
+            yaconfiglib.loads_all,
+            yaconfiglib.Loader.load_all,
+        ):
+            assert typing.get_args(_hints(obj)["return"]) == (typing.Any,), obj
 
     def test_none_defaults_are_optional(self):
+        # PEP 484 forbids implicit Optional: a `= None` default with a hint that
+        # excludes None makes every checker reject passing None.
         violations = []
         for qualname in _IDS:
             function = _CALLABLES[qualname]
             try:
+                hints = typing.get_type_hints(function)
                 signature = inspect.signature(function)
-            except (ValueError, TypeError):
+            except (NameError, TypeError, ValueError):
+                # Unresolvable hints fail test_public_callable_hints_resolve.
                 continue
-            namespace = vars(sys.modules[function.__module__])
             for name, parameter in signature.parameters.items():
                 if parameter.default is not None:
                     continue
-                annotation = parameter.annotation
-                if annotation is inspect.Parameter.empty:
+                if name not in hints:
                     violations.append(f"{qualname}({name}): no annotation")
                     continue
-                for _ in range(3):
-                    if not isinstance(annotation, str):
-                        break
-                    try:
-                        annotation = eval(annotation, namespace)  # noqa: S307
-                    except Exception as error:  # noqa: BLE001 - reported below
-                        violations.append(f"{qualname}({name}): {error}")
-                        break
-                if isinstance(annotation, str):
+                hint = hints[name]
+                if hint in (typing.Any, object):
                     continue
-                if annotation in (typing.Any, object):
-                    continue
-                if type(None) not in _flatten_union(annotation):
-                    violations.append(f"{qualname}({name}): {annotation!r}")
-        # PEP 484 forbids implicit Optional, and both mypy and pyright enforce
-        # it: a `= None` default with a non-Optional hint rejects `None`.
+                if type(None) not in _flatten_union(hint):
+                    violations.append(f"{qualname}({name}): {hint!r}")
         assert not violations, "\n".join(violations)
-
-    def test_config_loader_init_hints_accept_documented_forms(self):
-        from yaconfiglib.loader import ConfigLoader
-
-        hints = _hints(ConfigLoader.__init__)
-        assert str in _flatten_union(hints["key_factory"])
-        assert any(
-            typing.get_origin(m) is os.PathLike or m is os.PathLike
-            for m in _flatten_union(hints["base_dir"])
-        ), hints["base_dir"]
-
-        factory = [
-            m for m in _flatten_union(hints["loader_factory"]) if m is not type(None)
-        ]
-        # A (path) -> backend callable, never type[Backend]: the class form
-        # steered users into "YamlConfig() takes no arguments".
-        assert factory and all(
-            typing.get_origin(m) is not type for m in factory
-        ), factory
-        assert any(
-            isinstance(typing.get_args(m)[0], list)
-            for m in factory
-            if typing.get_args(m)
-        ), factory
-
-        path_factory = [
-            m for m in _flatten_union(hints["path_factory"]) if m is not type(None)
-        ]
-        assert path_factory, hints["path_factory"]
-        returns = [typing.get_args(m)[-1] for m in path_factory if typing.get_args(m)]
-        assert returns and all(
-            typing.get_origin(r) is os.PathLike or r is os.PathLike for r in returns
-        ), returns
-
-    def test_load_and_load_all_hints_accept_documented_sources(self):
-        from yaconfiglib.backends.base import ConfigBackend
-        from yaconfiglib.loader import ConfigLoader
-
-        load_hints = _hints(ConfigLoader.load)
-        assert _hints(ConfigLoader.load_all)["pathname"] == load_hints["pathname"]
-        members = _flatten_union(load_hints["loader"])
-        assert str in members
-        assert ConfigBackend in members
-        assert any(typing.get_origin(m) is not None for m in members), members
 
     def test_public_variadics_are_annotated(self):
         missing = []
         for qualname in _IDS:
-            function = _CALLABLES[qualname]
             try:
-                signature = inspect.signature(function)
-            except (ValueError, TypeError):
+                signature = inspect.signature(_CALLABLES[qualname])
+            except (TypeError, ValueError):
                 continue
             for name, parameter in signature.parameters.items():
                 if (
                     parameter.kind
-                    in (
-                        inspect.Parameter.VAR_POSITIONAL,
-                        inspect.Parameter.VAR_KEYWORD,
-                    )
+                    in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
                     and parameter.annotation is inspect.Parameter.empty
                 ):
                     missing.append(f"{qualname}(*{name})")
         assert not missing, "\n".join(missing)
 
-        from yaconfiglib.loader import ConfigLoader
+    def test_merge_hint_accepts_a_name_or_a_callable(self):
+        members = _flatten_union(_hints(yaconfiglib.Loader.__init__)["merge"])
+        assert str in members
+        assert yaconfiglib.Merge in members
 
-        for obj in (ConfigLoader.__init__, ConfigLoader.load):
-            members = _flatten_union(_hints(obj)["merge_options"])
-            assert any(
-                typing.get_args(m) == (str, typing.Any) for m in members
-            ), members
-
-    def test_backend_path_hints_accept_os_pathlike(self):
-        import yaconfiglib.backends as backends
-
-        names = [
-            ("yaml", "YamlConfig"),
-            ("json", "JsonConfig"),
-            ("ini", "IniConfig"),
-            ("toml", "TomlConfig"),
-            ("dotenv", "DotenvBackend"),
-            ("jinja2", "Jinja2ConfigLoader"),
-            ("command", "CommandBackend"),
-        ]
-        checked = 0
-        for _module, class_name in names:
-            backend = getattr(backends, class_name, None)
-            if backend is None:
-                continue  # optional extra not installed
-            members = _flatten_union(_hints(backend.load)["path"])
-            assert any(
-                typing.get_origin(m) is os.PathLike or m is os.PathLike for m in members
-            ), (class_name, members)
-            checked += 1
-        assert checked >= 5
-
-    def test_ignore_error_protocol_names_documented_keywords(self):
-        from yaconfiglib.loader import _IgnoreError
-
-        signature = inspect.signature(_IgnoreError.__call__)
-        kinds = {
-            name: parameter.kind for name, parameter in signature.parameters.items()
-        }
-        for name in ("phase", "path", "loader"):
-            assert kinds.get(name) is inspect.Parameter.KEYWORD_ONLY, name
-        assert list(kinds.values()).count(inspect.Parameter.VAR_KEYWORD) == 1
-        assert inspect.Parameter.VAR_POSITIONAL not in kinds.values()
-        hints = _hints(_IgnoreError.__call__)
-        assert hints["phase"] is str
-        assert hints["return"] is bool
-
-
-class TestBackendContractTypes:
-    """`ConfigBackend` is a base class, and backend hints say what they return.
-
-    As a `typing.Protocol` it made `issubclass()` raise `TypeError` on every
-    interpreter while type checkers called `ConfigLoader()`, `EnvVarBackend()`
-    and every custom backend abstract — registration has always been nominal,
-    walking `type.__subclasses__`.
-    """
-
-    def test_config_backend_is_nominal_base(self):
-        import yaconfiglib.backends as backends
-        from yaconfiglib.backends.base import ConfigBackend
-        from yaconfiglib.backends.json import JsonConfig
-        from yaconfiglib.loader import ConfigLoader
-
-        assert not getattr(ConfigBackend, "_is_protocol", False)
-        # Only built-in classes: defining one here would register it for the
-        # rest of the session.
-        for name in ("JsonConfig", "IniConfig", "DotenvBackend", "EnvVarBackend"):
-            backend = getattr(backends, name, None)
-            if backend is not None:
-                assert issubclass(backend, ConfigBackend), name
-        assert isinstance(JsonConfig(), ConfigBackend)
-        # ConfigLoader IS a backend subclass, which is why the Protocol made
-        # checkers call the library's own entry point abstract.
-        assert issubclass(ConfigLoader, ConfigBackend)
-
-    def test_backend_load_hints_return_any(self):
-        import typing
-
-        import yaconfiglib.backends as backends
-        from yaconfiglib.backends.base import ConfigBackend
-
-        assert _hints(ConfigBackend.load)["return"] is typing.Any
-        assert typing.get_args(_hints(ConfigBackend.load_all)["return"]) == (
-            typing.Any,
-        )
-        for name in (
-            "YamlConfig",
-            "JsonConfig",
-            "IniConfig",
-            "TomlConfig",
-            "DotenvBackend",
-            "EnvVarBackend",
-            "CommandBackend",
-            "PythonBackend",
-            "Jinja2ConfigLoader",
-        ):
-            backend = getattr(backends, name, None)
-            if backend is None:
-                continue
-            returns = _hints(backend.load)["return"]
-            # `Any`, or something more precise where the backend really always
-            # produces it (dotenv values are always strings). What must NOT
-            # appear is `object` — which makes every documented attribute
-            # access an error — or `None`, which `Jinja2ConfigLoader` claimed
-            # while returning the parsed document.
-            assert returns is not object, name
-            assert returns is not type(None), name
-            assert returns is typing.Any or typing.get_origin(returns) is dict, (
-                name,
-                returns,
-            )
-
-    def test_dumps_data_hint_is_any(self):
-        import typing
-
-        import yaconfiglib.backends as backends
-        from yaconfiglib.backends.base import ConfigBackend
-        from yaconfiglib.backends.json import JsonConfig
-
-        targets = [ConfigBackend.dumps, JsonConfig.dumps]
-        yaml_backend = getattr(backends, "YamlConfig", None)
-        if yaml_backend is not None:
-            targets.append(yaml_backend.dumps)
-        for obj in targets:
-            # Under `object`, a custom dumps(self, data: dict) is an
-            # incompatible override.
-            assert _hints(obj)["data"] is typing.Any, obj
-
-    def test_yaml_backend_class_parameter_hints(self):
-        import typing
-
-        yaml = pytest.importorskip("yaml")
-        from yaconfiglib.backends.yaml import YamlConfig
-
-        hints = _hints(YamlConfig.load)
-        loader_cls = [
-            m for m in _flatten_union(hints["loader_cls"]) if m is not type(None)
-        ]
-        assert loader_cls and typing.get_origin(loader_cls[0]) is type
-        assert typing.get_args(loader_cls[0]) == (yaml.constructor.BaseConstructor,)
-        master = [m for m in _flatten_union(hints["master"]) if m is not type(None)]
-        assert master == [yaml.constructor.BaseConstructor]
-
-        dumper = [
-            m
-            for m in _flatten_union(_hints(YamlConfig.dumps)["dumper_cls"])
-            if m is not type(None)
-        ]
-        assert dumper and typing.get_origin(dumper[0]) is type
-        assert typing.get_args(dumper[0]) == (yaml.representer.BaseRepresenter,)
-        # The reason those bases and not BaseLoader/BaseDumper: SafeLoader does
-        # not subclass BaseLoader, but every loader is a BaseConstructor.
-        assert issubclass(yaml.SafeLoader, yaml.constructor.BaseConstructor)
-
-    def test_class_attribute_hints_allow_name_only_backends(self):
-        import typing
-
-        from yaconfiglib.backends.base import ConfigBackend
-
-        hints = typing.get_type_hints(ConfigBackend)
-        # EnvVarBackend is selected by name only and sets PATHNAME_REGEX = None.
-        for name in ("PATHNAME_REGEX", "NAME"):
-            assert type(None) in _flatten_union(hints[name]), name
-
-    def test_get_class_by_name_hint_is_optional(self):
-        import typing
-
-        from yaconfiglib.backends.base import ConfigBackend
-
-        assert type(None) in _flatten_union(
-            _hints(ConfigBackend.get_class_by_name)["return"]
-        )
-        assert ConfigBackend.get_class_by_name("no-such-backend") is None
-        assert typing.get_origin(_hints(ConfigBackend.get_class_by_path)["return"]) is (
-            type
-        )
-
-
-class TestMergeTypingSurface:
-    """The merge API as a checker sees it.
-
-    `ConfigLoaderMergeMethod` is built at runtime by `MergeMethod.extend`, which
-    returns `type[IntEnum]` — so a checker saw an enum with no members and
-    `ConfigLoaderMergeMethod.Deep` was an error. A member-bearing enum cannot be
-    subclassed either way, so the declaration a checker reads restates the
-    members, and this class pins it against the runtime enum.
-    """
-
-    def test_merge_method_shim_matches_runtime_enum(self):
-        import ast
-        import inspect
-
-        import yaconfiglib.loader as loader_module
-        from yaconfiglib.loader import ConfigLoaderMergeMethod
-
-        tree = ast.parse(inspect.getsource(loader_module))
-        shim = None
-        for node in tree.body:
-            if not isinstance(node, ast.If):
-                continue
-            for inner in node.body:
-                if (
-                    isinstance(inner, ast.ClassDef)
-                    and inner.name == "ConfigLoaderMergeMethod"
-                ):
-                    shim = inner
-        assert shim is not None, "no TYPE_CHECKING declaration found"
-        assert [ast.unparse(b) for b in shim.bases] == ["IntEnum"]
-
-        declared = {}
-        methods = set()
-        for statement in shim.body:
-            if isinstance(statement, ast.Assign) and isinstance(
-                statement.targets[0], ast.Name
-            ):
-                declared[statement.targets[0].id] = ast.literal_eval(statement.value)
-            elif isinstance(statement, ast.FunctionDef):
-                methods.add(statement.name)
-        # The pin: a member added at runtime must be added here too, or a
-        # checker silently stops knowing about it.
-        assert declared == {m.name: m.value for m in ConfigLoaderMergeMethod}
-        assert {"__call__", "init"} <= methods
-
-    def test_merge_hints_accept_strategy_names(self):
-        from yaconfiglib.loader import ConfigLoader
-
-        # ConfigLoader(merge="deep") is documented, and both entry points
-        # resolve a string through the enum's case-insensitive _missing_.
-        for obj in (ConfigLoader.__init__, ConfigLoader.load):
-            assert str in _flatten_union(_hints(obj)["merge"]), obj
+    def test_merge_options_hint_is_a_keyword_mapping(self):
+        members = _flatten_union(_hints(yaconfiglib.Loader.__init__)["merge_options"])
+        assert any(typing.get_args(m) == (str, typing.Any) for m in members), members
 
     def test_typed_merge_accepts_special_form_hints(self):
-        import typing
-
-        from yaconfiglib import typed_merge
-
-        hints = _hints(typed_merge)
-        # `type[T]` alone rejects the documented Optional[...] / Dict[str, int]
-        # hints, which are not classes.
-        assert hints["cls"] is typing.Any
-        assert hints["return"] is typing.Any
+        # `Type[T]` alone rejects Optional[...] and Dict[str, int], which are
+        # documented hints but not classes.
+        assert _hints(yaconfiglib.typed_merge)["cls"] is typing.Any
         get_overloads = getattr(typing, "get_overloads", None)
         if get_overloads is not None:  # 3.11+
-            assert len(get_overloads(typed_merge)) == 3
+            assert len(get_overloads(yaconfiglib.typed_merge)) == 3
 
-    def test_opaque_preserves_class_type_hint(self):
-        import typing
+    def test_hydrate_returns_the_class_type(self):
+        hints = _hints(yaconfiglib.hydrate)
+        assert typing.get_origin(hints["cls"]) is type
+        assert typing.get_args(hints["cls"]) == (hints["return"],)
 
-        from yaconfiglib import opaque
-
-        hints = _hints(opaque)
-        # Without the TypeVar, pyright erases the decorated class to `type`.
+    def test_opaque_preserves_the_class_type(self):
+        hints = _hints(yaconfiglib.opaque)
         assert hints["return"] == hints["cls"]
         assert typing.get_origin(hints["cls"]) is type
 
-    def test_merge_module_exports_typed_merge_helpers(self):
-        import yaconfiglib.utils.merge as merge_module
+    def test_merge_protocol_shape(self):
+        signature = inspect.signature(yaconfiglib.Merge.__call__)
+        kinds = {name: p.kind for name, p in signature.parameters.items()}
+        assert kinds["memo"] is inspect.Parameter.KEYWORD_ONLY
+        assert inspect.Parameter.VAR_KEYWORD in kinds.values()
+        assert type(None) in _flatten_union(_hints(yaconfiglib.Merge.__call__)["memo"])
 
-        expected = {
-            "Merge",
-            "MergeMethod",
-            "is_array",
-            "is_scalar",
-            "typed_merge",
-            "OpaqueMerge",
-            "opaque",
-            "TypedNamespace",
-        }
-        assert expected <= set(merge_module.__all__)
-        for name in expected:
-            assert getattr(merge_module, name, None) is not None, name
+
+class TestTyped:
+    def test_py_typed_is_shipped(self):
+        marker = importlib.resources.files("yaconfiglib") / "py.typed"
+        assert marker.is_file()
+
+    def test_py_typed_sits_beside_the_package(self):
+        assert pathlib.Path(yaconfiglib.__file__).with_name("py.typed").is_file()

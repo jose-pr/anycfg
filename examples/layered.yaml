@@ -1,13 +1,20 @@
-# The base layer of the layered demo in example.py.
+# The base layer of the layered demo in example.py; hiera.yaml is merged over it.
 #
-# `!load` pulls a whole document in as a value, whatever its format, and the
-# paths are relative to THIS file — so the demo runs from any directory.
-pathname:
-  stem: root
+# `!include` pulls another document in as a value, whatever its format. A
+# relative path resolves against THIS file, so the demo runs from any directory.
+app:
+  name: demo
+  root: /srv/demo
+
+# Rendered once, after the layers are merged, so it follows hiera.yaml's root.
+log_dir: "{{ app.root }}/logs"
+
+server:
+  host: localhost
+  port: 8080
 
 # A JSON document as a value.
-vscode_settings: !load settings.json
+editor: !include settings.json
 
-# An INI document as a value. Its `interpolate` key refers to a key defined
-# above, which is resolved when the merged result is interpolated.
-iniconfig: !load test.ini
+# An INI document as a value. Its `logs` option refers to `log_dir` above.
+ini: !include test.ini

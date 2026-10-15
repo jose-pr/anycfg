@@ -1,2 +1,10 @@
-'{{ pathname.stem }}': '{{ 10 }}'
-root2: '{{ dict(d=1) }}'
+# The override layer of the layered demo, deep-merged over layered.yaml.
+app:
+  root: /opt/demo
+
+server:
+  # A string here; hydration coerces it to the `int` the model annotates.
+  port: "8443"
+
+# A bare expression keeps its type: this renders to the integer 4.
+workers: "{{ 2 * 2 }}"

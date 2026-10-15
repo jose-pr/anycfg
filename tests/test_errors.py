@@ -1,403 +1,801 @@
-"""Tests for the ConfigError hierarchy and the load_error_types() catch-all.
+"""The error hierarchy, and the context a load records on an error it re-raises.
 
-The library raised bare `ValueError`/`TypeError`/`NotImplementedError`, with no
-common base, so a caller could not tell a configuration problem from a bug
-without matching message text. Every class here keeps the builtin base it raised
-before, which is what the pin test guards.
+Every condition the library reports is a `ConfigError` that also inherits the
+builtin describing the same condition; an `OSError` from reading a file is let
+through as itself. So ``except (ConfigError, OSError)`` covers every load failure.
 """
+
+from __future__ import annotations
+
+import dataclasses
+import logging
+import os
+import pickle
+import subprocess
+import sys
+import time
+import typing
 
 import pytest
 
+import yaconfiglib
+import yaconfiglib.exceptions as exceptions_module
+from _extras import needs_jinja2, needs_toml, needs_yaml
+from yaconfiglib import (
+    BudgetExceededError,
+    CommandError,
+    CommandsDisabledError,
+    CommandTimeoutError,
+    ConfigError,
+    ConfigTypeError,
+    ConfigValueError,
+    ConfinementError,
+    ErrorFrame,
+    Loader,
+    MissingDependencyError,
+    ParseError,
+    Policy,
+    PolicyError,
+    TemplateError,
+    TemplatesDisabledError,
+    UnsupportedFormatError,
+    sources,
+)
+from yaconfiglib.testing import SECRET
 
-class TestErrorHierarchy:
-    def test_config_error_exported(self):
-        import yaconfiglib
+HIERARCHY = [
+    (ConfigError, (Exception,)),
+    (ConfigValueError, (ConfigError, ValueError)),
+    (ConfigTypeError, (ConfigError, TypeError)),
+    (ParseError, (ConfigError, ValueError)),
+    (TemplateError, (ConfigError, ValueError)),
+    (UnsupportedFormatError, (ConfigError, ValueError)),
+    (MissingDependencyError, (UnsupportedFormatError, ImportError)),
+    (PolicyError, (ConfigError, PermissionError)),
+    (CommandsDisabledError, (PolicyError,)),
+    (TemplatesDisabledError, (PolicyError,)),
+    (ConfinementError, (PolicyError,)),
+    (BudgetExceededError, (PolicyError,)),
+    (CommandError, (ConfigError, subprocess.CalledProcessError)),
+    (CommandTimeoutError, (ConfigError, subprocess.TimeoutExpired)),
+]
 
-        assert issubclass(yaconfiglib.ConfigError, Exception)
 
-    def test_commands_disabled_error_is_config_and_value_error(self):
-        import yaconfiglib
-        import yaconfiglib.utils.trust
+@dataclasses.dataclass
+class Host:
+    port: int
 
-        # Same class through both import paths: `except CommandsDisabledError`
-        # written against either must match.
-        assert (
-            yaconfiglib.CommandsDisabledError
-            is yaconfiglib.utils.trust.CommandsDisabledError
+
+@dataclasses.dataclass
+class Service:
+    hosts: typing.List[Host] = dataclasses.field(default_factory=list)
+
+
+def write(directory, name, text, encoding="utf-8"):
+    path = directory / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding=encoding)
+    return path
+
+
+def python_command(code, scheme="cmd+json"):
+    return f'{scheme}://"{sys.executable}" -c "{code}"'
+
+
+def everything_said(error):
+    """Every text an error exposes: message, repr, args, attributes, chain."""
+    seen = [str(error), repr(error), repr(error.args), repr(vars(error))]
+    seen.extend(getattr(error, "__notes__", None) or ())
+    cause = error.__cause__ or error.__context__
+    while cause is not None:
+        seen.extend([str(cause), repr(cause)])
+        cause = cause.__cause__ or cause.__context__
+    return seen
+
+
+# ---------------------------------------------------------------------------
+# Hierarchy
+# ---------------------------------------------------------------------------
+
+
+class TestHierarchy:
+    @pytest.mark.parametrize(
+        "cls, bases", HIERARCHY, ids=[cls.__name__ for cls, _ in HIERARCHY]
+    )
+    def test_bases(self, cls, bases):
+        assert cls.__bases__ == bases
+
+    @pytest.mark.parametrize(
+        "cls", [cls for cls, _ in HIERARCHY], ids=lambda c: c.__name__
+    )
+    def test_every_class_is_a_config_error_exported_twice(self, cls):
+        assert issubclass(cls, ConfigError)
+        assert getattr(yaconfiglib, cls.__name__) is cls
+        assert getattr(exceptions_module, cls.__name__) is cls
+        assert cls.__name__ in yaconfiglib.__all__
+        assert cls.__name__ in exceptions_module.__all__
+
+    def test_policy_errors_are_os_errors(self):
+        for cls in (PolicyError, CommandsDisabledError, ConfinementError):
+            assert issubclass(cls, PermissionError) and issubclass(cls, OSError)
+
+    def test_error_frame(self):
+        frame = ErrorFrame("include", "a.yaml")
+        assert frame.line is None
+        assert ErrorFrame("include", "a.yaml", 3) == ("include", "a.yaml", 3)
+        assert ErrorFrame._fields == ("kind", "source", "line")
+        assert yaconfiglib.ErrorFrame is exceptions_module.ErrorFrame
+
+
+# ---------------------------------------------------------------------------
+# ParseError
+# ---------------------------------------------------------------------------
+
+
+class TestParseError:
+    def test_attributes_and_str(self):
+        error = ParseError("bad thing", path="app.yaml", lineno=3, colno=4)
+        assert (error.msg, error.path, error.lineno, error.colno) == (
+            "bad thing",
+            "app.yaml",
+            3,
+            4,
         )
-        loader = yaconfiglib.ConfigLoader(allow_commands=False)
-        with pytest.raises(yaconfiglib.ConfigError) as caught:
-            loader.load("cmd+json://echo {}")
-        assert isinstance(caught.value, yaconfiglib.CommandsDisabledError)
-        assert isinstance(caught.value, ValueError)
+        assert str(error) == "app.yaml:3:4: bad thing"
 
-    def test_unsupported_format_error_is_not_implemented_error(self, tmp_path):
-        import yaconfiglib
+    def test_str_without_a_position(self):
+        assert str(ParseError("bad")) == "bad"
+        assert str(ParseError("bad", path="a.json")) == "a.json: bad"
+        assert str(ParseError("bad", path="a.ini", lineno=7)) == "a.ini:7: bad"
 
-        source = tmp_path / "plain.xyz"
-        source.write_text("a: 1\n", encoding="utf-8")
-        with pytest.raises(yaconfiglib.UnsupportedFormatError) as caught:
-            yaconfiglib.load(str(source))
-        assert isinstance(caught.value, NotImplementedError)
+    def test_defaults_are_none(self):
+        error = ParseError("bad")
+        assert error.path is None and error.lineno is None and error.colno is None
 
-    def test_unsupported_format_message_lists_loader_names(self, tmp_path):
-        import yaconfiglib
-
-        source = tmp_path / "plain.xyz"
-        source.write_text("a: 1\n", encoding="utf-8")
-        with pytest.raises(yaconfiglib.UnsupportedFormatError) as caught:
-            yaconfiglib.load(str(source))
-        message = str(caught.value)
-        # The names are what loader= accepts, which a regex pattern was not.
-        assert "plain.xyz" in message
-        assert "json" in message and "yaml" in message
-        assert "Not reader" not in message
-
-    def test_unknown_loader_error_keeps_prefix_and_lists_names(self, tmp_path):
-        import yaconfiglib
-
-        source = tmp_path / "a.yaml"
-        source.write_text("a: 1\n", encoding="utf-8")
-        with pytest.raises(yaconfiglib.UnknownLoaderError) as caught:
-            yaconfiglib.load(str(source), loader="jsn")
-        message = str(caught.value)
-        assert isinstance(caught.value, ValueError)
-        assert message.startswith("Unknown configuration format/loader:")
-        assert "json" in message
-
-    @pytest.mark.usefixtures("needs_yaml")
-    def test_load_error_types_contents(self):
-        import configparser
-        import json
-
-        import yaml
-
-        import yaconfiglib
-
-        types = yaconfiglib.load_error_types()
-        for expected in (
-            yaconfiglib.ConfigError,
-            OSError,
-            json.JSONDecodeError,
-            configparser.Error,
-            yaml.YAMLError,
-        ):
-            assert expected in types, expected
-        # A library bug must still crash rather than read as a config error.
-        for unwanted in (ValueError, TypeError, KeyError):
-            assert unwanted not in types, unwanted
-
-    def test_builtin_except_clauses_still_match(self, tmp_path):
-        import yaconfiglib
-
-        # The pin: code written against the old bare types keeps working.
-        with pytest.raises(ValueError):
-            yaconfiglib.ConfigLoader(allow_commands=False).load("cmd+json://echo {}")
-        source = tmp_path / "plain.xyz"
-        source.write_text("a: 1\n", encoding="utf-8")
-        with pytest.raises(NotImplementedError):
-            yaconfiglib.load(str(source))
-
-    @pytest.mark.usefixtures("needs_yaml")
-    def test_include_cycle_error_is_config_value_error(self, tmp_path):
-        import yaconfiglib
-
-        (tmp_path / "a.yaml").write_text("b: !include b.yaml\n", encoding="utf-8")
-        (tmp_path / "b.yaml").write_text("a: !include a.yaml\n", encoding="utf-8")
-        with pytest.raises(yaconfiglib.ConfigValueError, match="include cycle"):
-            yaconfiglib.load(str(tmp_path / "a.yaml"))
-
-    @pytest.mark.usefixtures("needs_yaml")
-    @pytest.mark.usefixtures("needs_jinja2")
-    def test_interpolation_cycle_error_is_config_value_error(self, tmp_path):
-        import yaconfiglib
-
-        source = tmp_path / "a.yaml"
-        source.write_text('a: "{{ b }}"\nb: "{{ a }}"\n', encoding="utf-8")
-        with pytest.raises(yaconfiglib.ConfigValueError, match="reference cycle"):
-            yaconfiglib.load(str(source), interpolate=True, strict=True)
-
-    @pytest.mark.usefixtures("needs_yaml")
-    def test_flatten_member_error_is_config_type_error(self, tmp_path):
-        import yaconfiglib
-
-        source = tmp_path / "scalar.yaml"
-        source.write_text("just a string\n", encoding="utf-8")
-        with pytest.raises(yaconfiglib.ConfigTypeError, match="flatten=True"):
-            yaconfiglib.load(str(source), merge="hash", flatten=True)
-
-    def test_dotenv_strict_error_is_config_value_error(self, tmp_path):
-        import yaconfiglib
-        from yaconfiglib.backends.dotenv import DotenvBackend
-
-        source = tmp_path / ".env"
-        source.write_text('A="unterminated\n', encoding="utf-8")
-        with pytest.raises(yaconfiglib.ConfigValueError):
-            DotenvBackend(strict=True).load(str(source))
-
-    def test_env_collision_error_is_config_value_error(self, monkeypatch):
-        import yaconfiglib
-        from yaconfiglib.backends.env import EnvVarBackend
-
-        # A prefix no real environment sets, so the collision is the test's own.
-        monkeypatch.setenv("YACFGERR_DB", "1")
-        monkeypatch.setenv("YACFGERR_DB__PORT", "2")
-        backend = EnvVarBackend(prefix="YACFGERR_", nested_delimiter="__")
-        with pytest.raises(yaconfiglib.ConfigValueError):
-            backend.load(None)
-
-    @pytest.mark.usefixtures("needs_jinja2")
-    def test_j2_without_inner_extension_is_unsupported_format_error(self, tmp_path):
-        import yaconfiglib
-
-        source = tmp_path / "config.j2"
-        source.write_text("a: 1\n", encoding="utf-8")
-        with pytest.raises(yaconfiglib.UnsupportedFormatError):
-            yaconfiglib.load(str(source))
-
-
-@pytest.mark.usefixtures("needs_yaml")
-class TestSourceAttribution:
-    """A failing source names itself, without changing what callers catch.
-
-    A glob member's YAML error said `in "<unicode string>"`, an INI error said
-    only `app.ini`, a template error said `File "<unknown>"`, and an error
-    inside an included file said nothing about the file that included it. The
-    context is recorded on the exception and rendered into whichever field its
-    own `__str__` reads, so the type and identity are untouched.
-    """
-
-    def test_yaml_glob_member_error_names_file(self, tmp_path):
-        import yaconfiglib
-
-        (tmp_path / "10.yaml").write_text("a: 1\n", encoding="utf-8")
-        (tmp_path / "20.yaml").write_text("b: [unclosed\n", encoding="utf-8")
-        with pytest.raises(Exception) as caught:
-            yaconfiglib.ConfigLoader(base_dir=str(tmp_path)).load("*.yaml")
-        assert "20.yaml" in str(caught.value)
-
-    def test_yaml_reader_error_names_file(self, tmp_path):
-        import yaconfiglib
-
-        source = tmp_path / "bell.yaml"
-        source.write_bytes(b"a: \x07\n")
-        with pytest.raises(Exception) as caught:
-            yaconfiglib.load(str(source))
-        assert "bell.yaml" in str(caught.value)
-
-    def test_include_child_yaml_error_names_child_and_include_site(self, tmp_path):
-        import yaconfiglib
-
-        (tmp_path / "parent.yaml").write_text(
-            "a: 1\nchild: !include child.yaml\n", encoding="utf-8"
+    def test_pickles(self):
+        error = ParseError("bad thing", path="app.yaml", lineno=3, colno=4)
+        copy = pickle.loads(pickle.dumps(error))
+        assert type(copy) is ParseError
+        assert (copy.msg, copy.path, copy.lineno, copy.colno) == (
+            "bad thing",
+            "app.yaml",
+            3,
+            4,
         )
-        (tmp_path / "child.yaml").write_text("b: [unclosed\n", encoding="utf-8")
-        with pytest.raises(Exception) as caught:
-            yaconfiglib.load(str(tmp_path / "parent.yaml"))
-        message = str(caught.value)
-        assert "child.yaml" in message
-        assert "parent.yaml" in message
-        assert "line 2" in message
+        assert str(copy) == str(error)
 
-    def test_include_child_json_error_keeps_type_and_names_parent(self, tmp_path):
-        import json
+    @pytest.mark.usefixtures("needs_yaml")
+    def test_pickles_with_its_recorded_context(self, tmp_path):
+        write(tmp_path, "top.yaml", "a: 1\nchild: !include child.yaml\n")
+        write(tmp_path, "child.yaml", "b: [unclosed\n")
+        with pytest.raises(ParseError) as caught:
+            yaconfiglib.load(str(tmp_path / "top.yaml"))
+        copy = pickle.loads(pickle.dumps(caught.value))
+        assert copy.config_frames == caught.value.config_frames
+        assert str(copy) == str(caught.value)
 
-        import yaconfiglib
+    @pytest.mark.usefixtures("needs_yaml")
+    def test_position_is_one_based(self):
+        with pytest.raises(ParseError) as caught:
+            yaconfiglib.loads("a: 1\nb: [x\nc: 2\n", format="yaml")
+        assert caught.value.lineno >= 2
+        with pytest.raises(ParseError) as caught:
+            yaconfiglib.loads('{"a": }', format="json")
+        assert (caught.value.lineno, caught.value.colno) == (1, 7)
 
-        (tmp_path / "parent.yaml").write_text(
-            "secrets: !include secrets.json\n", encoding="utf-8"
+    def test_never_chains_the_parsers_error(self):
+        with pytest.raises(ParseError) as caught:
+            yaconfiglib.loads('{"a": }', format="json")
+        assert caught.value.__cause__ is None
+        assert caught.value.__context__ is None
+
+    def test_decode_failure_names_the_byte_offset(self, tmp_path):
+        source = tmp_path / "wide.json"
+        source.write_bytes('{"a": 1}'.encode("utf-16"))
+        with pytest.raises(ParseError) as caught:
+            yaconfiglib.load(str(source))
+        assert "byte 0" in str(caught.value)
+        assert "encoding" in str(caught.value)
+        assert caught.value.path == str(source)
+        assert caught.value.__context__ is None
+
+
+# ---------------------------------------------------------------------------
+# Command errors
+# ---------------------------------------------------------------------------
+
+
+class TestCommandError:
+    def test_is_a_called_process_error(self):
+        error = CommandError(2, "tool --flag", output="PAYLOAD", stderr="it broke\n")
+        assert isinstance(error, subprocess.CalledProcessError)
+        assert (error.returncode, error.cmd, error.output, error.stderr) == (
+            2,
+            "tool --flag",
+            "PAYLOAD",
+            "it broke\n",
         )
-        (tmp_path / "secrets.json").write_text('{"a": }\n', encoding="utf-8")
-        with pytest.raises(json.JSONDecodeError) as caught:
-            yaconfiglib.load(str(tmp_path / "parent.yaml"))
+
+    def test_message_carries_stderr_and_never_stdout(self):
+        error = CommandError(2, "tool", output="PAYLOAD-" + SECRET, stderr="it broke\n")
+        message = str(error)
+        assert "returned non-zero exit status 2" in message
+        assert "it broke" in message
+        assert SECRET not in message
+
+    def test_stderr_tail_is_the_last_twenty_lines(self):
+        stderr = "".join(f"line {n}\n" for n in range(50))
+        message = str(CommandError(1, "tool", stderr=stderr))
+        assert "line 49" in message and "line 30" in message
+        assert "line 29" not in message
+
+    def test_stderr_tail_is_capped(self):
+        message = str(CommandError(1, "tool", stderr="x" * 10000))
+        assert len(message) < 2200
+        assert "..." in message
+
+    def test_bytes_stderr_is_decoded(self):
+        message = str(CommandError(1, "tool", stderr=b"bytes went wrong\n"))
+        assert "bytes went wrong" in message
+
+    def test_no_stderr_no_suffix(self):
+        assert "stderr" not in str(CommandError(1, "tool", stderr=""))
+
+    def test_pickles(self):
+        error = CommandError(2, "tool", output="out", stderr="err\n")
+        copy = pickle.loads(pickle.dumps(error))
+        assert type(copy) is CommandError
+        assert (copy.returncode, copy.cmd, copy.output, copy.stderr) == (
+            2,
+            "tool",
+            "out",
+            "err\n",
+        )
+        assert str(copy) == str(error)
+
+
+class TestCommandTimeoutError:
+    def test_is_a_timeout_expired(self):
+        error = CommandTimeoutError("tool", 1.5, output=b"x", stderr=b"err")
+        assert isinstance(error, subprocess.TimeoutExpired)
+        assert (error.cmd, error.timeout) == ("tool", 1.5)
+        assert "timed out after 1.5 seconds" in str(error)
+        assert "err" in str(error)
+
+    def test_pickles(self):
+        error = CommandTimeoutError("tool", 1.5, stderr="err")
+        copy = pickle.loads(pickle.dumps(error))
+        assert type(copy) is CommandTimeoutError
+        assert (copy.cmd, copy.timeout) == ("tool", 1.5)
+        assert str(copy) == str(error)
+
+
+class TestCommandFailuresThroughTheLoader:
+    def test_non_zero_exit(self):
+        # The payload is computed, so the command line itself never holds it.
+        command = python_command(
+            "import sys; print(str(7 * 191) + 'xyzzy'[::-1]);"
+            " sys.stderr.write('boom happened\\n'); sys.exit(3)"
+        )
+        loader = Loader(policy=Policy(allow_commands=True))
+        with pytest.raises(CommandError) as caught:
+            loader.load(command)
         error = caught.value
-        assert type(error) is json.JSONDecodeError
-        assert error.config_source.endswith("secrets.json")
-        assert error.config_frames[0].kind == "include"
-        assert "parent.yaml" in str(error)
+        assert error.returncode == 3
+        assert "boom happened" in str(error)
+        assert error.output.strip() == "1337yzzyx"
+        assert "1337yzzyx" not in str(error)
+        assert error.config_source == command
 
-    def test_json_error_names_source(self, tmp_path):
-        import json
+    def test_timeout(self):
+        command = python_command("import time; time.sleep(15)")
+        loader = Loader(policy=Policy(allow_commands=True, command_timeout=1))
+        started = time.perf_counter()
+        with pytest.raises(CommandTimeoutError) as caught:
+            loader.load(command)
+        assert time.perf_counter() - started < 10
+        assert isinstance(caught.value, subprocess.TimeoutExpired)
 
-        import yaconfiglib
 
-        source = tmp_path / "bad.json"
-        source.write_text('{"a": }\n', encoding="utf-8")
-        with pytest.raises(json.JSONDecodeError) as caught:
-            yaconfiglib.load(str(source))
-        assert "bad.json" in str(caught.value)
+# ---------------------------------------------------------------------------
+# Context
+# ---------------------------------------------------------------------------
 
-    def test_toml_error_names_source(self, tmp_path, request):
-        import yaconfiglib
 
-        request.getfixturevalue("needs_toml")
-        source = tmp_path / "bad.toml"
-        source.write_text("a = =\n", encoding="utf-8")
-        with pytest.raises(Exception) as caught:
-            yaconfiglib.load(str(source))
-        assert "bad.toml" in str(caught.value)
-
-    def test_ini_parse_error_names_full_path(self, tmp_path):
-        import yaconfiglib
-
-        source = tmp_path / "app.ini"
-        source.write_text("key = value\n", encoding="utf-8")  # no section header
-        with pytest.raises(Exception) as caught:
-            yaconfiglib.load(str(source))
-        message = str(caught.value)
-        # The full path, not the bare basename: two app.ini files in a glob
-        # have to be distinguishable.
-        assert str(source) in message or source.as_posix() in message
-
-    def test_ini_interpolation_error_names_source(self, tmp_path):
-        import yaconfiglib
-
-        nested = tmp_path / "sub" / "a"
-        nested.mkdir(parents=True)
-        source = nested / "app.ini"
-        source.write_text("[s]\nk = %(missing)s\n", encoding="utf-8")
-        with pytest.raises(Exception) as caught:
-            yaconfiglib.load(str(source))
-        message = str(caught.value)
-        assert str(source) in message or source.as_posix() in message
-
-    def test_utf16_file_error_names_file_and_encoding(self, tmp_path):
-        import yaconfiglib
-
-        source = tmp_path / "wide.yaml"
-        source.write_bytes("a: 1\n".encode("utf-16"))
-        with pytest.raises(UnicodeDecodeError) as caught:
-            yaconfiglib.load(str(source))
-        message = str(caught.value)
-        assert "wide.yaml" in message
-        assert "utf-16" in message
-
-    def test_missing_include_names_including_file(self, tmp_path):
-        import yaconfiglib
-
-        (tmp_path / "parent.yaml").write_text(
-            "missing: !include nope/x.yaml\n", encoding="utf-8"
+class TestContextRendering:
+    def test_every_part(self):
+        error = ConfigValueError("bad value")
+        error.config_source = "a.yaml"
+        error.config_frames = (
+            ErrorFrame("include", "b.yaml", 3),
+            ErrorFrame("render", "t.yaml.j2"),
+            ErrorFrame("merge", "c.yaml"),
         )
-        with pytest.raises(FileNotFoundError) as caught:
-            yaconfiglib.load(str(tmp_path / "parent.yaml"))
-        assert "parent.yaml" in str(caught.value)
-
-    def test_include_mapping_without_pathname_raises_constructor_error(self, tmp_path):
-        import yaml
-
-        import yaconfiglib
-
-        (tmp_path / "parent.yaml").write_text(
-            "child: !include {encoding: utf-8}\n", encoding="utf-8"
+        error.config_key = ("a", "b", 0)
+        error.config_model = "Model"
+        assert str(error) == (
+            "bad value [in a.yaml; included from b.yaml, line 3; rendered from "
+            "t.yaml.j2; while merging c.yaml; at a.b[0] (Model)]"
         )
-        with pytest.raises(yaml.constructor.ConstructorError) as caught:
-            yaconfiglib.load(str(tmp_path / "parent.yaml"))
-        assert "pathname" in str(caught.value)
 
-    def test_include_empty_sequence_raises_constructor_error(self, tmp_path):
-        import yaml
+    def test_partial_records(self):
+        error = ConfigValueError("bad")
+        assert str(error) == "bad"
+        error.config_frames = (ErrorFrame("include", "b.yaml"),)
+        assert str(error) == "bad [included from b.yaml]"
+        error.config_key = ("k",)
+        assert str(error) == "bad [included from b.yaml; at k]"
+        error.config_key = None
+        error.config_model = "Model"
+        assert str(error) == "bad [included from b.yaml; (Model)]"
 
-        import yaconfiglib
+    def test_render_frame_of_the_source_itself(self):
+        error = ConfigValueError("bad")
+        error.config_source = "t.yaml.j2"
+        error.config_frames = (ErrorFrame("render", "t.yaml.j2"),)
+        assert str(error) == "bad [in t.yaml.j2; rendered]"
 
-        (tmp_path / "parent.yaml").write_text("child: !include []\n", encoding="utf-8")
-        with pytest.raises(yaml.constructor.ConstructorError):
-            yaconfiglib.load(str(tmp_path / "parent.yaml"))
+    def test_rendering_follows_the_record(self):
+        error = ConfigValueError("bad")
+        error.config_key = ("a",)
+        assert str(error) == "bad [at a]"
+        error.config_key = ("b",)
+        assert str(error) == "bad [at b]"
+        assert str(error) == str(error)
 
-    def test_tag_constructor_route_validates_forms(self, tmp_path):
-        import yaml
+    @pytest.mark.usefixtures("needs_yaml")
+    def test_nested_includes_innermost_first(self, tmp_path):
+        top = write(tmp_path, "top.yaml", "a: 1\nmid: !include mid.yaml\n")
+        mid = write(tmp_path, "mid.yaml", "x: 1\ny: 2\nleaf: !include leaf.yaml\n")
+        leaf = write(tmp_path, "leaf.yaml", "b: [unclosed\n")
+        with pytest.raises(ParseError) as caught:
+            yaconfiglib.load(str(top))
+        error = caught.value
+        assert error.config_source == str(leaf)
+        assert error.config_frames == (
+            ErrorFrame("include", str(mid), 3),
+            ErrorFrame("include", str(top), 2),
+        )
+        assert str(error).endswith(
+            f"[included from {mid}, line 3; included from {top}, line 2]"
+        )
 
-        import yaconfiglib
+    @pytest.mark.usefixtures("needs_yaml")
+    def test_recorded_once_at_every_level(self, tmp_path):
+        write(tmp_path, "top.yaml", "mid: !include mid.yaml\n")
+        write(tmp_path, "mid.yaml", "leaf: !include leaf.yaml\n")
+        write(tmp_path, "leaf.yaml", "b: [unclosed\n")
+        with pytest.raises(ParseError) as caught:
+            Loader(base_dir=tmp_path).load("top.yaml")
+        message = str(caught.value)
+        suffix = message[message.rindex("[") :]
+        # The innermost file is the ParseError's own path, so the suffix does
+        # not repeat it; each including file appears once.
+        assert "leaf.yaml" not in suffix
+        assert suffix.count("mid.yaml") == 1
+        assert suffix.count("top.yaml") == 1
+        assert str(caught.value) == message
 
-        # The other route into the include forms: a backend instance registered
-        # by hand as a PyYAML constructor.
-        class Owned(yaml.SafeLoader):
-            pass
+    @pytest.mark.usefixtures("needs_yaml")
+    def test_same_object_offered_once_per_level(self, tmp_path):
+        write(tmp_path, "top.yaml", "mid: !include mid.yaml\n")
+        write(tmp_path, "mid.yaml", "leaf: !include leaf.yaml\n")
+        write(tmp_path, "leaf.yaml", "b: [unclosed\n")
+        events = []
 
-        backend = yaconfiglib.ConfigLoader().loader_factory(tmp_path / "x.yaml")
-        Owned.add_constructor("!include", backend)
-        with pytest.raises(yaml.constructor.ConstructorError) as caught:
-            yaml.load("child: !include {encoding: utf-8}\n", Owned)
-        assert "pathname" in str(caught.value)
+        def record(event):
+            events.append((event.phase, str(event.error)))
+            return False
 
-    def test_j2_template_error_names_template(self, tmp_path, request):
-        import yaconfiglib
+        with pytest.raises(ParseError) as caught:
+            Loader(base_dir=tmp_path, on_error=record).load("top.yaml")
+        assert [phase for phase, _ in events] == ["load", "include", "include"]
+        # Each offer re-renders from the record: one more frame, never a copy.
+        for _phase, message in events:
+            assert message.count("mid.yaml") <= 1
+            assert message.count("top.yaml") <= 1
+        assert events[-1][1] == str(caught.value)
 
-        request.getfixturevalue("needs_jinja2")
-        source = tmp_path / "tpl.yaml.j2"
-        source.write_text("a: {{ 1 +\n", encoding="utf-8")
-        with pytest.raises(Exception) as caught:
-            yaconfiglib.load(str(source))
-        assert str(getattr(caught.value, "filename", "")).endswith("tpl.yaml.j2")
-        assert "tpl.yaml.j2" in str(caught.value)
+    @pytest.mark.usefixtures("needs_yaml")
+    def test_include_of_another_format_names_the_including_file(self, tmp_path):
+        parent = write(tmp_path, "parent.yaml", "secrets: !include secrets.json\n")
+        child = write(tmp_path, "secrets.json", '{"a": }\n')
+        with pytest.raises(ParseError) as caught:
+            yaconfiglib.load(str(parent))
+        assert caught.value.path == str(child)
+        assert caught.value.config_frames[0] == ErrorFrame("include", str(parent), 1)
+        assert f"included from {parent}, line 1" in str(caught.value)
 
-    def test_j2_rendered_document_error_names_template(self, tmp_path, request):
-        import yaconfiglib
+    def test_glob_member_names_itself(self, tmp_path):
+        write(tmp_path, "10.json", '{"a": 1}')
+        write(tmp_path, "20.json", '{"b": [}')
+        with pytest.raises(ParseError) as caught:
+            Loader(base_dir=tmp_path).load("*.json")
+        assert "20.json" in str(caught.value)
 
-        request.getfixturevalue("needs_jinja2")
-        source = tmp_path / "tpl.yaml.j2"
-        source.write_text("a: [x\n", encoding="utf-8")
-        with pytest.raises(Exception) as caught:
-            yaconfiglib.load(str(source))
-        kinds = [frame.kind for frame in getattr(caught.value, "config_frames", ())]
-        assert "render" in kinds
-        assert "tpl.yaml.j2" in str(caught.value)
-
-    def test_merge_error_names_source(self, tmp_path):
-        import yaconfiglib
-
-        (tmp_path / "a.yaml").write_text("a: 1\n", encoding="utf-8")
-        (tmp_path / "b.yaml").write_text("b: 2\n", encoding="utf-8")
+    def test_merge_failure_names_the_source(self, tmp_path):
+        write(tmp_path, "a.json", '{"a": 1}')
+        write(tmp_path, "b.json", '{"b": 2}')
 
         def broken(a, b, **options):
             raise TypeError("no merging today")
 
-        loader = yaconfiglib.ConfigLoader(base_dir=str(tmp_path))
         with pytest.raises(TypeError) as caught:
-            loader.load("a.yaml", "b.yaml", merge=broken)
-        message = str(caught.value)
-        # A plain function has no init(), so the first document is taken as-is
-        # and the strategy is first called for the second source.
-        assert "b.yaml" in message
-        kinds = [frame.kind for frame in getattr(caught.value, "config_frames", ())]
-        assert "merge" in kinds
+            Loader(base_dir=tmp_path, merge=broken).load("a.json", "b.json")
+        error = caught.value
+        assert type(error) is TypeError
+        assert error.config_frames == (ErrorFrame("merge", str(tmp_path / "b.json")),)
+        assert str(error) == f"no merging today [while merging {tmp_path / 'b.json'}]"
 
-    def test_error_type_and_identity_preserved(self, tmp_path):
-        import json
+    def test_key_and_model_from_hydration(self):
+        with pytest.raises(ConfigError) as caught:
+            Loader().load({"hosts": [{"port": "nope"}]}, into=Service)
+        error = caught.value
+        assert error.config_key == ("hosts", 0, "port")
+        assert error.config_model == "Service"
+        assert str(error).endswith("[at hosts[0].port (Service)]")
 
-        import yaconfiglib
+    def test_type_and_identity_preserved(self, tmp_path):
+        write(tmp_path, "bad.json", '{"a": }')
+        offered = []
 
-        seen = []
-
-        def record(error, **context):
-            seen.append(error)
+        def record(event):
+            offered.append(event.error)
             return False
 
-        source = tmp_path / "bad.json"
-        source.write_text('{"a": }\n', encoding="utf-8")
-        with pytest.raises(json.JSONDecodeError) as caught:
-            yaconfiglib.load(str(source), ignore_error=record)
-        # The pin: a predicate receives the very object that is raised, of the
-        # parser's own type.
-        assert seen[-1] is caught.value
-        assert type(caught.value) is json.JSONDecodeError
+        with pytest.raises(ParseError) as caught:
+            Loader(base_dir=tmp_path, on_error=record).load("bad.json")
+        assert offered[-1] is caught.value
+        assert type(caught.value) is ParseError
 
-    def test_nested_context_rendered_once(self, tmp_path):
-        import yaconfiglib
 
-        (tmp_path / "top.yaml").write_text("mid: !include mid.yaml\n", encoding="utf-8")
-        (tmp_path / "mid.yaml").write_text(
-            "leaf: !include leaf.yaml\n", encoding="utf-8"
-        )
-        (tmp_path / "leaf.yaml").write_text("b: [unclosed\n", encoding="utf-8")
-        with pytest.raises(Exception) as caught:
-            yaconfiglib.load(str(tmp_path / "top.yaml"))
+class TestOSErrorIsNotWrapped:
+    def test_missing_file(self, tmp_path):
+        source = tmp_path / "nope.json"
+        with pytest.raises(FileNotFoundError) as caught:
+            yaconfiglib.load(str(source))
+        error = caught.value
+        assert type(error) is FileNotFoundError
+        assert not isinstance(error, ConfigError)
+        assert error.config_source == str(source)
+        assert error.filename == str(source)
+
+    @pytest.mark.usefixtures("needs_yaml")
+    def test_missing_include_names_the_including_file(self, tmp_path):
+        parent = write(tmp_path, "parent.yaml", "missing: !include nope/x.yaml\n")
+        with pytest.raises(FileNotFoundError) as caught:
+            yaconfiglib.load(str(parent))
+        error = caught.value
+        assert type(error) is FileNotFoundError
+        assert error.errno is not None
+        assert f"included from {parent}, line 1" in str(error)
+
+    @pytest.mark.usefixtures("needs_yaml")
+    def test_nested_missing_include_recorded_once(self, tmp_path):
+        write(tmp_path, "top.yaml", "mid: !include mid.yaml\n")
+        write(tmp_path, "mid.yaml", "x: !include nope.yaml\n")
+        with pytest.raises(FileNotFoundError) as caught:
+            Loader(base_dir=tmp_path).load("top.yaml")
         message = str(caught.value)
-        suffix = message[message.rindex("[") :]
-        # The suffix is re-rendered from the record each time, never appended
-        # twice: each include site appears once, and the innermost file — which
-        # PyYAML's own marks already name — is not repeated there at all.
-        assert "leaf.yaml" not in suffix
-        assert suffix.count("mid.yaml") == 1
-        assert suffix.count("top.yaml") == 1
-        kinds = [frame.kind for frame in getattr(caught.value, "config_frames", ())]
-        assert kinds.count("include") == 2
+        assert message.count("mid.yaml") == 1
+        assert message.count("top.yaml") == 1
+        assert str(caught.value) == message
+
+
+# ---------------------------------------------------------------------------
+# One except clause for every load failure
+# ---------------------------------------------------------------------------
+
+
+def _write_and_load(name, text, **settings):
+    def run(tmp_path):
+        write(tmp_path, name, text)
+        return Loader(base_dir=tmp_path, **settings).load(name)
+
+    return run
+
+
+def _include_cycle(tmp_path):
+    write(tmp_path, "a.yaml", "b: !include b.yaml\n")
+    write(tmp_path, "b.yaml", "a: !include a.yaml\n")
+    return Loader(base_dir=tmp_path).load("a.yaml")
+
+
+def _confined(tmp_path):
+    write(tmp_path, "outside.json", "{}")
+    (tmp_path / "inside").mkdir()
+    policy = Policy(confine_to=[str(tmp_path / "inside")])
+    return Loader(base_dir=tmp_path, policy=policy).load("outside.json")
+
+
+def _too_many_includes(tmp_path):
+    write(tmp_path, "inc.yaml", "v: 1\n")
+    write(tmp_path, "app.yaml", "a: !include inc.yaml\nb: !include inc.yaml\n")
+    return Loader(base_dir=tmp_path, policy=Policy(max_includes=1)).load("app.yaml")
+
+
+def _too_deep(tmp_path):
+    write(tmp_path, "a.yaml", "b: !include b.yaml\n")
+    write(tmp_path, "b.yaml", "c: !include c.yaml\n")
+    write(tmp_path, "c.yaml", "v: 1\n")
+    return Loader(base_dir=tmp_path, policy=Policy(max_depth=2)).load("a.yaml")
+
+
+def _directory(tmp_path):
+    (tmp_path / "conf.json").mkdir()
+    return Loader(base_dir=tmp_path).load("conf.json")
+
+
+def _utf16(tmp_path):
+    (tmp_path / "wide.json").write_bytes('{"a": 1}'.encode("utf-16"))
+    return Loader(base_dir=tmp_path).load("wide.json")
+
+
+def _hydrate(tmp_path):
+    return Loader().load({"hosts": [{"port": "not a number"}]}, into=Service)
+
+
+LOAD_FAILURES = [
+    pytest.param(lambda p: Loader(base_dir=p).load("nope.json"), id="missing-file"),
+    pytest.param(_directory, id="directory"),
+    pytest.param(_write_and_load("a.xyz", "a"), id="unsupported-format"),
+    pytest.param(_utf16, id="decode"),
+    pytest.param(_write_and_load("a.json", '{"a": }'), id="json"),
+    pytest.param(_write_and_load("a.yaml", "a: [x\n"), id="yaml", marks=needs_yaml),
+    pytest.param(
+        _write_and_load("a.yaml", "a: 1\na: 2\n"), id="yaml-duplicate", marks=needs_yaml
+    ),
+    pytest.param(
+        lambda p: yaconfiglib.load(str(write(p, "a.yaml", "a: 1\n---\nb: 2\n"))),
+        id="yaml-multi-document",
+        marks=needs_yaml,
+    ),
+    pytest.param(_write_and_load("a.toml", "a = =\n"), id="toml", marks=needs_toml),
+    pytest.param(_write_and_load("a.ini", "k = v\n"), id="ini"),
+    pytest.param(
+        _write_and_load("a.ini", "[s]\nk = %(nope)s\n"), id="ini-interpolation"
+    ),
+    pytest.param(_write_and_load("a.env", 'K="open\n'), id="dotenv"),
+    pytest.param(_include_cycle, id="include-cycle", marks=needs_yaml),
+    pytest.param(
+        _write_and_load("a.yaml", "x: !include nope.yaml\n"),
+        id="missing-include",
+        marks=needs_yaml,
+    ),
+    pytest.param(
+        _write_and_load(
+            "a.yaml", "x: !include a.json\n", policy=Policy(allow_includes=False)
+        ),
+        id="includes-disabled",
+        marks=needs_yaml,
+    ),
+    pytest.param(
+        _write_and_load("a.yaml", "x: !include {encoding: utf-8}\n"),
+        id="include-without-pathname",
+        marks=needs_yaml,
+    ),
+    pytest.param(_confined, id="confinement"),
+    pytest.param(
+        _write_and_load(
+            "a.json", '{"a": "' + "x" * 100 + '"}', policy=Policy(max_bytes=10)
+        ),
+        id="max-bytes",
+    ),
+    pytest.param(_too_many_includes, id="max-includes", marks=needs_yaml),
+    pytest.param(_too_deep, id="max-depth", marks=needs_yaml),
+    pytest.param(
+        lambda p: Loader().load(python_command("print(1)")), id="commands-disabled"
+    ),
+    pytest.param(
+        lambda p: Loader(policy=Policy(allow_commands=True)).load(
+            python_command("import sys; sys.exit(3)")
+        ),
+        id="command-exit",
+    ),
+    pytest.param(
+        lambda p: Loader(policy=Policy(allow_commands=True)).load(
+            python_command("print(1)", scheme="cmd")
+        ),
+        id="command-without-format",
+    ),
+    pytest.param(
+        _write_and_load("a.json.j2", "{}"), id="templates-disabled", marks=needs_jinja2
+    ),
+    pytest.param(
+        _write_and_load("a.json.j2", "{{ 1 +", policy=Policy(allow_templates=True)),
+        id="template-render",
+        marks=needs_jinja2,
+    ),
+    pytest.param(
+        lambda p: Loader(interpolate=True).load({"a": "{{ 1/0 }}"}),
+        id="interpolation",
+        marks=needs_jinja2,
+    ),
+    pytest.param(
+        lambda p: Loader(interpolate=True, policy=Policy(strict=True)).load(
+            {"a": "{{ b }}", "b": "{{ a }}"}
+        ),
+        id="interpolation-cycle",
+        marks=needs_jinja2,
+    ),
+    pytest.param(
+        lambda p: Loader(interpolate=True).load({"a": 1, "{{ 'a' }}": 2}),
+        id="interpolation-key-collision",
+        marks=needs_jinja2,
+    ),
+    pytest.param(lambda p: Loader().load({"a": 1}, flatten=True), id="flatten"),
+    pytest.param(
+        lambda p: Loader().load(
+            sources.Env("P_", nested="__", environ={"P_DB": "1", "P_DB__PORT": "2"})
+        ),
+        id="env-collision",
+    ),
+    pytest.param(_hydrate, id="hydrate"),
+    pytest.param(
+        lambda p: yaconfiglib.loads(
+            "not an assignment\n", format="dotenv", strict=True
+        ),
+        id="dotenv-strict",
+    ),
+]
+
+
+@pytest.mark.parametrize("failing_load", LOAD_FAILURES)
+def test_one_clause_covers_every_load_failure(tmp_path, failing_load):
+    with pytest.raises((ConfigError, OSError)):
+        failing_load(tmp_path)
+
+
+class TestSpecificTypes:
+    @pytest.mark.usefixtures("needs_yaml")
+    def test_include_cycle_is_a_config_value_error(self, tmp_path):
+        with pytest.raises(ConfigValueError, match="include cycle"):
+            _include_cycle(tmp_path)
+
+    def test_flatten_member_is_a_config_type_error(self):
+        with pytest.raises(ConfigTypeError, match="flatten=True"):
+            Loader().load({"a": 1}, flatten=True)
+
+    def test_env_collision_is_a_config_value_error(self):
+        source = sources.Env(
+            "P_", nested="__", environ={"P_DB": "1", "P_DB__PORT": "2"}
+        )
+        with pytest.raises(ConfigValueError) as caught:
+            Loader().load(source)
+        assert "P_DB" in str(caught.value) and "P_DB__PORT" in str(caught.value)
+
+    def test_unsupported_format_lists_the_names_before_opening(self, tmp_path):
+        source = tmp_path / "plain.xyz"  # never created
+        with pytest.raises(UnsupportedFormatError) as caught:
+            yaconfiglib.load(str(source))
+        message = str(caught.value)
+        assert "plain.xyz" in message
+        assert "json" in message and "ini" in message
+
+    @pytest.mark.usefixtures("needs_yaml")
+    @pytest.mark.parametrize(
+        "text, words",
+        [
+            ("child: !include {encoding: utf-8}\n", "pathname"),
+            ("child: !include []\n", "at least one"),
+        ],
+    )
+    def test_malformed_include_is_a_parse_error_naming_the_line(
+        self, tmp_path, text, words
+    ):
+        parent = write(tmp_path, "parent.yaml", "a: 1\n" + text)
+        with pytest.raises(ParseError) as caught:
+            yaconfiglib.load(str(parent))
+        assert words in str(caught.value)
+        assert caught.value.lineno == 2
+        assert caught.value.path == str(parent)
+
+    def test_missing_extra_is_a_missing_dependency_error(self, tmp_path):
+        source = write(tmp_path, "a.yaml", "a: 1\n")
+        package_root = os.path.dirname(
+            os.path.dirname(os.path.abspath(yaconfiglib.__file__))
+        )
+        code = (
+            "import sys\n"
+            f"sys.path.insert(0, {package_root!r})\n"
+            "sys.modules['yaml'] = None\n"
+            "import yaconfiglib\n"
+            "try:\n"
+            f"    yaconfiglib.load({str(source)!r})\n"
+            "except (yaconfiglib.ConfigError, OSError) as error:\n"
+            "    print(type(error).__name__, isinstance(error, ImportError),\n"
+            "          isinstance(error, yaconfiglib.UnsupportedFormatError), error)\n"
+        )
+        done = subprocess.run(
+            [sys.executable, "-c", code], capture_output=True, text=True, timeout=60
+        )
+        assert "MissingDependencyError True True" in done.stdout, (
+            done.stdout + done.stderr
+        )
+        assert "yaconfiglib[yaml]" in done.stdout
+
+
+class TestWrongArgumentsArePlainErrors:
+    @pytest.mark.parametrize(
+        "call, expected",
+        [
+            pytest.param(lambda: Loader(collect="bogus"), ValueError, id="collect"),
+            pytest.param(
+                lambda: Loader(merge="no-such-strategy"), ValueError, id="merge"
+            ),
+            pytest.param(lambda: Loader(merge=42), TypeError, id="merge-type"),
+            pytest.param(lambda: Loader(on_error="yes"), TypeError, id="on_error"),
+            pytest.param(lambda: Loader().load(), TypeError, id="no-sources"),
+            pytest.param(lambda: Loader().load({"a": 1}, bogus=1), TypeError, id="kw"),
+            pytest.param(lambda: yaconfiglib.load(None), TypeError, id="load-none"),
+            pytest.param(lambda: yaconfiglib.load(""), ValueError, id="load-empty"),
+            pytest.param(lambda: yaconfiglib.load(b"{}"), TypeError, id="load-bytes"),
+        ],
+    )
+    def test_not_config_errors(self, call, expected):
+        with pytest.raises(expected) as caught:
+            call()
+        assert not isinstance(caught.value, ConfigError)
+
+
+# ---------------------------------------------------------------------------
+# No document text in a parse error
+# ---------------------------------------------------------------------------
+
+MALFORMED = [
+    pytest.param("json", '{"k": "{secret}", }', id="json-trailing-comma"),
+    pytest.param("json", '{"k": {secret}}', id="json-bare-word"),
+    pytest.param(
+        "yaml", "k: {secret}\n  bad: [x\n", id="yaml-mapping", marks=needs_yaml
+    ),
+    pytest.param("yaml", "k: [{secret}\n", id="yaml-flow", marks=needs_yaml),
+    pytest.param("yaml", "k: 1\nk: {secret}\n", id="yaml-duplicate", marks=needs_yaml),
+    pytest.param("yaml", "k: \x07{secret}\n", id="yaml-reader", marks=needs_yaml),
+    pytest.param("toml", "k = {secret}\n", id="toml-value", marks=needs_toml),
+    pytest.param(
+        "toml", 'k = "x"\nk = "{secret}"\n', id="toml-duplicate", marks=needs_toml
+    ),
+    pytest.param("ini", "{secret} = 1\n", id="ini-no-section"),
+    pytest.param("ini", "[s]\nk = 1\nk = {secret}\n", id="ini-duplicate-option"),
+    pytest.param("ini", "[s]\nk = %({secret})s\n", id="ini-interpolation"),
+    pytest.param("dotenv", 'K="{secret}\n', id="dotenv-unterminated"),
+]
+
+
+@pytest.mark.parametrize("format_name, template", MALFORMED)
+def test_no_document_text_in_a_parse_error(tmp_path, caplog, format_name, template):
+    text = template.replace("{secret}", SECRET)
+    suffix = {"dotenv": ".env"}.get(format_name, "." + format_name)
+    source = write(tmp_path, "doc" + suffix, text)
+    caplog.set_level(logging.DEBUG)
+    for attempt in (
+        lambda: yaconfiglib.loads(text, format=format_name),
+        lambda: yaconfiglib.load(str(source)),
+    ):
+        with pytest.raises(ParseError) as caught:
+            attempt()
+        error = caught.value
+        assert error.__cause__ is None and error.__context__ is None
+        assert not [said for said in everything_said(error) if SECRET in said]
+    # A skipped failure is logged; the log must not quote the document either.
+    assert Loader(base_dir=tmp_path, on_error=True).load("doc" + suffix) is None
+    assert not [r for r in caplog.records if SECRET in r.getMessage()]
+
+
+def test_no_document_text_from_a_strict_dotenv_line(caplog):
+    caplog.set_level(logging.DEBUG)
+    with pytest.raises(ParseError) as caught:
+        yaconfiglib.loads(f"{SECRET}\n", format="dotenv", strict=True)
+    assert caught.value.lineno == 1
+    assert not [said for said in everything_said(caught.value) if SECRET in said]
+    yaconfiglib.loads(f"{SECRET}\n", format="dotenv")
+    assert not [r for r in caplog.records if SECRET in r.getMessage()]
+
+
+@pytest.mark.usefixtures("needs_yaml")
+def test_no_document_text_from_an_included_document(tmp_path):
+    write(tmp_path, "app.yaml", "x: !include child.json\n")
+    write(tmp_path, "child.json", '{"k": ' + SECRET + "}")
+    with pytest.raises(ParseError) as caught:
+        Loader(base_dir=tmp_path).load("app.yaml")
+    assert not [said for said in everything_said(caught.value) if SECRET in said]

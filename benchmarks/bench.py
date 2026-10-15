@@ -20,14 +20,18 @@ from pathlib import Path as StdlibPath
 # Add src to sys.path so the benchmark can run from a checkout.
 sys.path.insert(0, str(StdlibPath(__file__).parent.parent / "src"))
 
-from jinja2 import Environment
+from yaconfiglib import DotAccessibleDict, Loader, TemplateInterpolator
+from yaconfiglib._merge import deep
+from yaconfiglib._paths import has_glob_pattern, resolve
+from yaconfiglib._templating import interpolate_document
+from yaconfiglib.sources import Env, Text
 
-from yaconfiglib.backends.python_backend import PythonBackend
-from yaconfiglib.loader import ConfigLoader, ConfigLoaderMergeMethod, DotAccessibleDict
-from yaconfiglib.backends.env import EnvVarBackend
-from yaconfiglib.utils import jinja2
-from yaconfiglib.utils.merge import MergeMethod
-from yaconfiglib.utils.source import has_glob_pattern, parse_sources
+
+def parse_sources(sources, base_dir):
+    """Resolve without reading, as the loader does before it opens anything."""
+    from pathapi import LocalPath
+
+    return resolve(sources, base_dir=LocalPath(str(base_dir)), recursive=False)
 
 
 BenchmarkRows = list[tuple[str, object]]
@@ -116,7 +120,7 @@ def benchmark_sources() -> BenchmarkRows:
             "a.yaml",
             ["b.yaml", "c.yaml"],
             "cmd+json://python -c \"print('{}')\"",
-            "#!.yaml\ninline: true\n",
+            Text("inline: true\n", format="yaml"),
             io.StringIO("stream: true\n"),
         ]
 
@@ -154,7 +158,7 @@ def benchmark_sources() -> BenchmarkRows:
         command_path = next(parse_sources(['cmd+json://echo {"x":[1]}'], base_dir=root))
         rows.append(("duplicate path behavior", f"{duplicate_count} yielded path(s)"))
         rows.append(("nested iterable behavior", f"{nested_count} yielded path(s)"))
-        rows.append(("command glob metacharacter behavior", str(command_path)))
+        rows.append(("command glob metacharacter behavior", command_path[1].name))
 
     normal = StdlibPath("normal/path/to/file.yaml")
     globbed = StdlibPath("glob/path/**/*.yaml")
@@ -193,21 +197,18 @@ def benchmark_merge() -> BenchmarkRows:
     def deep_merge_many(mergelists: bool) -> None:
         for _ in range(1_000):
             base, overlay = make_pair()
-            MergeMethod.Deep(base, overlay, mergelists=mergelists)
+            deep(base, overlay, mergelists=mergelists)
 
-    result = MergeMethod.Deep(
+    result = deep(
         {"items": [{"name": "a", "enabled": False}]},
         {"items": [{"name": "a", "enabled": True}]},
         mergelists=True,
     )
 
-    loader = ConfigLoader(
-        merge=ConfigLoaderMergeMethod.Deep,
-        merge_options={"mergelists": True},
-    )
+    loader = Loader(merge="deep", merge_options={"mergelists": True})
     docs = (
-        "#!.yaml\nitems:\n  - name: api\n    enabled: false\n",
-        "#!.yaml\nitems:\n  - name: api\n    enabled: true\n",
+        Text("items:\n  - name: api\n    enabled: false\n", format="yaml"),
+        Text("items:\n  - name: api\n    enabled: true\n", format="yaml"),
     )
 
     def load_merge_options_many() -> None:
@@ -232,7 +233,7 @@ def benchmark_merge() -> BenchmarkRows:
 
 
 def benchmark_jinja() -> BenchmarkRows:
-    env = Environment(extensions=["jinja2.ext.do"])
+    interpolator = TemplateInterpolator(sandbox=False)
     data = {
         "user": "{{ env.USER }}",
         "db": {
@@ -252,14 +253,14 @@ def benchmark_jinja() -> BenchmarkRows:
     }
 
     docs = [
-        f"#!.yaml\nkey_{i}: value_{i}\ninterpolation: '{{{{ key_{i} }}}}'"
+        Text(f"key_{i}: value_{i}\ninterpolation: '{{{{ key_{i} }}}}'", format="yaml")
         for i in range(50)
     ]
-    loader = ConfigLoader(interpolate=True)
+    loader = Loader(interpolate=True)
 
     def interpolate_many() -> None:
         for _ in range(100):
-            jinja2.interpolate(data, globals=context, environment=env)
+            interpolate_document(data, interpolator, extra=context)
 
     return [
         (
@@ -269,7 +270,7 @@ def benchmark_jinja() -> BenchmarkRows:
         (
             "load_all inline docs with interpolate (5 x 50 docs)",
             _measure(
-                lambda: [list(loader.load_all(docs)) for _ in range(5)],
+                lambda: [list(loader.load_all(*docs)) for _ in range(5)],
                 calls=5,
                 repeat=3,
             ),
@@ -297,9 +298,7 @@ def benchmark_dot_access() -> BenchmarkRows:
         for _ in range(50_000):
             data.get("database.credentials.missing", "fallback")
 
-    # Conversion cost moved from reads to load, so measure both ends. Only
-    # v0.11.2 API here, so this row can also be measured against an export of
-    # that release.
+    # Conversion happens once, at load, so measure both ends.
     sections = {
         f"section{i}": {
             "nested": {"a": 1, "b": 2},
@@ -309,9 +308,9 @@ def benchmark_dot_access() -> BenchmarkRows:
     }
 
     def load_sections() -> None:
-        ConfigLoader().load(loader=PythonBackend(sections))
+        Loader(wrap=True).load(sections)
 
-    loaded = ConfigLoader().load(loader=PythonBackend(sections))
+    loaded = Loader(wrap=True).load(sections)
 
     def read_every_section() -> None:
         for i in range(2_000):
@@ -344,19 +343,15 @@ def benchmark_env() -> BenchmarkRows:
         os.environ["YACFG_NESTED_LIMITS__RATE"] = "1.5"
         os.environ["YACFG_NESTED_ITEMS"] = '["a", 2]'
 
-        flat_backend = EnvVarBackend(prefix="YACFG_FLAT_")
-        nested_backend = EnvVarBackend(
-            prefix="YACFG_NESTED_",
-            nested_delimiter="__",
-            coerce=True,
-        )
-        loader = ConfigLoader()
+        flat_source = Env("YACFG_FLAT_")
+        nested_source = Env("YACFG_NESTED_", nested="__")
+        loader = Loader()
 
         rows.append(
             (
                 "flat env scan (200)",
                 _measure(
-                    lambda: [loader.load(loader=flat_backend) for _ in range(200)],
+                    lambda: [loader.load(flat_source) for _ in range(200)],
                     calls=200,
                     repeat=5,
                 ),
@@ -364,22 +359,22 @@ def benchmark_env() -> BenchmarkRows:
         )
         rows.append(
             (
-                "nested/coerced env scan (200)",
+                "nested env scan (200)",
                 _measure(
-                    lambda: [loader.load(loader=nested_backend) for _ in range(200)],
+                    lambda: [loader.load(nested_source) for _ in range(200)],
                     calls=200,
                     repeat=5,
                 ),
             )
         )
-        result = loader.load(loader=nested_backend)
+        result = loader.load(nested_source)
         rows.append(
             (
-                "nested/coerced correctness",
+                "nested correctness",
                 {
-                    "cache": result["features"]["cache"],
-                    "rate": result["limits"]["rate"],
-                    "items": result["items"],
+                    "cache": result["FEATURES"]["CACHE"],
+                    "rate": result["LIMITS"]["RATE"],
+                    "items": result["ITEMS"],
                 },
             )
         )

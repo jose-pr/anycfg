@@ -1,2381 +1,1269 @@
-"""
-Tests for ConfigLoader — loading, merging, and example file compatibility.
-"""
+"""`Loader`: settings, per-call overrides, combining, finishing, error handling, sources."""
 
+from __future__ import annotations
+
+import dataclasses
+import decimal
 import io
+import json
+import logging
+import os
 import pathlib
-import subprocess
 import sys
-import typing
 
 import pytest
 
-from yaconfiglib import ConfigLoader
-from yaconfiglib.loader import ConfigLoaderMergeMethod
-from yaconfiglib.utils.source import parse_sources
+import yaconfiglib
+from yaconfiglib import (
+    BudgetExceededError,
+    CommandsDisabledError,
+    ConfigTypeError,
+    ConfigValueError,
+    DotAccessibleDict,
+    LoadEvent,
+    Loader,
+    ParseError,
+    Policy,
+    UnsupportedFormatError,
+)
+from yaconfiglib.sources import Data, Env, Text
 
-# ---------------------------------------------------------------------------
-# Basic loading
-# ---------------------------------------------------------------------------
+from _extras import needs_toml, needs_yaml
+
+LF = chr(10)
+LOGGER = "yaconfiglib._loader"
 
 
-class TestBasicLoading:
-    @pytest.mark.usefixtures("needs_yaml")
-    def test_load_yaml(self, tmp_path):
-        f = tmp_path / "cfg.yaml"
-        f.write_text("key: value\nnumber: 42\n")
-        loader = ConfigLoader(base_dir=tmp_path)
-        result = loader.load("cfg.yaml")
-        assert result == {"key": "value", "number": 42}
+def _write(path, text, encoding="utf-8"):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(text.encode(encoding))
+    return path
 
-    def test_load_json(self, tmp_path):
-        f = tmp_path / "cfg.json"
-        f.write_text('{"a": 1, "b": true}')
-        loader = ConfigLoader(base_dir=tmp_path)
-        result = loader.load("cfg.json")
-        assert result == {"a": 1, "b": True}
 
-    def test_load_toml(self, tmp_path):
-        f = tmp_path / "cfg.toml"
-        f.write_text('[section]\nkey = "hello"\n')
-        loader = ConfigLoader(base_dir=tmp_path)
-        result = loader.load("cfg.toml")
-        assert result == {"section": {"key": "hello"}}
+def _json(path, data):
+    return _write(path, json.dumps(data))
 
-    def test_load_ini(self, tmp_path):
-        f = tmp_path / "cfg.ini"
-        f.write_text("[section]\nkey = val\n")
-        loader = ConfigLoader(base_dir=tmp_path)
-        result = loader.load("cfg.ini")
-        assert "section" in result
 
-    def test_default_on_missing(self, tmp_path):
-        loader = ConfigLoader(base_dir=tmp_path, ignore_error=True)
-        result = loader.load("nonexistent.yaml", default={"fallback": True})
-        assert result == {"fallback": True}
+def _recorder(seen, answer=False):
+    def predicate(event):
+        seen.append(event)
+        return answer
+
+    return predicate
 
 
 # ---------------------------------------------------------------------------
-# Merge methods
+# Construction
 # ---------------------------------------------------------------------------
 
 
-class TestMergeMethods:
-    @pytest.mark.usefixtures("needs_yaml")
-    def test_simple_merge(self, tmp_path):
-        (tmp_path / "a.yaml").write_text("x: 1\ny: 2\n")
-        (tmp_path / "b.yaml").write_text("y: 99\nz: 3\n")
-        loader = ConfigLoader(base_dir=tmp_path, merge=ConfigLoaderMergeMethod.Simple)
-        result = loader.load("a.yaml", "b.yaml")
-        assert result == {"x": 1, "y": 99, "z": 3}
-
-    @pytest.mark.usefixtures("needs_yaml")
-    def test_deep_merge(self, tmp_path):
-        (tmp_path / "a.yaml").write_text("db:\n  host: localhost\n  port: 5432\n")
-        (tmp_path / "b.yaml").write_text("db:\n  port: 5433\n  name: mydb\n")
-        loader = ConfigLoader(base_dir=tmp_path, merge=ConfigLoaderMergeMethod.Deep)
-        result = loader.load("a.yaml", "b.yaml")
-        assert result == {"db": {"host": "localhost", "port": 5433, "name": "mydb"}}
-
-    @pytest.mark.usefixtures("needs_yaml")
-    def test_deep_merge_options_reach_loader_merge(self, tmp_path):
-        (tmp_path / "a.yaml").write_text("items:\n  - name: api\n    enabled: false\n")
-        (tmp_path / "b.yaml").write_text("items:\n  - name: api\n    enabled: true\n")
-        loader = ConfigLoader(
-            base_dir=tmp_path,
-            merge=ConfigLoaderMergeMethod.Deep,
-            merge_options={"mergelists": True},
-        )
-        result = loader.load("a.yaml", "b.yaml")
-        assert result == {"items": [{"name": "api", "enabled": True}]}
-
-    @pytest.mark.usefixtures("needs_yaml")
-    def test_substitute_merge(self, tmp_path):
-        (tmp_path / "a.yaml").write_text("list: [1, 2, 3]\n")
-        (tmp_path / "b.yaml").write_text("list: [4, 5]\n")
-        loader = ConfigLoader(
-            base_dir=tmp_path, merge=ConfigLoaderMergeMethod.Substitute
-        )
-        result = loader.load("a.yaml", "b.yaml")
-        # Substitute: lists always replace
-        assert result["list"] == [4, 5]
-
-    @pytest.mark.usefixtures("needs_yaml")
-    def test_last_merge(self, tmp_path):
-        (tmp_path / "a.yaml").write_text("val: first\n")
-        (tmp_path / "b.yaml").write_text("val: second\n")
-        loader = ConfigLoader(base_dir=tmp_path, merge=ConfigLoaderMergeMethod.Last)
-        result = loader.load("a.yaml", "b.yaml")
-        assert result == {"val": "second"}
-
-    @pytest.mark.usefixtures("needs_yaml")
-    def test_list_merge(self, tmp_path):
-        (tmp_path / "a.yaml").write_text("val: first\n")
-        (tmp_path / "b.yaml").write_text("val: second\n")
-        loader = ConfigLoader(base_dir=tmp_path, merge=ConfigLoaderMergeMethod.List)
-        result = loader.load("a.yaml", "b.yaml")
-        assert isinstance(result, list)
-        assert len(result) == 2
-
-    @pytest.mark.usefixtures("needs_yaml")
-    def test_simple_top_level_list_documents_replace(self, tmp_path):
-        (tmp_path / "a.yaml").write_text("- a\n- b\n- c\n", encoding="utf-8")
-        (tmp_path / "b.yaml").write_text("- x\n", encoding="utf-8")
-
-        result = ConfigLoader(base_dir=tmp_path).load("a.yaml", "b.yaml")
-
-        assert result == ["x"]
-
-    def test_flatten_scalar_result_raises_clear_error(self):
-        from yaconfiglib.backends.python_backend import PythonBackend
-
-        loader = ConfigLoader()
-        with pytest.raises(TypeError, match="flatten=True"):
-            loader.load(loader=PythonBackend("scalar"), flatten=True)
-
-
-# ---------------------------------------------------------------------------
-# Examples directory
-# ---------------------------------------------------------------------------
-
-
-class TestExamples:
-    @pytest.mark.usefixtures("needs_yaml")
-    def test_load_includeme_yaml(self, examples_dir):
-        loader = ConfigLoader(base_dir=examples_dir)
-        result = loader.load("includeme.yaml")
-        assert result == {"include": {"me": True}}
-
-    @pytest.mark.usefixtures("needs_yaml")
-    def test_load_hiera_yaml_raw(self, examples_dir):
-        """hiera.yaml contains Jinja expressions — load raw (no interpolation)."""
-        loader = ConfigLoader(base_dir=examples_dir)
-        result = loader.load("hiera.yaml")
-        # Raw load: the values are template strings, not yet rendered.
-        assert result == {
-            "{{ pathname.stem }}": "{{ 10 }}",
-            "root2": "{{ dict(d=1) }}",
-        }
-
-    def test_load_settings_json(self, examples_dir):
-        loader = ConfigLoader(base_dir=examples_dir)
-        result = loader.load("settings.json")
-        assert isinstance(result, dict)
-        assert "python.testing.pytestEnabled" in result
-
-    def test_load_test_ini(self, examples_dir):
-        loader = ConfigLoader(base_dir=examples_dir)
-        result = loader.load("test.ini")
-        assert result["Section"] == {"propa": "b", "propb": "10"}
-
-    @pytest.mark.usefixtures("needs_yaml")
-    def test_advanced_example_loads_from_any_cwd(
-        self, tmp_path, monkeypatch, examples_dir
-    ):
-        """The example's includes are relative to advanced.yaml, not to the CWD."""
-        monkeypatch.chdir(tmp_path)
-
-        result = ConfigLoader().load(str(examples_dir / "advanced.yaml"))
-
-        assert result["database_config"]["python.testing.pytestEnabled"] is True
-        assert result["dynamic_includes"] == {"includeme.yaml": {"me": True}}
-
-    @pytest.mark.usefixtures("needs_yaml")
-    def test_glob_loading(self, tmp_path):
-        for name in ("a.yaml", "b.yaml", "c.yaml"):
-            (tmp_path / name).write_text(f"file: {name}\n")
-        loader = ConfigLoader(base_dir=tmp_path, merge=ConfigLoaderMergeMethod.List)
-        result = loader.load("*.yaml")
-        assert isinstance(result, list)
-        assert len(result) == 3
-
-    def test_parse_sources_glob_with_stdlib_base_dir(self, tmp_path):
-        for name in ("a.yaml", "b.yaml"):
-            (tmp_path / name).write_text(f"file: {name}\n")
-        paths = list(parse_sources(["*.yaml"], base_dir=tmp_path))
-        assert sorted(path.name for path in paths) == ["a.yaml", "b.yaml"]
-
-    @pytest.mark.usefixtures("needs_yaml")
-    def test_duplicate_path_source_loads_once(self, tmp_path):
-        (tmp_path / "a.yaml").write_text("file: a.yaml\n")
-        loader = ConfigLoader(base_dir=tmp_path, merge=ConfigLoaderMergeMethod.List)
-        result = loader.load("a.yaml", "a.yaml")
-        assert result == [{"file": "a.yaml"}]
-
-    @pytest.mark.usefixtures("needs_yaml")
-    def test_nested_source_iterables_are_flattened(self, tmp_path):
-        for name in ("a.yaml", "b.yaml", "c.yaml"):
-            (tmp_path / name).write_text(f"file: {name}\n")
-        loader = ConfigLoader(base_dir=tmp_path, merge=ConfigLoaderMergeMethod.List)
-        result = loader.load(["a.yaml", "b.yaml"], "c.yaml")
-        assert [item["file"] for item in result] == ["a.yaml", "b.yaml", "c.yaml"]
-
-    def test_command_source_with_glob_metacharacters_is_not_globbed(self, tmp_path):
-        command = "cmd+json://python -c \"print({'items': [1, 2]})\""
-        paths = list(parse_sources([command], base_dir=tmp_path))
-        assert len(paths) == 1
-        assert "cmd+json:" in str(paths[0])
-        assert "[1, 2]" in str(paths[0])
-        assert str(tmp_path) not in str(paths[0])
-
-
-# ---------------------------------------------------------------------------
-# load_all
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.usefixtures("needs_yaml")
-class TestLoadAll:
-    def test_load_all_yields_each(self, tmp_path):
-        (tmp_path / "a.yaml").write_text("a: 1\n")
-        (tmp_path / "b.yaml").write_text("b: 2\n")
-        loader = ConfigLoader(base_dir=tmp_path)
-        results = list(loader.load_all("a.yaml", "b.yaml"))
-        assert results == [{"a": 1}, {"b": 2}]
-
-
-# ---------------------------------------------------------------------------
-# DX features (DotAccessibleDict, load_as, Top-level API)
-# ---------------------------------------------------------------------------
-
-
-class TestDXFeatures:
-    def test_dot_accessible_dict(self):
-        from yaconfiglib.backends.python_backend import PythonBackend
-
-        loader = ConfigLoader()
-        result = loader.load(
-            loader=PythonBackend({"db": {"host": "localhost", "port": 3306}})
-        )
-        assert result.db.host == "localhost"
-        assert result.db.port == 3306
-        assert result.get("db.host") == "localhost"
-        assert result.get("db.missing", "default") == "default"
-
-    def test_dot_accessible_dict_dig_false(self):
-        from yaconfiglib.backends.python_backend import PythonBackend
-
-        loader = ConfigLoader()
-        result = loader.load(
-            loader=PythonBackend({"db": {"host": "localhost", "port": 3306}})
-        )
-        # dig=False prevents deep traversal
-        assert result.get("db.host", "default", dig=False) == "default"
-
-    def test_dot_accessible_dict_exact_match(self):
-        from yaconfiglib.backends.python_backend import PythonBackend
-
-        loader = ConfigLoader()
-        # Dotted key matches exactly, outranking traversal
-        data = {"db.host": "exact-value", "db": {"host": "traversed-value"}}
-        result = loader.load(loader=PythonBackend(data))
-        assert result.get("db.host") == "exact-value"
-        assert result.get("db.host", dig=False) == "exact-value"
-
-    def test_dot_accessible_dict_dotted_get_wraps_nested_dicts(self):
-        from yaconfiglib.backends.python_backend import PythonBackend
-        from yaconfiglib.loader import DotAccessibleDict
-
-        loader = ConfigLoader()
-        result = loader.load(
-            loader=PythonBackend({"db": {"credentials": {"user": "postgres"}}})
-        )
-        assert result.get("db.credentials.user") == "postgres"
-        assert isinstance(result["db"], DotAccessibleDict)
-        assert isinstance(result["db"]["credentials"], DotAccessibleDict)
-
-    def test_load_as_dataclass(self):
-        from dataclasses import dataclass
-        from yaconfiglib.backends.python_backend import PythonBackend
-
-        @dataclass
-        class MyConfig:
-            host: str
-            port: int
-
-        loader = ConfigLoader()
-        result = loader.load_as(
-            MyConfig,
-            loader=PythonBackend({"host": "localhost", "port": 80, "extra": "ignored"}),
-        )
-        assert isinstance(result, MyConfig)
-        assert result.host == "localhost"
-        assert result.port == 80
-
-    def test_load_as_type_hints_resolve(self):
-        hints = typing.get_type_hints(ConfigLoader.load_as)
-        assert "model_cls" in hints
-        assert "return" in hints
-
-
-class TestTopLevelAPI:
-    def test_loads_forwards_json_decoder_options(self):
-        import decimal
-
-        import yaconfiglib
-
-        result = yaconfiglib.loads(
-            '{"rate": 1.5}',
-            loader="json",
-            json_decoder_options={"parse_float": decimal.Decimal},
-        )
-
-        assert result["rate"] == decimal.Decimal("1.5")
-
-    def test_load_forwards_ini_default_section(self, tmp_path):
-        import yaconfiglib
-
-        config = tmp_path / "cfg.ini"
-        config.write_text("[common]\nx = 1\n\n[app]\ny = 2\n", encoding="utf-8")
-
-        result = yaconfiglib.load(str(config), ini_default_section="common")
-
-        assert result["app"]["y"] == "2"
-
-    @pytest.mark.usefixtures("needs_jinja2")
-    def test_load_forwards_j2_environment(self, tmp_path):
-        from jinja2 import Environment
-
-        import yaconfiglib
-
-        template = tmp_path / "cfg.yaml.j2"
-        template.write_text("value: {{ injected }}\n", encoding="utf-8")
-        environment = Environment()
-        environment.globals["injected"] = "from-env"
-
-        result = yaconfiglib.load(str(template), environment=environment)
-
-        assert result == {"value": "from-env"}
-
-    @pytest.mark.usefixtures("needs_yaml")
-    def test_module_load_allow_commands_false_blocks_include(self, tmp_path):
-        import yaconfiglib
-        from yaconfiglib import CommandsDisabledError
-
-        doc = tmp_path / "main.yaml"
-        doc.write_text(
-            "x: !include 'cmd+json://python -c \"print(1)\"'\n", encoding="utf-8"
-        )
-
-        with pytest.raises(CommandsDisabledError):
-            yaconfiglib.load(str(doc), allow_commands=False)
-
-    @pytest.mark.usefixtures("needs_jinja2")
-    def test_loads_constructor_only_strict_option(self):
-        from jinja2.exceptions import UndefinedError
-
-        import yaconfiglib
-
-        with pytest.raises(UndefinedError):
-            yaconfiglib.loads("a: '{{ missing }}'", interpolate=True, strict=True)
-
-    @pytest.mark.usefixtures("needs_yaml")
-    def test_module_load_merge_applies_to_include_glob(self, tmp_path):
-        import yaconfiglib
-
-        conf_d = tmp_path / "conf.d"
-        conf_d.mkdir()
-        (conf_d / "a.yaml").write_text("db:\n  host: a\n  port: 1\n", encoding="utf-8")
-        (conf_d / "b.yaml").write_text("db:\n  port: 2\n", encoding="utf-8")
-        app = tmp_path / "app.yaml"
-        app.write_text('conf: !include "conf.d/*.yaml"\n', encoding="utf-8")
-
-        result = yaconfiglib.load(str(app), base_dir=str(tmp_path), merge="deep")
-
-        assert result["conf"]["db"] == {"host": "a", "port": 2}
-
-    @pytest.mark.usefixtures("needs_yaml")
-    def test_loads_merge_none_uses_default(self):
-        import yaconfiglib
-
-        assert yaconfiglib.loads("a: 1", merge=None) == {"a": 1}
-
-    @pytest.mark.usefixtures("needs_yaml")
-    def test_dumps_loaded_config_round_trips(self):
-        import yaconfiglib
-
-        original = "a: 1\nb:\n  c: 2\n"
-        config = yaconfiglib.loads(original)
-        config.b  # wraps the child lazily, which used to get tagged too
-
-        out = yaconfiglib.dumps(config)
-
-        assert "python/" not in out
-        assert yaconfiglib.loads(out) == yaconfiglib.loads(original)
-
-    @pytest.mark.usefixtures("needs_yaml")
-    def test_dump_file_round_trip_of_loaded_config(self, tmp_path):
-        import yaconfiglib
-
-        source = tmp_path / "in.yaml"
-        source.write_text("a: 1\nb:\n  c: 2\n", encoding="utf-8")
-        target = tmp_path / "out.yaml"
-
-        yaconfiglib.dump(yaconfiglib.load(str(source)), str(target))
-
-        assert yaconfiglib.load(str(target)) == {"a": 1, "b": {"c": 2}}
-
-    @pytest.mark.usefixtures("needs_yaml")
-    def test_dumps_other_python_types_keep_pyyaml_tags(self):
-        import decimal
-
-        import yaconfiglib
-
-        # Only dict subclasses and tuples are re-represented; everything else
-        # keeps PyYAML's own tag, so a dataclass, an OrderedDict or a path
-        # dumps as it always did.
-        assert "!!python/object/apply:decimal.Decimal" in yaconfiglib.dumps(
-            {"x": decimal.Decimal("1.1")}
-        )
-
-    @pytest.mark.usefixtures("needs_yaml")
-    def test_dumps_does_not_modify_global_yaml_dumper(self):
-        import yaml
-
-        import yaconfiglib
-
-        yaconfiglib.dumps({"a": 1})
-
-        assert dict not in yaml.Dumper.yaml_multi_representers
-        assert dict not in yaml.SafeDumper.yaml_multi_representers
-
-    def test_load_file(self, tmp_path):
-        from yaconfiglib import load
-
-        f = tmp_path / "conf.json"
-        f.write_text('{"foo": "bar"}')
-        result = load(str(f))
-        assert result == {"foo": "bar"}
-
-    def test_loads_string(self):
-        from yaconfiglib import loads
-
-        result = loads('{"hello": "world"}', loader="json")
-        assert result == {"hello": "world"}
-
-    @pytest.mark.usefixtures("needs_yaml")
-    def test_dumps_obj(self):
-        from yaconfiglib import dumps
-
-        data = {"foo": "bar"}
-        result = dumps(data)
-        assert "foo: bar" in result
-
-    @pytest.mark.usefixtures("needs_yaml")
-    def test_dump_file_path(self, tmp_path):
-        from yaconfiglib import dump, load
-
-        data = {"key": "val"}
-        f = tmp_path / "output.yaml"
-        dump(data, str(f))
-
-        # Load it back to verify
-        loaded = load(str(f))
-        assert loaded == {"key": "val"}
-
-    @pytest.mark.usefixtures("needs_yaml")
-    def test_dump_file_pointer(self, tmp_path):
-        import io
-        from yaconfiglib import dump
-
-        data = {"a": 1, "b": 2}
-        fp = io.StringIO()
-        dump(data, fp)
-        content = fp.getvalue()
-        assert "a: 1" in content
-        assert "b: 2" in content
-
-
-# ---------------------------------------------------------------------------
-# Per-call override isolation & global-state hygiene (loader_state fixes)
-# ---------------------------------------------------------------------------
-
-
-class TestLoaderStateHygiene:
-    @pytest.mark.usefixtures("needs_yaml")
-    def test_merge_options_override_does_not_leak(self, tmp_path):
-        (tmp_path / "a.yaml").write_text("items:\n  - 1\n")
-        loader = ConfigLoader(base_dir=tmp_path, merge=ConfigLoaderMergeMethod.Deep)
-        original = loader.merge_options
-        loader.load("a.yaml", merge_options={"mergelists": True})
-        # The documented "for this call" override must not rewrite instance state.
-        assert loader.merge_options is original
-        assert loader.merge_options == {}
-
-    def test_construction_does_not_mutate_module_logger(self):
-        # Library code must not call setLevel on a shared logger: constructing
-        # a loader (including the import-time DEFAULT_LOADER) must leave the
-        # process's logging configuration exactly as it found it.
-        import logging
-
-        mod_logger = logging.getLogger("yaconfiglib.loader")
-        before = mod_logger.level
-        ConfigLoader()
-        ConfigLoader(base_dir="anywhere")
-        assert mod_logger.level == before
-
-    def test_log_level_is_gone(self):
-        # It was accepted-and-ignored with a DeprecationWarning for one
-        # release; the shim is removed, so the keyword is now simply unknown.
+class TestConstruction:
+    def test_defaults(self):
+        loader = Loader()
+        assert loader.policy == Policy()
+        assert loader.base_dir is None
+        assert "Loader(" in repr(loader)
+
+    def test_unknown_merge_name_is_value_error(self):
+        with pytest.raises(ValueError, match="nope"):
+            Loader(merge="nope")
+
+    def test_non_callable_merge_is_type_error(self):
         with pytest.raises(TypeError):
-            ConfigLoader(log_level=25)
+            Loader(merge=5)
 
-    def test_default_construction_emits_no_deprecation_warning(self):
+    @pytest.mark.parametrize("collect", ["merge", "LIST", ""])
+    def test_unknown_collect_is_value_error(self, collect):
+        with pytest.raises(ValueError, match="collect"):
+            Loader(collect=collect)
+
+    @pytest.mark.parametrize("on_error", ["yes", 1, None])
+    def test_on_error_must_be_bool_or_callable(self, on_error):
+        with pytest.raises(TypeError, match="on_error"):
+            Loader(on_error=on_error)
+
+    @pytest.mark.parametrize("policy", [{}, "trusted", True])
+    def test_policy_must_be_a_policy(self, policy):
+        with pytest.raises(TypeError, match="Policy"):
+            Loader(policy=policy)
+
+    def test_format_options_for_an_unknown_format(self):
+        with pytest.raises(UnsupportedFormatError, match="nope"):
+            Loader(format_options={"nope": {}})
+
+    def test_formats_naming_an_unknown_format(self):
+        with pytest.raises(UnsupportedFormatError):
+            Loader(formats=["json", "nope"])
+
+    def test_base_dir_of_wrong_type(self):
+        with pytest.raises(TypeError, match="base_dir"):
+            Loader(base_dir=5)
+
+    @pytest.mark.parametrize(
+        "keyword", ["log_level", "allow_commands", "sandbox", "ignore_error", "loader"]
+    )
+    def test_unknown_constructor_keyword(self, keyword):
+        with pytest.raises(TypeError):
+            Loader(**{keyword: True})
+
+    def test_construction_leaves_logging_alone(self):
+        loggers = [logging.getLogger(name) for name in ("yaconfiglib", LOGGER)]
+        before = [logger.level for logger in loggers]
+        Loader()
+        Loader(base_dir="anywhere", on_error=True)
+        assert [logger.level for logger in loggers] == before
+
+    def test_construction_emits_no_warning(self):
         import warnings
 
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            ConfigLoader()
-        assert [w for w in caught if issubclass(w.category, DeprecationWarning)] == []
-
-    def test_utils_no_longer_exports_get_logger(self):
-        from yaconfiglib import utils
-        from yaconfiglib.utils import log
-
-        assert not hasattr(utils, "getLogger")
-        assert not hasattr(log, "getLogger")
-
-    @pytest.mark.usefixtures("needs_yaml")
-    def test_flatten_skips_empty_hash_member(self, tmp_path):
-        (tmp_path / "one.yaml").write_text("a: 1\n", encoding="utf-8")
-        (tmp_path / "empty.yaml").write_text("", encoding="utf-8")
-
-        result = ConfigLoader(base_dir=tmp_path, merge="hash").load(
-            "one.yaml", "empty.yaml", flatten=True
-        )
-
-        assert result == {"a": 1}
-
-    @pytest.mark.usefixtures("needs_yaml")
-    def test_flatten_skips_empty_list_member(self, tmp_path):
-        (tmp_path / "one.yaml").write_text("- 1\n", encoding="utf-8")
-        (tmp_path / "empty.yaml").write_text("", encoding="utf-8")
-
-        result = ConfigLoader(base_dir=tmp_path, merge="list").load(
-            "one.yaml", "empty.yaml", flatten=True
-        )
-
-        assert result == [1]
-
-    @pytest.mark.usefixtures("needs_yaml")
-    def test_flatten_non_mapping_member_raises_type_error(self, tmp_path):
-        (tmp_path / "one.yaml").write_text("a: 1\n", encoding="utf-8")
-        (tmp_path / "scalar.yaml").write_text("42\n", encoding="utf-8")
-
-        with pytest.raises(TypeError, match="scalar"):
-            ConfigLoader(base_dir=tmp_path, merge="hash").load(
-                "one.yaml", "scalar.yaml", flatten=True
-            )
-
-
-class TestSecurityControls:
-    def test_commands_blocked_top_level(self):
-        import pytest
-
-        from yaconfiglib import CommandsDisabledError, ConfigLoader
-
-        loader = ConfigLoader(allow_commands=False)
-        with pytest.raises(CommandsDisabledError):
-            loader.load("cmd://python -c \"print({'a': 1})\"")
-
-    @pytest.mark.usefixtures("needs_yaml")
-    def test_commands_blocked_via_include(self, tmp_path):
-        import pytest
-
-        from yaconfiglib import CommandsDisabledError, ConfigLoader
-
-        (tmp_path / "main.yaml").write_text(
-            "app: !include 'cmd+json://python -c \"import json;"
-            " print(json.dumps({}))\"'\n"
-        )
-        loader = ConfigLoader(base_dir=tmp_path, allow_commands=False)
-        with pytest.raises(CommandsDisabledError):
-            loader.load("main.yaml")
-
-    @pytest.mark.usefixtures("needs_yaml")
-    def test_commands_allowed_by_default(self):
-        from yaconfiglib import ConfigLoader
-
-        loader = ConfigLoader()
-        assert loader.load("cmd://python -c \"print({'a': 1})\"") == {"a": 1}
-
-    def test_per_call_override_blocks(self):
-        import pytest
-
-        from yaconfiglib import CommandsDisabledError, ConfigLoader
-
-        loader = ConfigLoader()  # allowed at instance level
-        with pytest.raises(CommandsDisabledError):
-            loader.load('cmd://python -c "print(1)"', allow_commands=False)
-
-    @pytest.mark.usefixtures("needs_jinja2")
-    def test_sandbox_blocks_ssti(self):
-        import pytest
-        from jinja2.exceptions import SecurityError
-
-        from yaconfiglib import ConfigLoader
-
-        payload = "#!\nx: \"{{ ''.__class__.__mro__ }}\"\n"
-        # The sandbox refuses attribute traversal into Python internals with a
-        # Jinja SecurityError specifically (not just any error).
-        with pytest.raises(SecurityError):
-            ConfigLoader(interpolate=True, sandbox=True).load(payload)
-
-    @pytest.mark.usefixtures("needs_yaml")
-    def test_sandbox_allows_ordinary_interpolation(self):
-        from yaconfiglib import ConfigLoader
-
-        payload = '#!\ngreeting: "hello {{ name }}"\nname: world\n'
-        result = ConfigLoader(interpolate=True, sandbox=True).load(payload)
-        assert result["greeting"] == "hello world"
-
-    @pytest.mark.usefixtures("needs_yaml")
-    def test_sandbox_allows_pure_expression_interpolation(self):
-        # Regression: a BARE `{{ expr }}` value routes through the
-        # type-preserving eval() path, whose result capture used to be
-        # `_meta.__setitem__(...)`. The sandbox rejects underscore ATTRIBUTES,
-        # so the capture — not the user's expression — raised SecurityError,
-        # breaking every pure-expression value under sandbox=True. The
-        # mixed-text test above only covers the compile() path, which is why a
-        # green suite hid this.
-        from yaconfiglib import ConfigLoader
-
-        payload = '#!\nname: world\ngreeting: "{{ name }}"\n'
-        result = ConfigLoader(interpolate=True, sandbox=True).load(payload)
-        assert result["greeting"] == "world"
-
-    @pytest.mark.usefixtures("needs_yaml")
-    def test_sandbox_pure_expression_preserves_type(self):
-        # The eval() path exists to keep non-string types; verify it still does
-        # so inside the sandbox rather than degrading to a rendered string.
-        from yaconfiglib import ConfigLoader
-
-        payload = '#!\nbase: 21\ndoubled: "{{ base * 2 }}"\n'
-        result = ConfigLoader(interpolate=True, sandbox=True).load(payload)
-        assert result["doubled"] == 42
-        assert isinstance(result["doubled"], int)
+            Loader()
+        assert caught == []
 
 
 # ---------------------------------------------------------------------------
-# Coverage gaps: ignore_error predicate, Hash merge, override isolation
+# Per-call overrides
 # ---------------------------------------------------------------------------
 
 
-class TestIncludeTrustPolicy:
-    """Documents and nested includes can only narrow the caller's trust settings."""
-
-    SSTI_TEXT = "{{ ''.__class__.__mro__ }}"
-    SSTI_EXPR = "''.__class__.__mro__"
-
-    @staticmethod
-    def _command(tmp_path):
-        """Return (cmd+json source that touches a marker file, marker path)."""
-        marker = tmp_path / "ran.marker"
-        script = tmp_path / "mk.py"
-        script.write_text(
-            f"import pathlib\npathlib.Path({marker.as_posix()!r}).touch()\nprint('{{}}')\n",
-            encoding="utf-8",
-        )
-        return f"cmd+json://python {script.as_posix()}", marker
-
-    @staticmethod
-    def _write(path, text):
-        path.write_text(text, encoding="utf-8")
-        return path
-
-    @pytest.mark.usefixtures("needs_yaml")
-    def test_mapping_cannot_reenable_commands_under_checklist(self, tmp_path):
-        import yaconfiglib
-        from yaconfiglib import CommandsDisabledError
-
-        cmd, marker = self._command(tmp_path)
-        doc = self._write(
-            tmp_path / "u.yaml",
-            f'x: !include {{pathname: "{cmd}", allow_commands: true}}\n',
-        )
-        with pytest.raises(CommandsDisabledError):
-            yaconfiglib.load(
-                str(doc),
-                allow_commands=False,
-                interpolate=True,
-                sandbox=True,
-                loader="yaml",
-            )
-        assert not marker.exists()
-
-    @pytest.mark.usefixtures("needs_jinja2")
-    def test_mapping_cannot_disable_sandbox(self, tmp_path):
-        from jinja2.exceptions import SecurityError
-
-        child = self._write(tmp_path / "child.yaml", f'y: "{self.SSTI_TEXT}"\n')
-        doc = self._write(
-            tmp_path / "u.yaml",
-            f'x: !include {{pathname: "{child.as_posix()}", sandbox: false,'
-            " interpolate: true}\n",
-        )
-        with pytest.raises(SecurityError):
-            ConfigLoader(interpolate=True, sandbox=True).load(str(doc))
-
-    @pytest.mark.usefixtures("needs_jinja2")
-    def test_mapping_transform_is_sandboxed(self, tmp_path):
-        from jinja2.exceptions import SecurityError
-
-        child = self._write(tmp_path / "child.yaml", "a: 1\n")
-        doc = self._write(
-            tmp_path / "u.yaml",
-            f'x: !include {{pathname: "{child.as_posix()}",'
-            f' transform: "{self.SSTI_EXPR}"}}\n',
-        )
-        with pytest.raises(SecurityError):
-            ConfigLoader(sandbox=True).load(str(doc))
-
-    @pytest.mark.usefixtures("needs_jinja2")
-    def test_mapping_key_factory_expression_is_sandboxed(self, tmp_path):
-        from jinja2.exceptions import SecurityError
-
-        child = self._write(tmp_path / "child.yaml", "a: 1\n")
-        doc = self._write(
-            tmp_path / "u.yaml",
-            f'x: !include {{pathname: "{child.as_posix()}",'
-            f' key_factory: "%{self.SSTI_EXPR}"}}\n',
-        )
-        with pytest.raises(SecurityError):
-            ConfigLoader(sandbox=True).load(str(doc))
-
-    @pytest.mark.usefixtures("needs_jinja2")
-    def test_mapping_transform_sandboxed_when_commands_disabled(self, tmp_path):
-        from jinja2.exceptions import SecurityError
-
-        child = self._write(tmp_path / "child.yaml", "a: 1\n")
-        doc = self._write(
-            tmp_path / "u.yaml",
-            f'x: !include {{pathname: "{child.as_posix()}",'
-            f' transform: "{self.SSTI_EXPR}"}}\n',
-        )
-        with pytest.raises(SecurityError):
-            ConfigLoader(allow_commands=False).load(str(doc))
-
-    @pytest.mark.usefixtures("needs_yaml")
-    def test_mapping_plain_key_factory_is_dropped(self, tmp_path, caplog):
-        import logging
-
-        import yaconfiglib
-
-        victim = self._write(tmp_path / "victim.yaml", "a: 1\n")
-        doc = self._write(
-            tmp_path / "u.yaml",
-            f'x: !include {{pathname: "{victim.as_posix()}", key_factory: unlink}}\n',
-        )
-        with caplog.at_level(logging.WARNING):
-            result = yaconfiglib.load(
-                str(doc),
-                allow_commands=False,
-                interpolate=True,
-                sandbox=True,
-                loader="yaml",
-            )
-        assert victim.exists()
-        assert result == {"x": {"a": 1}}
-        assert any("key_factory" in rec.getMessage() for rec in caplog.records)
-
-    @pytest.mark.usefixtures("needs_yaml")
-    def test_per_call_allow_commands_reaches_scalar_include(self, tmp_path):
-        from yaconfiglib import CommandsDisabledError
-
-        cmd, marker = self._command(tmp_path)
-        doc = self._write(tmp_path / "u.yaml", f"x: !include '{cmd}'\n")
-        with pytest.raises(CommandsDisabledError):
-            ConfigLoader().load(str(doc), allow_commands=False)
-        assert not marker.exists()
-
-    @pytest.mark.usefixtures("needs_jinja2")
-    def test_per_call_sandbox_reaches_scalar_include(self, tmp_path):
-        from jinja2.exceptions import SecurityError
-
-        child = self._write(tmp_path / "child.yaml", f'y: "{self.SSTI_TEXT}"\n')
-        doc = self._write(tmp_path / "u.yaml", f"x: !include '{child.as_posix()}'\n")
-        with pytest.raises(SecurityError):
-            ConfigLoader(interpolate=True).load(str(doc), sandbox=True)
-
-    @pytest.mark.usefixtures("needs_yaml")
-    def test_hand_registered_tag_constructor_filters_mapping(self, tmp_path):
-        import yaml
-
-        from yaconfiglib import CommandsDisabledError
-
-        cmd, marker = self._command(tmp_path)
-
-        class _HandLoader(yaml.SafeLoader):
-            pass
-
-        _HandLoader.add_constructor("!include", ConfigLoader(allow_commands=False))
-        with pytest.raises(CommandsDisabledError):
-            yaml.load(
-                f'x: !include {{pathname: "{cmd}", allow_commands: true}}',
-                Loader=_HandLoader,
-            )
-        assert not marker.exists()
-
-    def test_use_policy_only_tightens(self):
-        from yaconfiglib.utils.trust import current_policy, use_policy
-
-        with use_policy(False, True, False):
-            with use_policy(True, False, False) as effective:
-                assert effective == (False, True, False)
-                assert current_policy() == (False, True, False)
-        assert current_policy() == (True, False, False)
-
-    @pytest.mark.usefixtures("needs_yaml")
-    def test_documented_transform_and_key_factory_work_sandboxed(self, tmp_path):
-        child = self._write(tmp_path / "child.yaml", "include:\n  me: true\n")
-        doc = self._write(
-            tmp_path / "u.yaml",
-            f'x: !include {{pathname: "{child.as_posix()}",'
-            ' transform: "{ pathname.name: value.include }",'
-            ' key_factory: "%pathname.as_posix()"}\n',
-        )
-        result = ConfigLoader(sandbox=True).load(str(doc))
-        assert result == {"x": {"child.yaml": {"me": True}}}
-
-    @pytest.mark.usefixtures("needs_yaml")
-    def test_mapping_loader_command_still_blocked(self, tmp_path):
-        from yaconfiglib import CommandsDisabledError
-
-        cmd, marker = self._command(tmp_path)
-        doc = self._write(
-            tmp_path / "u.yaml", f'x: !include {{pathname: "{cmd}", loader: command}}\n'
-        )
-        with pytest.raises(CommandsDisabledError):
-            ConfigLoader(allow_commands=False).load(str(doc))
-        assert not marker.exists()
-
-    @pytest.mark.usefixtures("needs_yaml")
-    def test_advanced_example_includes_still_load(self, monkeypatch):
-        repo_root = pathlib.Path(__file__).resolve().parent.parent
-        monkeypatch.chdir(repo_root)
-        result = ConfigLoader().load("examples/advanced.yaml")
-        assert result["dynamic_includes"] == {"includeme.yaml": {"me": True}}
-
-    @pytest.mark.usefixtures("needs_yaml")
-    def test_sequence_include_form(self, tmp_path):
-        child = self._write(tmp_path / "child.yaml", "b: 2\n")
-        doc = self._write(tmp_path / "u.yaml", f'x: !include ["{child.as_posix()}"]\n')
-        assert ConfigLoader().load(str(doc)) == {"x": {"b": 2}}
-
-    @pytest.mark.usefixtures("needs_yaml")
-    def test_caller_transform_still_applies(self, tmp_path):
-        doc = self._write(tmp_path / "u.yaml", "a: 5\n")
-        assert ConfigLoader().load(str(doc), transform="value.a") == 5
-
-    def test_hardened_policy_without_jinja2(self, monkeypatch):
-        monkeypatch.setattr("yaconfiglib.loader.jinja2", None)
-        result = ConfigLoader(allow_commands=False, sandbox=True).load(
-            '#!a.json\n{"a": 1}'
-        )
-        assert result == {"a": 1}
-
-
-class TestUntrustedRobustness:
-    """A config author must not be able to hang, exhaust or mutate the host."""
-
-    @pytest.mark.usefixtures("needs_yaml")
-    def test_aliased_yaml_interpolates_in_linear_time(self):
-        import time
-
-        # 7 levels, each a list of 9 aliases of the previous: ~3.7s when every
-        # reference is walked, well under 0.1s when shared containers are walked once.
-        lines = ['l0: &l0 ["{{ 1 + 1 }}", "plain"]']
-        for level in range(1, 7):
-            aliases = ", ".join([f"*l{level - 1}"] * 9)
-            lines.append(f"l{level}: &l{level} [{aliases}]")
-        lines.append("top: *l6")
-        source = "#!aliases.yaml\n" + "\n".join(lines) + "\n"
-
-        started = time.perf_counter()
-        result = ConfigLoader(interpolate=True, sandbox=True).load(source)
-        elapsed = time.perf_counter() - started
-
-        assert elapsed < 1, f"interpolation took {elapsed:.1f}s"
-        assert result["top"][0] is result["top"][1]
-        assert result["l0"] == [2, "plain"]
-
-    def test_command_runs_with_stdin_closed(self):
-        import subprocess
-        import sys
-
-        import yaconfiglib
-
-        # The child must import the same yaconfiglib this test process imported,
-        # not whatever the interpreter's installed copy resolves to.
-        package_root = str(pathlib.Path(yaconfiglib.__file__).resolve().parent.parent)
-        inner = (
-            f'cmd+json://"{sys.executable}" -c "import sys; sys.stdin.read(); print(1)"'
-        )
-        code = (
-            f"import sys\nsys.path.insert(0, {package_root!r})\n"
-            "from yaconfiglib import ConfigLoader\n"
-            f"print(ConfigLoader().load({inner!r}))\n"
-        )
-        proc = subprocess.Popen(
-            [sys.executable, "-c", code],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        try:
-            returncode = proc.wait(timeout=20)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait()
-            pytest.fail("the command waited on the parent's stdin")
-        finally:
-            proc.stdin.close()
-            proc.stdout.close()
-            proc.stderr.close()
-        assert returncode == 0
-
-    def test_command_timeout_kills_the_command(self):
-        import subprocess
-        import sys
-        import time
-
-        started = time.perf_counter()
-        with pytest.raises(subprocess.TimeoutExpired):
-            ConfigLoader().load(
-                f'cmd://"{sys.executable}" -c "import time; time.sleep(15)"',
-                timeout=1,
-            )
-        assert time.perf_counter() - started < 10
-
-    @pytest.mark.usefixtures("needs_jinja2")
-    def test_inject_env_is_read_only(self, monkeypatch):
-        import os
-
-        from jinja2.exceptions import UndefinedError
-
-        monkeypatch.delenv("YACFG_PWN", raising=False)
-        source = "#!\nv: \"{% do env.update({'YACFG_PWN': 'x'}) %}ok\"\n"
-        with pytest.raises(UndefinedError):
-            ConfigLoader(interpolate=True, inject_env=True, sandbox=True).load(source)
-        assert "YACFG_PWN" not in os.environ
-
-    @pytest.mark.usefixtures("needs_yaml")
-    def test_include_cycle_is_a_clear_error(self, tmp_path):
-        (tmp_path / "a.yaml").write_text("x: !include b.yaml\n", encoding="utf-8")
-        (tmp_path / "b.yaml").write_text("y: !include a.yaml\n", encoding="utf-8")
-        with pytest.raises(ValueError, match="include cycle"):
-            ConfigLoader(base_dir=tmp_path).load("a.yaml")
-
-    @pytest.mark.usefixtures("needs_jinja2")
-    def test_load_all_per_call_sandbox(self, tmp_path):
-        from jinja2.exceptions import SecurityError
-
-        doc = tmp_path / "s.yaml"
-        doc.write_text("x: \"{{ ''.__class__.__mro__ }}\"\n", encoding="utf-8")
-        with pytest.raises(SecurityError):
-            list(ConfigLoader(interpolate=True).load_all(str(doc), sandbox=True))
-
-    @pytest.mark.usefixtures("needs_yaml")
-    def test_load_all_per_call_allow_commands_reaches_includes(self, tmp_path):
-        from yaconfiglib import CommandsDisabledError
-
-        marker = tmp_path / "ran.marker"
-        script = tmp_path / "mk.py"
-        script.write_text(
-            f"import pathlib\npathlib.Path({marker.as_posix()!r}).touch()\nprint('{{}}')\n",
-            encoding="utf-8",
-        )
-        doc = tmp_path / "u.yaml"
-        doc.write_text(
-            f"x: !include 'cmd+json://python {script.as_posix()}'\n", encoding="utf-8"
-        )
-        with pytest.raises(CommandsDisabledError):
-            list(ConfigLoader().load_all(str(doc), allow_commands=False))
-        assert not marker.exists()
-
-    @pytest.mark.usefixtures("needs_yaml")
-    def test_load_all_policy_does_not_leak_into_the_loop(self, tmp_path):
-        from yaconfiglib.utils.trust import current_policy
-
-        first = tmp_path / "one.yaml"
-        first.write_text("a: 1\n", encoding="utf-8")
-        second = tmp_path / "two.yaml"
-        second.write_text("b: 2\n", encoding="utf-8")
-        seen = []
-        for _document in ConfigLoader().load_all(
-            str(first), str(second), allow_commands=False
-        ):
-            seen.append(current_policy())
-        assert seen == [(True, False, False), (True, False, False)]
-
-
-@pytest.mark.usefixtures("needs_yaml")
-class TestInterpolationScope:
-    """interpolate=True renders once, after merging, in the merged document's scope."""
-
-    @staticmethod
-    def _write(tmp_path, name, text):
-        path = tmp_path / name
-        path.write_text(text, encoding="utf-8")
-        return path
-
-    def test_include_sees_parent_scope_with_instance_interpolate(self, tmp_path):
-        self._write(tmp_path, "svc.yaml", 'url: "http://{{ host }}/api"\n')
-        self._write(tmp_path, "app.yaml", "host: example.com\nsvc: !include svc.yaml\n")
-
-        result = ConfigLoader(base_dir=tmp_path, interpolate=True).load("app.yaml")
-
-        assert result["svc"]["url"] == "http://example.com/api"
-
-    def test_include_parent_reference_under_strict_does_not_raise(self, tmp_path):
-        self._write(tmp_path, "svc.yaml", 'url: "http://{{ host }}/api"\n')
-        self._write(tmp_path, "app.yaml", "host: example.com\nsvc: !include svc.yaml\n")
-
-        result = ConfigLoader(base_dir=tmp_path, interpolate=True, strict=True).load(
-            "app.yaml"
-        )
-
-        assert result["svc"]["url"] == "http://example.com/api"
-
-    def test_escaped_literal_in_include_rendered_once(self, tmp_path):
-        self._write(tmp_path, "inc.yaml", "lit: \"{{ '{{ x }}' }}\"\n")
-        self._write(tmp_path, "app.yaml", "x: SURPRISE\ninc: !include inc.yaml\n")
-
-        result = ConfigLoader(base_dir=tmp_path, interpolate=True).load("app.yaml")
-
-        assert result["inc"]["lit"] == "{{ x }}"
-
-    def test_chained_references_resolve(self, tmp_path):
-        self._write(
-            tmp_path,
-            "app.yaml",
-            'base: /srv\nlogs: "{{ base }}/logs"\nerr: "{{ logs }}/err"\n',
-        )
-
-        result = ConfigLoader(base_dir=tmp_path, interpolate=True).load("app.yaml")
-
-        assert result["err"] == "/srv/logs/err"
-
-    def test_chained_references_are_order_independent(self, tmp_path):
-        self._write(
-            tmp_path,
-            "app.yaml",
-            'err: "{{ logs }}/err"\nlogs: "{{ base }}/logs"\nbase: /srv\n',
-        )
-
-        result = ConfigLoader(base_dir=tmp_path, interpolate=True).load("app.yaml")
-
-        assert result["err"] == "/srv/logs/err"
-
-    def test_nested_reference_before_its_mapping_resolves(self, tmp_path):
-        self._write(
-            tmp_path,
-            "app.yaml",
-            'full: "{{ db.url }}/p"\ndb:\n  host: h\n  url: "x://{{ db.host }}"\n',
-        )
-
-        result = ConfigLoader(base_dir=tmp_path, interpolate=True).load("app.yaml")
-
-        assert result["full"] == "x://h/p"
-
-    def test_cross_key_cycle_raises_under_strict(self, tmp_path):
-        self._write(tmp_path, "app.yaml", 'a: "{{ b }}"\nb: "{{ a }}"\n')
-
-        with pytest.raises(ValueError, match="interpolation reference cycle"):
-            ConfigLoader(base_dir=tmp_path, interpolate=True, strict=True).load(
-                "app.yaml"
-            )
-
-    def test_cross_key_cycle_without_strict_does_not_raise(self, tmp_path):
-        self._write(tmp_path, "app.yaml", 'a: "{{ b }}"\nb: "{{ a }}"\n')
-
-        ConfigLoader(base_dir=tmp_path, interpolate=True).load("app.yaml")
-
-    def test_load_all_resolves_chained_references(self, tmp_path):
-        self._write(
-            tmp_path,
-            "app.yaml",
-            'base: /srv\nlogs: "{{ base }}/logs"\nerr: "{{ logs }}/err"\n',
-        )
-
-        documents = list(
-            ConfigLoader(base_dir=tmp_path, interpolate=True).load_all("app.yaml")
-        )
-
-        assert documents[0]["err"] == "/srv/logs/err"
-
-    def test_escaped_literal_referenced_by_other_key_not_rerendered(self, tmp_path):
-        self._write(
-            tmp_path,
-            "app.yaml",
-            'x: SURPRISE\nlit: "{{ \'{{ x }}\' }}"\nref: "{{ lit }}"\n',
-        )
-
-        result = ConfigLoader(base_dir=tmp_path, interpolate=True).load("app.yaml")
-
-        assert result["lit"] == "{{ x }}"
-        assert result["ref"] == "{{ x }}"
-
-    def test_inject_env_global_wins_over_document_env_key(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("YACFG_SCOPE_VAR", "from-environment")
-        self._write(tmp_path, "app.yaml", 'env: doc\nv: "{{ env.YACFG_SCOPE_VAR }}"\n')
-
-        result = ConfigLoader(
-            base_dir=tmp_path, interpolate=True, inject_env=True
-        ).load("app.yaml")
-
-        assert result["v"] == "from-environment"
-
-
-class TestLoadAs:
-    """yaconfiglib.load_as and the hydration branches behind it."""
-
-    @staticmethod
-    def _fake_pydantic(monkeypatch, version):
-        """Install a fake pydantic module and return its BaseModel."""
-        import sys
-        import types as _types
-
-        module = _types.ModuleType("pydantic")
-
-        class BaseModel:
-            def __init__(self, **values):
-                self.values = values
-
-            if version == "v2":
-
-                @classmethod
-                def model_validate(cls, data):
-                    built = cls(**data)
-                    built.built_with = "model_validate"
-                    return built
-
-            else:
-
-                @classmethod
-                def parse_obj(cls, data):
-                    built = cls(**data)
-                    built.built_with = "parse_obj"
-                    return built
-
-        module.BaseModel = BaseModel
-        monkeypatch.setitem(sys.modules, "pydantic", module)
-        return BaseModel
-
-    @pytest.mark.usefixtures("needs_yaml")
-    def test_top_level_load_as_dataclass(self, tmp_path):
-        import dataclasses
-
-        import yaconfiglib
-
-        @dataclasses.dataclass
-        class DB:
-            host: str
-            port: int = 5432
-
-        (tmp_path / "db.yaml").write_text("host: h\nport: 6\n", encoding="utf-8")
-
-        result = yaconfiglib.load_as(DB, str(tmp_path / "db.yaml"))
-
-        assert result == DB(host="h", port=6)
-
-    @pytest.mark.usefixtures("needs_yaml")
-    def test_top_level_load_as_multiple_sources_deep_merge(self, tmp_path):
-        import dataclasses
-
-        import yaconfiglib
-
-        @dataclasses.dataclass
-        class DB:
-            host: str
-            port: int = 5432
-
-        (tmp_path / "a.yaml").write_text("host: a\nport: 1\n", encoding="utf-8")
-        (tmp_path / "b.yaml").write_text("port: 2\n", encoding="utf-8")
-
-        result = yaconfiglib.load_as(
-            DB, str(tmp_path / "a.yaml"), str(tmp_path / "b.yaml"), merge="deep"
-        )
-
-        assert result == DB(host="a", port=2)
-
-    @pytest.mark.usefixtures("needs_jinja2")
-    def test_top_level_load_as_constructor_option_strict(self, tmp_path):
-        import dataclasses
-
-        from jinja2.exceptions import UndefinedError
-
-        import yaconfiglib
-
-        @dataclasses.dataclass
-        class DB:
-            host: str = ""
-
-        (tmp_path / "db.yaml").write_text('host: "{{ missing }}"\n', encoding="utf-8")
-
-        with pytest.raises(UndefinedError):
-            yaconfiglib.load_as(
-                DB, str(tmp_path / "db.yaml"), interpolate=True, strict=True
-            )
-
-    @pytest.mark.usefixtures("needs_yaml")
-    def test_load_as_pydantic_v2_via_fake_module(self, tmp_path, monkeypatch):
-        base_model = self._fake_pydantic(monkeypatch, "v2")
-
-        class Settings(base_model):
-            pass
-
-        (tmp_path / "s.yaml").write_text("a: 1\n", encoding="utf-8")
-
-        result = ConfigLoader(base_dir=tmp_path).load_as(Settings, "s.yaml")
-
-        assert result.built_with == "model_validate"
-        assert result.values == {"a": 1}
-
-    @pytest.mark.usefixtures("needs_yaml")
-    def test_load_as_pydantic_v1_via_fake_module(self, tmp_path, monkeypatch):
-        base_model = self._fake_pydantic(monkeypatch, "v1")
-
-        class Settings(base_model):
-            pass
-
-        (tmp_path / "s.yaml").write_text("a: 1\n", encoding="utf-8")
-
-        result = ConfigLoader(base_dir=tmp_path).load_as(Settings, "s.yaml")
-
-        assert result.built_with == "parse_obj"
-
-    @pytest.mark.usefixtures("needs_yaml")
-    def test_load_as_plain_class_fallback(self, tmp_path):
-        class Plain:
-            def __init__(self, a):
-                self.a = a
-
-        (tmp_path / "p.yaml").write_text("a: 7\n", encoding="utf-8")
-
-        result = ConfigLoader(base_dir=tmp_path).load_as(Plain, "p.yaml")
-
-        assert result.a == 7
-
-    @pytest.mark.usefixtures("needs_yaml")
-    def test_load_as_non_dict_raises_type_error(self, tmp_path):
-        class Plain:
-            pass
-
-        (tmp_path / "list.yaml").write_text("- 1\n- 2\n", encoding="utf-8")
-
-        # The TYPE is what this pins; the message now names the model and the
-        # type actually loaded (see TestLoadAsErrorContext).
-        with pytest.raises(TypeError, match="needs a mapping"):
-            ConfigLoader(base_dir=tmp_path).load_as(Plain, "list.yaml")
-
-    @pytest.mark.usefixtures("needs_yaml")
-    def test_load_as_dataclass_ignores_self_key(self, tmp_path):
-        import dataclasses
-
-        import yaconfiglib
-
-        @dataclasses.dataclass
-        class DB:
-            host: str
-
-        (tmp_path / "db.yaml").write_text("self: oops\nhost: h\n", encoding="utf-8")
-
-        result = yaconfiglib.load_as(DB, str(tmp_path / "db.yaml"))
-
-        assert result == DB(host="h")
-
-    @pytest.mark.usefixtures("needs_yaml")
-    def test_load_as_nested_dataclass_field_is_hydrated(self, tmp_path):
-        import dataclasses
-
-        import yaconfiglib
-
-        @dataclasses.dataclass
-        class DB:
-            host: str
-
-        @dataclasses.dataclass
-        class App:
-            name: str
-            db: DB
-
-        (tmp_path / "app.yaml").write_text(
-            "name: svc\ndb:\n  host: h\n", encoding="utf-8"
-        )
-
-        result = yaconfiglib.load_as(App, str(tmp_path / "app.yaml"))
-
-        assert result.db == DB(host="h")
-
-    @pytest.mark.usefixtures("needs_yaml")
-    def test_load_as_optional_nested_dataclass_none_is_kept(self, tmp_path):
-        import dataclasses
-        import typing as t
-
-        @dataclasses.dataclass
-        class DB:
-            host: str
-
-        @dataclasses.dataclass
-        class App:
-            db: t.Optional[DB] = None
-
-        (tmp_path / "app.yaml").write_text("db: null\n", encoding="utf-8")
-
-        result = ConfigLoader(base_dir=tmp_path).load_as(App, "app.yaml")
-
-        assert result.db is None
-
-    @pytest.mark.usefixtures("needs_yaml")
-    def test_load_as_does_not_import_pydantic(self, tmp_path, monkeypatch):
-        import dataclasses
-        import sys
-
-        import yaconfiglib
-
-        @dataclasses.dataclass
-        class DB:
-            host: str
-
-        looked_up = []
-
-        class _Recorder:
-            def find_module(self, name, path=None):  # pragma: no cover - py<3.12 shim
-                looked_up.append(name)
-                return None
-
-            def find_spec(self, name, path=None, target=None):
-                looked_up.append(name)
-                return None
-
-        monkeypatch.delitem(sys.modules, "pydantic", raising=False)
-        monkeypatch.setattr(sys, "meta_path", [_Recorder()] + list(sys.meta_path))
-        (tmp_path / "db.yaml").write_text("host: h\n", encoding="utf-8")
-
-        yaconfiglib.load_as(DB, str(tmp_path / "db.yaml"))
-
-        assert "pydantic" not in looked_up
-
-    @pytest.mark.usefixtures("needs_yaml")
-    def test_load_as_keeps_initvar_parameter(self, tmp_path):
-        import dataclasses
-
-        @dataclasses.dataclass
-        class DC:
-            host: str
-            seed: dataclasses.InitVar[int] = 0
-            derived: int = dataclasses.field(init=False, default=0)
-
-            def __post_init__(self, seed):
-                self.derived = seed * 2
-
-        (tmp_path / "dc.yaml").write_text("host: h\nseed: 21\n", encoding="utf-8")
-
-        result = ConfigLoader(base_dir=tmp_path).load_as(DC, "dc.yaml")
-
-        assert result.derived == 42
-
-
-@pytest.mark.usefixtures("needs_yaml")
-class TestMergeAnchors:
-    """Overriding a key must not rewrite what an anchor shares with it."""
-
-    @pytest.mark.parametrize("strategy", ["deep", "substitute"])
-    def test_merge_key_override_does_not_leak(self, tmp_path, strategy):
-        # `<<:` copies only top-level keys, so both environments share one `db`
-        # mapping. An override layer must not rewrite it for everyone.
-        (tmp_path / "app.yaml").write_text(
-            "defaults: &defaults\n"
-            "  db:\n"
-            "    host: shared\n"
-            "    pool: 5\n"
-            "  hosts: [a]\n"
-            "development:\n"
-            "  <<: *defaults\n"
-            "production:\n"
-            "  <<: *defaults\n",
-            encoding="utf-8",
-        )
-        (tmp_path / "override.yaml").write_text(
-            "production:\n  db:\n    host: prod-db\n  hosts: [b]\n", encoding="utf-8"
-        )
-
-        result = ConfigLoader(base_dir=tmp_path, merge=strategy).load(
-            "app.yaml", "override.yaml"
-        )
-
-        assert result["production"]["db"]["host"] == "prod-db"
-        assert result["development"]["db"]["host"] == "shared"
-        assert result["defaults"]["db"]["host"] == "shared"
-        assert result["development"]["hosts"] == ["a"]
-
-    @pytest.mark.parametrize("strategy", ["deep", "substitute"])
-    def test_later_layer_does_not_rewrite_earlier_layer_anchor(
-        self, tmp_path, strategy
-    ):
-        (tmp_path / "base.yaml").write_text("v: 0\n", encoding="utf-8")
-        (tmp_path / "mid.yaml").write_text(
-            "common: &c\n  x: 1\nb: *c\n", encoding="utf-8"
-        )
-        (tmp_path / "top.yaml").write_text("b:\n  x: 2\n", encoding="utf-8")
-
-        result = ConfigLoader(base_dir=tmp_path, merge=strategy).load(
-            "base.yaml", "mid.yaml", "top.yaml"
-        )
-
-        assert result["b"]["x"] == 2
-        assert result["common"]["x"] == 1
-
-
-class TestMergeLeafTypes:
-    """Ordinary YAML/TOML dates and datetimes merge like any other value."""
-
-    @pytest.mark.parametrize("strategy", ["deep", "substitute"])
-    @pytest.mark.usefixtures("needs_yaml")
-    def test_yaml_dates_merge(self, tmp_path, strategy):
-        import datetime
-
-        (tmp_path / "a.yaml").write_text(
-            "name: app\nrelease: 2024-01-01\nholidays:\n  - 2024-12-25\n",
-            encoding="utf-8",
-        )
-        (tmp_path / "b.yaml").write_text(
-            "owner: team\nrelease: 2025-06-01\nholidays:\n  - 2025-12-25\n",
-            encoding="utf-8",
-        )
-
-        result = ConfigLoader(base_dir=tmp_path, merge=strategy).load(
-            "a.yaml", "b.yaml"
-        )
-
-        assert result["name"] == "app"
-        assert result["owner"] == "team"
-        assert result["release"] == datetime.date(2025, 6, 1)
-        if strategy == "deep":
-            assert result["holidays"] == [
-                datetime.date(2024, 12, 25),
-                datetime.date(2025, 12, 25),
-            ]
-        else:
-            assert result["holidays"] == [datetime.date(2025, 12, 25)]
-
-    def test_toml_datetimes_merge(self, tmp_path):
-        (tmp_path / "a.toml").write_text(
-            'name = "app"\nwhen = 2024-01-01T10:00:00Z\n', encoding="utf-8"
-        )
-        (tmp_path / "b.toml").write_text(
-            "when = 2025-06-01T11:30:00Z\n", encoding="utf-8"
-        )
-
-        result = ConfigLoader(base_dir=tmp_path, merge="deep").load("a.toml", "b.toml")
-
-        # Compare the date parts: the tzinfo class differs between tomllib and
-        # the toml package.
-        assert (result["when"].year, result["when"].month, result["when"].day) == (
-            2025,
-            6,
-            1,
-        )
-        assert result["name"] == "app"
-
-
-class TestMergeExtensionHooks:
-    """The merge extension points stay usable for custom and extended strategies."""
-
-    @pytest.mark.usefixtures("needs_yaml")
-    def test_custom_merge_init_errors_propagate(self):
-        class BrokenInit:
-            def init(self, initial, configloaderkey, **options):
-                return initial.missing_attr
-
-            def __call__(self, a, b, **options):
-                return b
-
-        with pytest.raises(AttributeError):
-            ConfigLoader(merge=BrokenInit()).load("#!a.yaml\na: 1\n")
-
-    @pytest.mark.usefixtures("needs_yaml")
-    def test_merge_without_init_uses_first_document(self):
-        from yaconfiglib.utils.merge import MergeMethod
-
-        # utils.merge.MergeMethod has no init(); the first document seeds the result.
-        result = ConfigLoader(merge=MergeMethod.Deep).load(
-            "#!a.yaml\na: 1\n", "#!b.yaml\nb: 2\n"
-        )
-
-        assert result == {"a": 1, "b": 2}
-
-    @pytest.mark.parametrize("member", ["List", "Hash"])
-    @pytest.mark.usefixtures("needs_yaml")
-    def test_extended_enum_keeps_builtin_init(self, member):
-        from yaconfiglib.loader import ConfigLoaderMergeMethod
-        from yaconfiglib.utils.enum import IntEnum
-
-        class _Extra(IntEnum):
-            Mine = 99
-
-        extended = ConfigLoaderMergeMethod.extend(_Extra, name="ExtendedMerge")
-        sources = ("#!a.yaml\na: 1\n", "#!b.yaml\nb: 2\n")
-
-        stock = ConfigLoader(merge=getattr(ConfigLoaderMergeMethod, member)).load(
-            *sources
-        )
-        from_extension = ConfigLoader(merge=getattr(extended, member)).load(*sources)
-
-        assert from_extension == stock
-
-    def test_config_loader_merge_method_members_pickle(self):
-        import pickle
-
-        from yaconfiglib.loader import ConfigLoaderMergeMethod
-
-        for member in ConfigLoaderMergeMethod:
-            assert pickle.loads(pickle.dumps(member)) is member
-
-    @pytest.mark.usefixtures("needs_yaml")
-    def test_default_returned_only_when_nothing_loads(self, tmp_path):
-        (tmp_path / "one.yaml").write_text("a: 1\n", encoding="utf-8")
-        loader = ConfigLoader(base_dir=tmp_path)
-
-        loaded = loader.load("one.yaml", default={"fallback": True})
-        nothing = loader.load("no-such-*.yaml", default={"fallback": True})
-
-        assert "fallback" not in loaded
-        assert nothing == {"fallback": True}
-
-    def test_extend_type_hints_resolve(self):
-        import typing as t
-
-        from yaconfiglib.utils.enum import IntEnum
-
-        # Introspection tools (and mkdocstrings) resolve hints eagerly; on the
-        # 3.9 floor a PEP 604 union or typing.Self here would raise.
-        assert t.get_type_hints(IntEnum.extend)
-
-
-@pytest.mark.usefixtures("needs_yaml")
-class TestIgnoreErrorPredicate:
-    def test_predicate_skips_only_selected_errors(self, tmp_path):
-        (tmp_path / "good.yaml").write_text("x: 1\n")
-        (tmp_path / "bad.yaml").write_text("x: [unclosed\n")  # malformed YAML
-
-        # Skip a missing file, but let a real parse error propagate.
-        def only_missing(error, **ctx):
-            return isinstance(error, FileNotFoundError)
-
-        loader = ConfigLoader(base_dir=tmp_path, ignore_error=only_missing)
-
-        # Missing file is skipped -> the good file still loads.
-        result = loader.load("nope.yaml", "good.yaml")
-        assert result == {"x": 1}
-
-        # A malformed file raises (predicate returns False for a YAML error).
-        import yaml
-
-        with pytest.raises(yaml.YAMLError):
-            loader.load("bad.yaml")
-
-
-class TestHashMerge:
-    def _files(self, tmp_path):
-        (tmp_path / "a.yaml").write_text("v: 1\n")
-        (tmp_path / "b.yaml").write_text("v: 2\n")
-
-    @pytest.mark.usefixtures("needs_yaml")
-    def test_hash_default_key_is_stem(self, tmp_path):
-        self._files(tmp_path)
-        loader = ConfigLoader(base_dir=tmp_path, merge=ConfigLoaderMergeMethod.Hash)
-        result = loader.load("a.yaml", "b.yaml")
-        assert result == {"a": {"v": 1}, "b": {"v": 2}}
-
-    @pytest.mark.usefixtures("needs_yaml")
-    def test_hash_attribute_key_factory(self, tmp_path):
-        self._files(tmp_path)
-        loader = ConfigLoader(base_dir=tmp_path, merge=ConfigLoaderMergeMethod.Hash)
-        result = loader.load("a.yaml", "b.yaml", key_factory="name")
-        assert set(result.keys()) == {"a.yaml", "b.yaml"}
-
-    @pytest.mark.usefixtures("needs_jinja2")
-    def test_hash_jinja_key_factory(self, tmp_path):
-        self._files(tmp_path)
-        loader = ConfigLoader(base_dir=tmp_path, merge=ConfigLoaderMergeMethod.Hash)
-        result = loader.load("a.yaml", "b.yaml", key_factory="%pathname.stem ~ '!'")
-        assert set(result.keys()) == {"a!", "b!"}
-
-
-@pytest.mark.usefixtures("needs_yaml")
-class TestPerCallOverrideIsolation:
-    def test_overrides_do_not_leak_into_instance(self, tmp_path):
-        (tmp_path / "a.yaml").write_text("x: 1\n")
-        loader = ConfigLoader(
-            base_dir=tmp_path,
-            merge=ConfigLoaderMergeMethod.Simple,
-            interpolate=False,
-        )
-        before = (
-            loader.merge,
-            loader.interpolate,
-            loader.merge_options,
-            loader.sandbox,
-        )
-        loader.load(
-            "a.yaml",
-            merge=ConfigLoaderMergeMethod.Deep,
-            merge_options={"mergelists": True},
-            interpolate=True,
-            sandbox=True,
-        )
-        after = (loader.merge, loader.interpolate, loader.merge_options, loader.sandbox)
-        assert before == after
-
-
-# ---------------------------------------------------------------------------
-# Recursive glob expansion
-#
-# Regression: `recursive` was documented on the constructor, on load(), and in
-# the shipped API header, but neither load() nor load_all() forwarded it to
-# parse_sources() — so glob expansion always ran non-recursively and both the
-# instance setting and the per-call override were silent no-ops. _load() also
-# resolved a `recursive` local it never used (glob expansion happens before
-# _load is reached).
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.usefixtures("needs_yaml")
-class TestRecursiveGlob:
-    @staticmethod
-    def _tree(tmp_path):
-        (tmp_path / "top.yaml").write_text("a: 1\n")
-        (tmp_path / "sub").mkdir()
-        (tmp_path / "sub" / "nested.yaml").write_text("b: 2\n")
-
-    def test_instance_recursive_true_includes_nested(self, tmp_path):
-        self._tree(tmp_path)
-        loader = ConfigLoader(
-            base_dir=tmp_path,
-            recursive=True,
-            merge=ConfigLoaderMergeMethod.Deep,
-        )
-        assert loader.load("**/*.yaml") == {"a": 1, "b": 2}
-
-    def test_per_call_recursive_true_includes_nested(self, tmp_path):
-        self._tree(tmp_path)
-        loader = ConfigLoader(base_dir=tmp_path, merge=ConfigLoaderMergeMethod.Deep)
-        assert loader.load("**/*.yaml", recursive=True) == {"a": 1, "b": 2}
-
-    def test_per_call_false_overrides_instance_true(self, tmp_path):
-        self._tree(tmp_path)
-        loader = ConfigLoader(
-            base_dir=tmp_path,
-            recursive=True,
-            merge=ConfigLoaderMergeMethod.Deep,
-        )
-        # The per-call override must win, i.e. it must not pick up the
-        # instance's True — which is only observable now that either reaches
-        # parse_sources at all.
-        assert loader.load("**/*.yaml", recursive=False) == {"b": 2}
-
-    def test_default_non_recursive_behavior_unchanged(self, tmp_path):
-        # Pins the pre-fix default so the fix is additive: with recursive unset
-        # the expansion is unchanged from the 0.11.0 behavior.
-        self._tree(tmp_path)
-        loader = ConfigLoader(base_dir=tmp_path, merge=ConfigLoaderMergeMethod.Deep)
-        assert loader.load("**/*.yaml") == {"b": 2}
-
-    def test_load_all_honors_instance_recursive(self, tmp_path):
-        self._tree(tmp_path)
-        recursive_docs = list(
-            ConfigLoader(base_dir=tmp_path, recursive=True).load_all("**/*.yaml")
-        )
-        assert {"a": 1} in recursive_docs and {"b": 2} in recursive_docs
-        plain_docs = list(ConfigLoader(base_dir=tmp_path).load_all("**/*.yaml"))
-        assert plain_docs == [{"b": 2}]
-
-
-class TestJinja2Unavailable:
-    """Every Jinja2-backed option names the extra when Jinja2 cannot import.
-
-    The loads run in a child process with jinja2 blocked, and with
-    ignore_error=True — which also pins that the error is raised before the
-    predicate is consulted, rather than being swallowed into a None result.
-    """
-
-    @staticmethod
-    def _run(tmp_path, body, blocked=("jinja2",)):
-        blocks = "\n".join(f"sys.modules[{name!r}] = None" for name in blocked)
-        code = (
-            "import sys, json\n"
-            f"{blocks}\n"
-            "from yaconfiglib import ConfigLoader\n"
-            f"{body}\n"
-        )
-        return subprocess.run(
-            [sys.executable, "-c", code],
-            capture_output=True,
-            text=True,
-            cwd=tmp_path,
-            timeout=60,
-        )
+class TestOverrides:
+    def _layers(self, tmp_path):
+        _json(tmp_path / "a.json", {"db": {"host": "h", "port": 1}})
+        _json(tmp_path / "b.json", {"db": {"port": 2}})
+        return Loader(base_dir=tmp_path)
+
+    def test_override_applies_to_that_call_only(self, tmp_path):
+        loader = self._layers(tmp_path)
+        assert loader.load("a.json", "b.json", merge="deep") == {
+            "db": {"host": "h", "port": 2}
+        }
+        assert loader.load("a.json", "b.json") == {"db": {"port": 2}}
+
+    def test_merge_options_override_does_not_leak(self, tmp_path):
+        _write(tmp_path / "a.json", '{"items": [{"name": "api", "on": 0}]}')
+        _write(tmp_path / "b.json", '{"items": [{"name": "api", "on": 1}]}')
+        loader = Loader(base_dir=tmp_path, merge="deep")
+        merged = loader.load("a.json", "b.json", merge_options={"mergelists": True})
+        assert merged == {"items": [{"name": "api", "on": 1}]}
+        assert loader.load("a.json", "b.json") == {
+            "items": [{"name": "api", "on": 0}, {"name": "api", "on": 1}]
+        }
 
     @pytest.mark.parametrize(
-        "option",
+        "name, value",
         [
-            'transform="value.a"',
-            'key_factory="%pathname.stem"',
-            "interpolate=True",
+            ("policy", Policy.trusted()),
+            ("encoding", "utf-8"),
+            ("merge", "deep"),
+            ("merge_options", {}),
+            ("collect", "list"),
+            ("key", lambda name, doc: name),
+            ("recursive", True),
+            ("interpolate", False),
+            ("interpolator", None),
+            ("inject_env", False),
+            ("wrap", None),
+            ("on_error", False),
+            ("format_options", {"json": {}}),
         ],
     )
-    def test_feature_names_jinja2_extra(self, tmp_path, option):
-        (tmp_path / "a.json").write_text('{"a": 1}')
-        done = self._run(
-            tmp_path,
-            "loader = ConfigLoader(base_dir="
-            f"{str(tmp_path)!r}, ignore_error=True)\n"
-            "try:\n"
-            f"    print('RESULT', loader.load('a.json', {option}))\n"
-            "except Exception as exc:\n"
-            "    print(type(exc).__name__, exc)\n",
+    def test_every_documented_override_is_accepted(self, tmp_path, name, value):
+        _json(tmp_path / "a.json", {"a": 1})
+        loader = Loader(base_dir=tmp_path)
+        assert loader.load("a.json", **{name: value}) is not None
+        assert list(loader.load_all("a.json", **{name: value}))
+
+    @pytest.mark.parametrize(
+        "name, value",
+        [
+            ("nope", 1),
+            ("parse_float", decimal.Decimal),
+            ("base_dir", "."),
+            ("bound_loops", False),
+            ("formats", ["json"]),
+            ("allow_commands", True),
+        ],
+    )
+    def test_unknown_keyword_is_type_error(self, tmp_path, name, value):
+        _json(tmp_path / "a.json", {"a": 1})
+        loader = Loader(base_dir=tmp_path)
+        with pytest.raises(TypeError, match=name):
+            loader.load("a.json", **{name: value})
+        with pytest.raises(TypeError, match=name):
+            list(loader.load_all("a.json", **{name: value}))
+
+    def test_format_option_keyword_points_at_format_options(self, tmp_path):
+        _json(tmp_path / "a.json", {"a": 1})
+        with pytest.raises(TypeError, match="format_options"):
+            Loader(base_dir=tmp_path).load("a.json", parse_float=decimal.Decimal)
+
+    def test_overrides_are_validated(self, tmp_path):
+        _json(tmp_path / "a.json", {"a": 1})
+        loader = Loader(base_dir=tmp_path)
+        with pytest.raises(ValueError):
+            loader.load("a.json", collect="nope")
+        with pytest.raises(ValueError):
+            loader.load("a.json", merge="nope")
+        with pytest.raises(TypeError):
+            loader.load("a.json", policy={})
+
+    def test_override_policy_applies(self):
+        loader = Loader(policy=Policy.trusted())
+        with pytest.raises(CommandsDisabledError):
+            loader.load('cmd+json://python -c "print(1)"', policy=Policy())
+
+    def test_load_all_override(self, tmp_path):
+        _json(tmp_path / "a.json", {"a": {"b": 1}})
+        loader = Loader(base_dir=tmp_path)
+        (document,) = loader.load_all("a.json", wrap=True)
+        assert isinstance(document, DotAccessibleDict)
+        (document,) = loader.load_all("a.json")
+        assert type(document) is dict
+
+
+# ---------------------------------------------------------------------------
+# Combining: merge strategies and collect modes
+# ---------------------------------------------------------------------------
+
+
+class TestMergeStrategies:
+    def _layers(self, tmp_path):
+        _json(
+            tmp_path / "a.json", {"x": 1, "db": {"host": "h", "port": 1}, "l": [1, 2]}
         )
-        assert "ImportError" in done.stdout, done.stdout + done.stderr
-        assert "yaconfiglib[jinja2]" in done.stdout
-        assert "RESULT" not in done.stdout
+        _json(tmp_path / "b.json", {"y": 2, "db": {"port": 2}, "l": [2, 3]})
+        return Loader(base_dir=tmp_path)
 
-    def test_broken_jinja2_reports_import_failure(self, tmp_path):
-        (tmp_path / "a.json").write_text('{"a": 1}')
-        done = self._run(
-            tmp_path,
-            "try:\n"
-            "    import jinja2\n"
-            "except ImportError as exc:\n"
-            "    reason = str(exc)\n"
-            "else:\n"
-            "    reason = None\n"
-            "loader = ConfigLoader(base_dir="
-            f"{str(tmp_path)!r}, ignore_error=True)\n"
-            "try:\n"
-            "    loader.load('a.json', transform='value.a')\n"
-            "except ImportError as exc:\n"
-            "    print('REASON-MATCH', reason is not None and reason in str(exc))\n"
-            "    print('CAUSE', isinstance(exc.__cause__, ImportError))\n",
-            # Only markupsafe: jinja2 is then installed but unimportable, the
-            # real shape of a Jinja2 2.x beside MarkupSafe 2.1+.
-            blocked=("markupsafe",),
+    def test_simple_is_the_default(self, tmp_path):
+        loader = self._layers(tmp_path)
+        assert loader.load("a.json", "b.json") == {
+            "x": 1,
+            "y": 2,
+            "db": {"port": 2},
+            "l": [2, 3],
+        }
+        assert loader.load("a.json", "b.json", merge="simple") == loader.load(
+            "a.json", "b.json"
         )
-        assert "REASON-MATCH True" in done.stdout, done.stdout + done.stderr
-        assert "CAUSE True" in done.stdout
 
-
-@pytest.mark.usefixtures("needs_yaml")
-class TestLoadsAndLoadArguments:
-    """The stdlib-style string API: what it parses, and what it refuses.
-
-    `loads()` read every string as YAML, so a document naming its own format
-    on its first line was misparsed, and bytes in any codec that does not
-    spell ``#!`` in ASCII failed with a message about paths. `load(None)` and
-    `load("")` quietly returned None, turning an unset config path into an
-    empty configuration.
-    """
-
-    @pytest.mark.parametrize("fmt", ["toml", "json"])
-    def test_loads_honors_recognized_marker_line(self, request, fmt):
-        import yaconfiglib
-
-        if fmt == "toml":
-            request.getfixturevalue("needs_toml")
-            doc = "#!c.toml\n[s]\nk = 'v'\n"
-            assert yaconfiglib.loads(doc) == {"s": {"k": "v"}}
-        else:
-            assert yaconfiglib.loads('#!c.json\n{"n": 1e5}') == {"n": 100000.0}
-
-    def test_loads_unrecognized_marker_line_is_content(self):
-        import yaconfiglib
-
-        # A real shebang names no format, so the line stays content and the
-        # document keeps the YAML default (where that line is a comment).
-        assert yaconfiglib.loads("#!/usr/bin/env x\na: 1\n") == {"a": 1}
-
-    def test_loads_script_marker_line_is_not_run(self):
-        import yaconfiglib
-
-        # CommandBackend is excluded from the claim, so a script name never
-        # turns a string into a program.
-        assert yaconfiglib.loads("#!gen.sh\na: 1\n") == {"a": 1}
-
-    def test_loads_without_loader_is_yaml(self):
-        import yaconfiglib
-
-        # YAML is the documented default, and 1e5 is a string in YAML 1.1.
-        assert yaconfiglib.loads('{"n": 1e5}') == {"n": "1e5"}
-        assert yaconfiglib.loads('{"n": 1e5}', loader="json") == {"n": 100000.0}
-
-    @pytest.mark.parametrize("codec", ["utf-8-sig", "utf-16", "utf-16-le", "utf-32"])
-    def test_loads_bytes_in_any_codec(self, codec):
-        import yaconfiglib
-
-        assert yaconfiglib.loads("a: café\n".encode(codec), encoding=codec) == {
-            "a": "café"
+    def test_substitute(self, tmp_path):
+        loader = self._layers(tmp_path)
+        assert loader.load("a.json", "b.json", merge="substitute") == {
+            "x": 1,
+            "y": 2,
+            "db": {"host": "h", "port": 2},
+            "l": [2, 3],
         }
 
-    def test_loads_utf8_bom_bytes_default_codec(self):
-        import yaconfiglib
+    def test_deep(self, tmp_path):
+        loader = self._layers(tmp_path)
+        assert loader.load("a.json", "b.json", merge="deep") == {
+            "x": 1,
+            "y": 2,
+            "db": {"host": "h", "port": 2},
+            "l": [1, 2, 3],
+        }
 
-        assert yaconfiglib.loads("k: 1\n".encode("utf-8-sig")) == {"k": 1}
+    def test_merge_names_are_resolved_at_construction(self, tmp_path):
+        self._layers(tmp_path)
+        assert Loader(base_dir=tmp_path, merge="deep").load("a.json", "b.json")[
+            "l"
+        ] == [
+            1,
+            2,
+            3,
+        ]
 
-    def test_loads_bytearray(self):
-        import yaconfiglib
+    def test_top_level_list_documents_replace_under_simple(self, tmp_path):
+        _write(tmp_path / "a.json", '["a", "b", "c"]')
+        _write(tmp_path / "b.json", '["x"]')
+        assert Loader(base_dir=tmp_path).load("a.json", "b.json") == ["x"]
 
-        assert yaconfiglib.loads(bytearray(b"a: 1\n")) == {"a": 1}
+    def test_callable_strategy(self, tmp_path):
+        self._layers(tmp_path)
+        calls = []
 
-    @pytest.mark.parametrize("bad", [None, 42])
-    def test_loads_rejects_other_types(self, bad):
-        import yaconfiglib
+        def keep_first(a, b, *, memo=None, **options):
+            calls.append((a, b, options))
+            return a
 
-        with pytest.raises(TypeError, match="str or bytes"):
-            yaconfiglib.loads(bad)
-
-    def test_load_none_raises_type_error(self):
-        import yaconfiglib
-
-        with pytest.raises(TypeError, match="load"):
-            yaconfiglib.load(None)
-
-    @pytest.mark.parametrize("empty", ["", b""])
-    def test_load_empty_raises_value_error(self, empty):
-        import yaconfiglib
-
-        with pytest.raises(ValueError, match="load"):
-            yaconfiglib.load(empty)
-
-    def test_load_empty_iterable_returns_default(self):
-        import yaconfiglib
-
-        # Unchanged: only the single-source form is strict.
-        assert yaconfiglib.load([], default={"d": 1}) == {"d": 1}
-
-    def test_config_loader_skips_none_layer(self, tmp_path):
-        (tmp_path / "base.yaml").write_text("a: 1\n", encoding="utf-8")
-        loader = ConfigLoader(base_dir=str(tmp_path))
-        # The hiera pattern: load("base.yaml", os.environ.get("OVERRIDE")).
-        assert loader.load("base.yaml", None) == {"a": 1}
-
-    def test_parse_sources_logs_skipped_empty_source(self, caplog):
-        import logging
-
-        caplog.set_level(logging.DEBUG, logger="yaconfiglib.utils.source")
-        assert list(parse_sources([None, ""])) == []
-        assert any(
-            "skipping empty source" in record.message for record in caplog.records
+        _json(tmp_path / "c.json", {"z": 3})
+        result = Loader(base_dir=tmp_path, merge=keep_first).load(
+            "a.json", "b.json", "c.json"
         )
+        assert result["x"] == 1 and "y" not in result
+        # The first document seeds the result; the strategy runs once per later one.
+        assert len(calls) == 2
+        assert calls[1][1] == {"z": 3}
 
-    def test_loads_bytes_reach_backend_instance_verbatim(self):
-        import yaconfiglib
-        from yaconfiglib.backends import ConfigBackend
+    def test_merge_options_reach_the_strategy(self, tmp_path):
+        self._layers(tmp_path)
+        seen = []
 
-        class Raw(ConfigBackend):
-            def load(self, path, **options):
-                return path.read_bytes()
+        def record(a, b, *, memo=None, **options):
+            seen.append(options)
+            return b
 
-        payload = bytes([0xFF, 0x00])
-        # An ASCII-compatible codec must not decode the payload on its way to
-        # a byte-oriented backend.
-        assert yaconfiglib.loads(payload, loader=Raw()) == payload
+        Loader(base_dir=tmp_path, merge=record, merge_options={"flag": 1}).load(
+            "a.json", "b.json"
+        )
+        assert seen == [{"flag": 1}]
+
+    def test_deep_mergelists(self, tmp_path):
+        _write(tmp_path / "a.json", '{"items": [{"name": "api", "enabled": false}]}')
+        _write(tmp_path / "b.json", '{"items": [{"name": "api", "enabled": true}]}')
+        loader = Loader(
+            base_dir=tmp_path, merge="deep", merge_options={"mergelists": True}
+        )
+        assert loader.load("a.json", "b.json") == {
+            "items": [{"name": "api", "enabled": True}]
+        }
+
+    def test_inputs_are_not_modified(self):
+        base = {"db": {"host": "h"}}
+        override = {"db": {"port": 1}}
+        result = Loader(merge="deep").load(base, override)
+        assert result == {"db": {"host": "h", "port": 1}}
+        assert base == {"db": {"host": "h"}} and override == {"db": {"port": 1}}
+
+    def test_single_source_is_not_merged(self):
+        def boom(a, b, **options):
+            raise AssertionError("merge called")
+
+        assert Loader(merge=boom).load({"a": 1}) == {"a": 1}
 
 
-@pytest.mark.usefixtures("needs_yaml")
-class TestDumpOutputContract:
-    """What the writer produces, and where it can write it.
+class TestCollect:
+    def _files(self, tmp_path):
+        _json(tmp_path / "a.json", {"v": 1})
+        _json(tmp_path / "b.json", {"v": 2})
+        return Loader(base_dir=tmp_path)
 
-    `dumps()` sorted keys and escaped every non-ASCII character, so a written
-    config no longer looked like the one that was read; it wrote a tuple — a
-    value this library's own interpolation produces — as `!!python/tuple`,
-    which its loader refuses; and `dump()` crashed on `encoding=`, on binary
-    targets and on a `MemPath`.
-    """
+    def test_last(self, tmp_path):
+        loader = self._files(tmp_path)
+        assert loader.load("a.json", "b.json", collect="last") == {"v": 2}
 
-    def test_dumps_keeps_insertion_order(self):
-        import yaconfiglib
+    def test_list_keeps_order(self, tmp_path):
+        loader = self._files(tmp_path)
+        assert loader.load("b.json", "a.json", collect="list") == [{"v": 2}, {"v": 1}]
 
-        assert yaconfiglib.dumps({"zeta": 1, "alpha": 2}) == "zeta: 1\nalpha: 2\n"
+    def test_list_of_one(self, tmp_path):
+        loader = self._files(tmp_path)
+        assert loader.load("a.json", collect="list") == [{"v": 1}]
 
-    def test_dumps_writes_non_ascii_as_is(self):
-        import yaconfiglib
+    def test_hash_keys_on_the_file_stem(self, tmp_path):
+        loader = self._files(tmp_path)
+        assert loader.load("a.json", "b.json", collect="hash") == {
+            "a": {"v": 1},
+            "b": {"v": 2},
+        }
 
-        assert yaconfiglib.dumps({"a": "café"}) == "a: café\n"
+    def test_hash_with_key_callable(self, tmp_path):
+        loader = self._files(tmp_path)
+        seen = []
 
-    def test_dumps_tuple_is_a_plain_sequence(self):
-        import yaconfiglib
+        def key(name, document):
+            seen.append((pathlib.PurePath(name).name, document))
+            return pathlib.PurePath(name).name
 
-        out = yaconfiglib.dumps({"t": (1, 2)})
-        assert "python/tuple" not in out
-        assert yaconfiglib.loads(out) == {"t": [1, 2]}
+        result = loader.load("a.json", "b.json", collect="hash", key=key)
+        assert set(result) == {"a.json", "b.json"}
+        assert seen == [("a.json", {"v": 1}), ("b.json", {"v": 2})]
 
-    def test_dumps_pyyaml_defaults_can_be_restored(self):
-        import yaconfiglib
+    def test_hash_repeated_key_warns_and_keeps_the_later(self, tmp_path, caplog):
+        for name in ("api", "billing", "web"):
+            _json(tmp_path / "services" / name / "config.json", {"service": name})
+        loader = Loader(base_dir=tmp_path, collect="hash")
+        with caplog.at_level(logging.WARNING, logger="yaconfiglib"):
+            result = loader.load("services/*/config.json")
+        assert result == {"config": {"service": "web"}}
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 2
+        assert all("config" in r.getMessage() for r in warnings)
 
-        out = yaconfiglib.dumps({"b": 1, "a": "é"}, sort_keys=True, allow_unicode=False)
-        assert out == 'a: "\\xE9"\nb: 1\n'
+    def test_hash_parent_directory_key_keeps_every_source(self, tmp_path, caplog):
+        for name in ("api", "billing", "web"):
+            _json(tmp_path / "services" / name / "config.json", {"service": name})
+        loader = Loader(
+            base_dir=tmp_path,
+            collect="hash",
+            key=lambda name, document: pathlib.PurePath(name).parent.name,
+        )
+        with caplog.at_level(logging.WARNING, logger="yaconfiglib"):
+            result = loader.load("services/*/config.json")
+        assert result == {
+            "api": {"service": "api"},
+            "billing": {"service": "billing"},
+            "web": {"service": "web"},
+        }
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
 
-    def test_dumps_rejects_encoding(self):
-        import yaconfiglib
+    def test_hash_unnamed_source_raises(self):
+        with pytest.raises(ConfigValueError, match="hash"):
+            Loader(collect="hash").load(Text('{"a": 1}', format="json"))
 
-        with pytest.raises(TypeError, match="encoding"):
-            yaconfiglib.dumps({"a": 1}, encoding="utf-8")
+    def test_hash_named_text(self):
+        result = Loader(collect="hash").load(
+            Text('{"a": 1}', format="json", name="defaults.json")
+        )
+        assert result == {"defaults": {"a": 1}}
 
-    @pytest.mark.parametrize("codec", ["utf-8", "utf-16"])
-    def test_dump_path_uses_encoding(self, tmp_path, codec):
-        import yaml
+    def test_hash_named_data(self):
+        result = Loader(collect="hash").load(Data({"a": 1}, name="builtin"))
+        assert result == {"builtin": {"a": 1}}
 
-        import yaconfiglib
+    def test_collect_ignores_the_merge_strategy(self, tmp_path):
+        loader = self._files(tmp_path)
 
-        target = tmp_path / "out.yaml"
-        yaconfiglib.dump({"a": "café"}, str(target), encoding=codec)
-        assert yaml.safe_load(target.read_text(encoding=codec)) == {"a": "café"}
+        def boom(a, b, **options):
+            raise AssertionError("merge called")
 
-    @pytest.mark.parametrize("kind", ["bytesio", "wb_file", "gzip"])
-    def test_dump_binary_targets(self, tmp_path, kind):
-        import yaconfiglib
+        assert loader.load("a.json", "b.json", collect="list", merge=boom) == [
+            {"v": 1},
+            {"v": 2},
+        ]
 
-        obj = {"a": "café"}
-        expected = yaconfiglib.dumps(obj).encode("utf-8")
-        if kind == "bytesio":
-            buffer = io.BytesIO()
-            yaconfiglib.dump(obj, buffer)
-            written = buffer.getvalue()
-        elif kind == "wb_file":
-            target = tmp_path / "out.yaml"
-            with open(target, "wb") as handle:
-                yaconfiglib.dump(obj, handle)
-            written = target.read_bytes()
-        else:
-            import gzip
 
-            target = tmp_path / "out.yaml.gz"
-            with gzip.open(target, "wb") as handle:
-                yaconfiglib.dump(obj, handle)
-            with gzip.open(target, "rb") as handle:
-                written = handle.read()
-        assert written == expected
+# ---------------------------------------------------------------------------
+# load() arguments: default, flatten, transform; finishing: wrap, into
+# ---------------------------------------------------------------------------
 
-    def test_dump_binary_stream_with_encoding_loads_back(self):
-        import yaconfiglib
 
-        buffer = io.BytesIO()
-        yaconfiglib.dump({"a": 1}, buffer, encoding="utf-16")
-        # One BOM, not one per written chunk: PyYAML's own encoding= applied
-        # its codec per chunk, and the result did not load back.
-        assert yaconfiglib.load(io.BytesIO(buffer.getvalue()), encoding="utf-16") == {
+class TestDefault:
+    def test_returned_when_nothing_matches(self, tmp_path):
+        loader = Loader(base_dir=tmp_path)
+        assert loader.load("no-such-*.json", default={"fallback": True}) == {
+            "fallback": True
+        }
+
+    def test_returned_when_every_source_fails(self, tmp_path):
+        loader = Loader(base_dir=tmp_path, on_error=True)
+        assert loader.load("missing.json", default={"fallback": True}) == {
+            "fallback": True
+        }
+
+    def test_never_merged_with_a_document(self, tmp_path):
+        _json(tmp_path / "one.json", {"a": 1})
+        loader = Loader(base_dir=tmp_path, merge="deep")
+        assert loader.load("one.json", default={"fallback": True}) == {"a": 1}
+
+    def test_none_by_default(self, tmp_path):
+        assert Loader(base_dir=tmp_path).load("no-such-*.json") is None
+
+    def test_none_and_empty_layers_are_skipped(self, tmp_path):
+        _json(tmp_path / "base.json", {"a": 1})
+        loader = Loader(base_dir=tmp_path)
+        assert loader.load("base.json", None, "") == {"a": 1}
+        assert loader.load(None, default={"d": 1}) == {"d": 1}
+
+
+class TestFlatten:
+    def test_mapping_of_mappings(self, tmp_path):
+        _json(tmp_path / "one.json", {"a": 1})
+        _json(tmp_path / "two.json", {"b": 2})
+        result = Loader(base_dir=tmp_path, collect="hash").load(
+            "one.json", "two.json", flatten=True
+        )
+        assert result == {"a": 1, "b": 2}
+
+    def test_list_of_lists(self, tmp_path):
+        _write(tmp_path / "one.json", "[1, 2]")
+        _write(tmp_path / "two.json", "[3]")
+        result = Loader(base_dir=tmp_path, collect="list").load(
+            "one.json", "two.json", flatten=True
+        )
+        assert result == [1, 2, 3]
+
+    def test_none_members_are_skipped(self, tmp_path):
+        _json(tmp_path / "one.json", {"a": 1})
+        _write(tmp_path / "empty.json", "null")
+        loader = Loader(base_dir=tmp_path)
+        assert loader.load("one.json", "empty.json", collect="hash", flatten=True) == {
             "a": 1
         }
-
-    def test_dump_to_mempath(self):
-        import yaml
-
-        import yaconfiglib
-        from yaconfiglib.utils.source import MemPath
-
-        obj = {"a": 1}
-        target = MemPath("dumped.yaml")
-        # os.fspath(MemPath) raises, so write_text is the only way in.
-        yaconfiglib.dump(obj, target)
-        assert yaml.safe_load(target.read_text(encoding="utf-8")) == obj
-
-    def test_dump_non_utf_text_stream_keeps_escapes(self, tmp_path):
-        import yaml
-
-        import yaconfiglib
-
-        target = tmp_path / "out.yaml"
-        with open(target, "w", encoding="cp1252") as handle:
-            # cp1252 cannot hold this text, so it must be escaped rather than
-            # raising UnicodeEncodeError.
-            yaconfiglib.dump({"n": "日本"}, handle)
-        assert yaml.safe_load(target.read_text(encoding="cp1252")) == {"n": "日本"}
-
-    def test_dump_path_uses_text_mode_line_endings(self, tmp_path):
-        import os
-
-        import yaconfiglib
-
-        target = tmp_path / "out.yaml"
-        yaconfiglib.dump({"a": 1, "b": 2}, str(target))
-        assert (b"\r\n" in target.read_bytes()) == (os.linesep == "\r\n")
-
-    def test_dump_serialization_error_leaves_target(self, tmp_path):
-        import yaconfiglib
-
-        target = tmp_path / "out.yaml"
-        target.write_text("old\n", encoding="utf-8")
-        with pytest.raises(Exception):
-            yaconfiglib.dump({"g": (x for x in [])}, str(target))
-        # Serialization happens before the file is opened.
-        assert target.read_text(encoding="utf-8") == "old\n"
-
-
-@pytest.mark.usefixtures("needs_yaml")
-class TestIgnoreErrorContract:
-    """One predicate signature, one offer per failure, and visible skips.
-
-    The three call sites passed different keywords, so a predicate written with
-    explicit parameters crashed with `TypeError` in whichever phase it had not
-    been written for; and a blanket `ignore_error=True` logged only at DEBUG,
-    which made failures invisible in a default configuration.
-    """
-
-    def _recorder(self, seen, answer=False):
-        def predicate(error, **context):
-            seen.append((error, context))
-            return answer
-
-        return predicate
-
-    def test_load_phase_keywords(self, tmp_path):
-        from yaconfiglib import ConfigLoader
-
-        (tmp_path / "bad.json").write_text('{"a": }\n', encoding="utf-8")
-        seen = []
-        loader = ConfigLoader(base_dir=str(tmp_path), ignore_error=self._recorder(seen))
-        with pytest.raises(Exception):
-            loader.load("bad.json")
-        error, context = seen[-1]
-        assert set(context) == {"phase", "path", "loader"}
-        assert context["phase"] == "load"
-        assert str(context["path"]).endswith("bad.json")
-        assert context["loader"] is loader
-
-    def test_predicate_with_explicit_keywords_works_for_interpolation(
-        self, tmp_path, request
-    ):
-        import jinja2 as _jinja2
-
-        from yaconfiglib import ConfigLoader
-
-        request.getfixturevalue("needs_jinja2")
-
-        def predicate(error, *, phase, path, loader, **extra):
-            return False
-
-        (tmp_path / "a.yaml").write_text('a: "{{ nosuch }}"\n', encoding="utf-8")
-        loader = ConfigLoader(
-            base_dir=str(tmp_path), ignore_error=predicate, strict=True
-        )
-        # The interpolation offer used to pass result= and no path=, so a
-        # predicate naming path= raised TypeError instead of the real error.
-        with pytest.raises(_jinja2.UndefinedError):
-            loader.load("a.yaml", interpolate=True)
-
-    def test_include_failure_offered_once_per_level(self, tmp_path):
-        from yaconfiglib import ConfigLoader
-
-        (tmp_path / "parent_json.yaml").write_text(
-            "secrets: !include secrets.json\n", encoding="utf-8"
-        )
-        (tmp_path / "secrets.json").write_text('{"a": }\n', encoding="utf-8")
-        seen = []
-        loader = ConfigLoader(base_dir=str(tmp_path), ignore_error=self._recorder(seen))
-        with pytest.raises(Exception):
-            loader.load("parent_json.yaml")
-        pairs = [
-            (context["phase"], context["path"].name if context["path"] else None)
-            for _error, context in seen
+        _write(tmp_path / "list.json", "[1]")
+        assert loader.load("list.json", "empty.json", collect="list", flatten=True) == [
+            1
         ]
-        assert pairs == [("load", "secrets.json"), ("include", "parent_json.yaml")]
-        # Both offers carry the same exception object; only the phase differs.
-        assert seen[0][0] is seen[1][0]
 
-    def test_predicate_can_skip_the_including_file(self, tmp_path):
-        from yaconfiglib import ConfigLoader
+    def test_non_mapping_member_names_it(self, tmp_path):
+        _json(tmp_path / "one.json", {"a": 1})
+        _write(tmp_path / "scalar.json", "42")
+        with pytest.raises(ConfigTypeError, match="scalar"):
+            Loader(base_dir=tmp_path, collect="hash").load(
+                "one.json", "scalar.json", flatten=True
+            )
 
-        (tmp_path / "parent_json.yaml").write_text(
-            "secrets: !include secrets.json\n", encoding="utf-8"
-        )
-        (tmp_path / "secrets.json").write_text('{"a": }\n', encoding="utf-8")
+    def test_string_member_of_a_list_is_not_a_sequence(self, tmp_path):
+        _write(tmp_path / "one.json", '"abc"')
+        with pytest.raises(ConfigTypeError):
+            Loader(base_dir=tmp_path, collect="list").load("one.json", flatten=True)
 
-        # **context, not explicit keywords: this is the pin that the documented
-        # use keeps working, so it must be writable against either signature.
-        def skip_parent(error, **context):
-            return getattr(context.get("path"), "name", None) == "parent_json.yaml"
+    def test_scalar_result_raises(self):
+        with pytest.raises(ConfigTypeError, match="flatten"):
+            Loader().load(Data("scalar"), flatten=True)
 
-        loader = ConfigLoader(base_dir=str(tmp_path), ignore_error=skip_parent)
-        # The documented second use of the double offer: drop the whole
-        # including file when one of its includes fails.
-        assert loader.load("parent_json.yaml") is None
+    def test_type_error_compatible(self):
+        with pytest.raises(TypeError):
+            Loader().load(Data(5), flatten=True)
 
-    def test_merge_failure_offered_with_merge_phase(self, tmp_path):
-        from yaconfiglib import ConfigLoader
 
-        (tmp_path / "a.yaml").write_text("a: 1\n", encoding="utf-8")
-        (tmp_path / "b.yaml").write_text("b: 2\n", encoding="utf-8")
-
-        def broken(a, b, **options):
-            raise TypeError("no merging today")
-
+class TestTransform:
+    def test_runs_on_each_document_before_combining(self, tmp_path):
+        _json(tmp_path / "a.json", {"v": 1})
+        _json(tmp_path / "b.json", {"v": 2})
         seen = []
-        loader = ConfigLoader(
-            base_dir=str(tmp_path), ignore_error=self._recorder(seen, answer=True)
+
+        def transform(document, name):
+            seen.append((pathlib.PurePath(name).name, document))
+            return {pathlib.PurePath(name).stem: document["v"]}
+
+        result = Loader(base_dir=tmp_path).load("a.json", "b.json", transform=transform)
+        assert seen == [("a.json", {"v": 1}), ("b.json", {"v": 2})]
+        assert result == {"a": 1, "b": 2}
+
+    def test_result_is_combined(self, tmp_path):
+        _json(tmp_path / "a.json", {"a": 5})
+        result = Loader(base_dir=tmp_path).load(
+            "a.json", transform=lambda document, name: document["a"]
         )
-        result = loader.load("a.yaml", "b.yaml", merge=broken)
-        # A plain function has no init(), so the first document is taken as-is
-        # and the strategy is called once, for the second source.
-        pairs = [(context["phase"], context["path"].name) for _e, context in seen]
-        assert pairs == [("merge", "b.yaml")]
-        assert result == {"a": 1}
+        assert result == 5
 
-    def test_bool_skip_logs_warning_naming_source_phase_and_type(
-        self, tmp_path, caplog
-    ):
-        import logging
+    def test_load_all(self, tmp_path):
+        _json(tmp_path / "a.json", {"a": 5})
+        documents = Loader(base_dir=tmp_path).load_all(
+            "a.json", transform=lambda document, name: [document]
+        )
+        assert list(documents) == [[{"a": 5}]]
 
-        from yaconfiglib import ConfigLoader
 
-        (tmp_path / "bad.json").write_text('{"a": }\n', encoding="utf-8")
-        caplog.set_level(logging.WARNING, logger="yaconfiglib.loader")
-        ConfigLoader(base_dir=str(tmp_path), ignore_error=True).load("bad.json")
+class TestWrap:
+    def test_plain_data_by_default(self):
+        result = Loader().load({"db": {"host": "h"}})
+        assert type(result) is dict and type(result["db"]) is dict
+
+    @pytest.mark.parametrize("wrap", [True, DotAccessibleDict])
+    def test_dot_access(self, wrap):
+        result = Loader(wrap=wrap).load({"db": {"host": "h", "port": 3306}})
+        assert isinstance(result, DotAccessibleDict)
+        assert isinstance(result["db"], DotAccessibleDict)
+        assert result.db.host == "h"
+        assert result.get("db.port") == 3306
+        assert result.get("db.missing", "default") == "default"
+
+    def test_false_is_plain(self):
+        assert type(Loader(wrap=False).load({"a": {}})) is dict
+
+    def test_callable(self):
+        assert Loader(wrap=lambda result: sorted(result)).load({"b": 1, "a": 2}) == [
+            "a",
+            "b",
+        ]
+
+    def test_ignored_with_into(self):
+        @dataclasses.dataclass
+        class Config:
+            a: int
+
+        result = Loader(wrap=True).load({"a": 1}, into=Config)
+        assert result == Config(1)
+
+    def test_load_all_wraps_each(self):
+        documents = list(Loader(wrap=True).load_all({"a": {"b": 1}}, {"c": {}}))
+        assert all(isinstance(document, DotAccessibleDict) for document in documents)
+        assert documents[0].a.b == 1
+
+
+class TestInto:
+    def test_hydrates_the_merged_result(self):
+        @dataclasses.dataclass
+        class Config:
+            host: str
+            port: int = 80
+
+        result = Loader(merge="deep").load(
+            {"host": "h", "x": 1}, {"port": 81}, into=Config
+        )
+        assert result == Config("h", 81)
+
+    def test_load_all_hydrates_each(self):
+        @dataclasses.dataclass
+        class Config:
+            a: int = 0
+
+        documents = Loader().load_all({"a": 1}, {"a": 2}, into=Config)
+        assert list(documents) == [Config(1), Config(2)]
+
+    def test_nothing_loaded_with_into(self, tmp_path):
+        @dataclasses.dataclass
+        class Config:
+            a: int = 0
+
+        with pytest.raises(ConfigTypeError):
+            Loader(base_dir=tmp_path).load("no-such-*.json", into=Config)
+
+
+# ---------------------------------------------------------------------------
+# on_error
+# ---------------------------------------------------------------------------
+
+
+class TestOnError:
+    def test_false_raises(self, tmp_path):
+        _write(tmp_path / "bad.json", '{"a": }')
+        with pytest.raises(ParseError):
+            Loader(base_dir=tmp_path).load("bad.json")
+
+    def test_true_skips_and_continues(self, tmp_path):
+        _write(tmp_path / "bad.json", '{"a": }')
+        _json(tmp_path / "good.json", {"x": 1})
+        loader = Loader(base_dir=tmp_path, on_error=True)
+        assert loader.load("missing.json", "bad.json", "good.json") == {"x": 1}
+
+    def test_true_warns_naming_source_phase_and_type(self, tmp_path, caplog):
+        _write(tmp_path / "bad.json", '{"a": }')
+        caplog.set_level(logging.WARNING, logger="yaconfiglib")
+        Loader(base_dir=tmp_path, on_error=True).load("bad.json")
         warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
-        assert warnings, "a blanket skip must be visible at WARNING"
-        message = warnings[-1].getMessage()
+        assert len(warnings) == 1
+        message = warnings[0].getMessage()
         assert "bad.json" in message
         assert "load" in message
-        assert "JSONDecodeError" in message
+        assert "ParseError" in message
 
-    def test_bool_skip_warning_omits_error_text(self, tmp_path, caplog):
-        import logging
-
-        from yaconfiglib import ConfigLoader
-
-        # The parse error quotes the offending line, which here holds a secret.
-        (tmp_path / "bad.yaml").write_text(
-            "token: SECRETVALUE\nbroken: [unclosed\n", encoding="utf-8"
-        )
-        caplog.set_level(logging.WARNING, logger="yaconfiglib.loader")
-        ConfigLoader(base_dir=str(tmp_path), ignore_error=True).load("bad.yaml")
+    def test_true_warning_omits_the_error_text(self, tmp_path, caplog):
+        # The parser's message can quote configuration; the warning names only
+        # the error's type.
+        _write(tmp_path / "bad.json", '{"token": "SECRETVALUE", "a": }')
+        _write(tmp_path / "bad.ini", "[s]\nSECRETVALUE\n")
+        caplog.set_level(logging.DEBUG, logger="yaconfiglib")
+        Loader(base_dir=tmp_path, on_error=True).load("bad.json", "bad.ini")
         warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
-        assert warnings
+        assert len(warnings) == 2
         for record in warnings:
             assert "SECRETVALUE" not in record.getMessage()
 
-    def test_predicate_skip_logs_debug_only(self, tmp_path, caplog):
-        import logging
-
-        from yaconfiglib import ConfigLoader
-
-        (tmp_path / "bad.json").write_text('{"a": }\n', encoding="utf-8")
-        caplog.set_level(logging.DEBUG, logger="yaconfiglib.loader")
-        loader = ConfigLoader(
-            base_dir=str(tmp_path),
-            ignore_error=lambda error, **context: True,
-        )
-        loader.load("bad.json")
-        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
-        # The predicate already saw the error, so DEBUG carries the traceback
-        # rather than a second WARNING line.
-        skips = [
-            r
-            for r in caplog.records
-            if r.exc_info and "bad.json" in r.getMessage() and "load" in r.getMessage()
-        ]
-        assert skips
-
-    def test_load_all_keywords_include_phase_and_value(self, tmp_path):
-        from yaconfiglib import ConfigLoader
-
-        (tmp_path / "bad.json").write_text('{"a": }\n', encoding="utf-8")
+    def test_predicate_receives_a_load_event(self, tmp_path):
+        _write(tmp_path / "bad.json", '{"a": }')
         seen = []
-        loader = ConfigLoader(
-            base_dir=str(tmp_path), ignore_error=self._recorder(seen, answer=True)
+        loader = Loader(base_dir=tmp_path, on_error=_recorder(seen))
+        with pytest.raises(ParseError) as caught:
+            loader.load("bad.json")
+        (event,) = seen
+        assert isinstance(event, LoadEvent)
+        assert event.error is caught.value
+        assert event.phase == "load"
+        assert str(event.path).endswith("bad.json")
+        assert event.key is None
+
+    def test_predicate_decides_per_failure(self, tmp_path):
+        _json(tmp_path / "good.json", {"x": 1})
+        _write(tmp_path / "bad.json", '{"a": }')
+        loader = Loader(
+            base_dir=tmp_path,
+            on_error=lambda event: isinstance(event.error, FileNotFoundError),
         )
-        assert list(loader.load_all("bad.json")) == []
-        _error, context = seen[-1]
-        assert context["phase"] == "load"
-        assert set(context) == {"phase", "path", "loader", "value"}
+        assert loader.load("nope.json", "good.json") == {"x": 1}
+        with pytest.raises(ParseError):
+            loader.load("bad.json")
+
+    def test_predicate_skip_logs_debug_only(self, tmp_path, caplog):
+        _write(tmp_path / "bad.json", '{"a": }')
+        caplog.set_level(logging.DEBUG, logger="yaconfiglib")
+        Loader(base_dir=tmp_path, on_error=lambda event: True).load("bad.json")
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert [r for r in caplog.records if "bad.json" in r.getMessage()]
 
     def test_declined_error_logs_no_warning(self, tmp_path, caplog):
-        import logging
-
-        from yaconfiglib import ConfigLoader
-
-        (tmp_path / "bad.json").write_text('{"a": }\n', encoding="utf-8")
-        caplog.set_level(logging.DEBUG, logger="yaconfiglib.loader")
-        with pytest.raises(Exception):
-            ConfigLoader(base_dir=str(tmp_path), ignore_error=False).load("bad.json")
-        # Nothing was skipped, so there is nothing to warn about.
+        _write(tmp_path / "bad.json", '{"a": }')
+        caplog.set_level(logging.DEBUG, logger="yaconfiglib")
+        with pytest.raises(ParseError):
+            Loader(base_dir=tmp_path, on_error=lambda event: False).load("bad.json")
         assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
 
+    def test_merge_phase(self, tmp_path):
+        _json(tmp_path / "a.json", {"a": 1})
+        _json(tmp_path / "b.json", {"b": 2})
 
-#: A document where one value fails to render and the rest is fine.
-_PARTIAL = (
-    "database:\n"
-    "  host: db.internal\n"
-    '  password: "p{% raw"\n'
-    "  port: 5432\n"
-    'log_path: "{{ base }}/logs"\n'
-    "base: /srv\n"
-)
+        def broken(a, b, **options):
+            raise ConfigTypeError("no merging today")
 
-
-@pytest.mark.usefixtures("needs_yaml")
-@pytest.mark.usefixtures("needs_jinja2")
-class TestInterpolationIgnoreError:
-    """`ignore_error` costs one value, not the document around it.
-
-    A single unrenderable template used to take its whole section with it and
-    leave the load reporting success: the walk dropped the key it was
-    rendering, and the loader returned that half-emptied document.
-    """
-
-    def test_ignore_error_true_keeps_section_and_skips_value(self, tmp_path):
-        from yaconfiglib import ConfigLoader
-
-        (tmp_path / "partial.yaml").write_text(_PARTIAL, encoding="utf-8")
-        loader = ConfigLoader(base_dir=str(tmp_path), ignore_error=True)
-        result = loader.load("partial.yaml", interpolate=True)
-        assert result["database"]["host"] == "db.internal"
-        assert result["database"]["port"] == 5432
-        # The failing value keeps its template text, and everything else still
-        # rendered.
-        assert result["database"]["password"] == "p{% raw"
-        assert result["log_path"] == "/srv/logs"
-
-    def test_predicate_receives_interpolate_phase_and_key(self, tmp_path):
-        from yaconfiglib import ConfigLoader
-
-        (tmp_path / "partial.yaml").write_text(_PARTIAL, encoding="utf-8")
         seen = []
+        loader = Loader(base_dir=tmp_path, on_error=_recorder(seen, answer=True))
+        result = loader.load("a.json", "b.json", merge=broken)
+        assert [(e.phase, pathlib.PurePath(e.path).name) for e in seen] == [
+            ("merge", "b.json")
+        ]
+        assert result == {"a": 1}
 
-        def record(error, **context):
-            seen.append(context)
-            return True
+    def test_merge_failure_raised_with_context(self, tmp_path):
+        _json(tmp_path / "a.json", {"a": 1})
+        _json(tmp_path / "b.json", {"b": 2})
 
-        loader = ConfigLoader(base_dir=str(tmp_path), ignore_error=record)
-        loader.load("partial.yaml", interpolate=True)
-        assert len(seen) == 1
-        assert seen[0]["phase"] == "interpolate"
-        assert seen[0]["path"] is None
-        assert seen[0]["key"] == ("database", "password")
+        def broken(a, b, **options):
+            raise ConfigTypeError("no merging today")
 
-    def test_skipped_key_template_keeps_original_key(self, tmp_path):
-        from yaconfiglib import ConfigLoader
+        with pytest.raises(ConfigTypeError) as caught:
+            Loader(base_dir=tmp_path).load("a.json", "b.json", merge=broken)
+        assert [frame.kind for frame in caught.value.config_frames] == ["merge"]
+        assert "b.json" in str(caught.value)
 
-        (tmp_path / "keys.yaml").write_text(
-            '"{% raw": value\nbase: /srv\nkept: "{{ base }}/x"\n', encoding="utf-8"
-        )
-        loader = ConfigLoader(base_dir=str(tmp_path), ignore_error=True)
-        result = loader.load("keys.yaml", interpolate=True)
-        # A key that cannot render stays as written, with its value — and the
-        # rest of the document still renders, which is what tells this apart
-        # from the whole pass being abandoned.
-        assert result["{% raw"] == "value"
-        assert result["kept"] == "/srv/x"
-
-    def test_strict_cycle_is_offered_and_skip_keeps_values(self, tmp_path):
-        from yaconfiglib import ConfigLoader
-
-        (tmp_path / "cycle.yaml").write_text(
-            'a: "{{ b }}"\nb: "{{ a }}"\n', encoding="utf-8"
-        )
+    @needs_yaml
+    def test_include_failure_offered_once_per_level(self, tmp_path):
+        _write(tmp_path / "top.yaml", "mid: !include mid.yaml\n")
+        _write(tmp_path / "mid.yaml", "secrets: !include secrets.json\n")
+        _write(tmp_path / "secrets.json", '{"a": }')
         seen = []
+        loader = Loader(base_dir=tmp_path, on_error=_recorder(seen))
+        with pytest.raises(ParseError) as caught:
+            loader.load("top.yaml")
+        assert [(e.phase, pathlib.PurePath(e.path).name) for e in seen] == [
+            ("load", "secrets.json"),
+            ("include", "mid.yaml"),
+            ("include", "top.yaml"),
+        ]
+        # The same exception object at every level; only the phase differs.
+        assert all(event.error is caught.value for event in seen)
 
-        def record(error, **context):
-            seen.append((context["phase"], context["key"]))
-            return True
+    @needs_yaml
+    def test_skipping_the_included_file_keeps_the_includer(self, tmp_path):
+        _write(tmp_path / "parent.yaml", "a: 1\nsecrets: !include secrets.json\n")
+        _write(tmp_path / "secrets.json", '{"a": }')
+        loader = Loader(base_dir=tmp_path, on_error=lambda event: event.phase == "load")
+        assert loader.load("parent.yaml") == {"a": 1, "secrets": None}
 
-        loader = ConfigLoader(base_dir=str(tmp_path), ignore_error=record, strict=True)
-        result = loader.load("cycle.yaml", interpolate=True)
-        # The cycle is offered like any other interpolation failure, and a skip
-        # leaves both keys present rather than aborting the load.
-        assert seen and seen[0][0] == "interpolate"
-        assert set(result) == {"a", "b"}
+    @needs_yaml
+    def test_skipping_the_including_file(self, tmp_path):
+        _write(tmp_path / "parent.yaml", "secrets: !include secrets.json\n")
+        _write(tmp_path / "secrets.json", '{"a": }')
+        _json(tmp_path / "other.json", {"other": 1})
+        loader = Loader(
+            base_dir=tmp_path, on_error=lambda event: event.phase == "include"
+        )
+        assert loader.load("parent.yaml") is None
+        assert loader.load("parent.yaml", "other.json") == {"other": 1}
 
-    def test_load_all_interpolation_skip_yields_document(self, tmp_path):
-        from yaconfiglib import ConfigLoader
+    def test_budget_error_is_never_offered(self, tmp_path):
+        _json(tmp_path / "a.json", {"a": "x" * 100})
+        seen = []
+        loader = Loader(
+            base_dir=tmp_path,
+            policy=Policy(max_bytes=10),
+            on_error=_recorder(seen, answer=True),
+        )
+        with pytest.raises(BudgetExceededError):
+            loader.load("a.json")
+        with pytest.raises(BudgetExceededError):
+            Loader(base_dir=tmp_path, policy=Policy(max_bytes=10), on_error=True).load(
+                "a.json"
+            )
+        assert seen == []
 
-        (tmp_path / "partial.yaml").write_text(_PARTIAL, encoding="utf-8")
-        loader = ConfigLoader(base_dir=str(tmp_path), ignore_error=True)
-        documents = list(loader.load_all("partial.yaml", interpolate=True))
-        # The document is yielded with that one value unrendered, where the
-        # whole document used to be dropped.
-        assert len(documents) == 1
-        assert documents[0]["database"]["host"] == "db.internal"
-        assert documents[0]["database"]["password"] == "p{% raw"
-        assert documents[0]["log_path"] == "/srv/logs"
+    def test_load_all_skips_a_failing_source(self, tmp_path):
+        _write(tmp_path / "bad.json", '{"a": }')
+        _json(tmp_path / "good.json", {"x": 1})
+        seen = []
+        loader = Loader(base_dir=tmp_path, on_error=_recorder(seen, answer=True))
+        assert list(loader.load_all("bad.json", "good.json")) == [{"x": 1}]
+        assert [event.phase for event in seen] == ["load"]
 
-    def test_declined_interpolation_error_raises_original_type(self, tmp_path):
-        import jinja2 as _jinja2
-
-        from yaconfiglib import ConfigLoader
-
-        (tmp_path / "typo.yaml").write_text('a: "{{ nosuch }}"\n', encoding="utf-8")
-        loader = ConfigLoader(base_dir=str(tmp_path), strict=True)
-        # The pin: nothing is skipped, so the original Jinja2 type reaches the
-        # caller — from load_all too, whose own handler must not re-offer it.
-        with pytest.raises(_jinja2.UndefinedError):
-            loader.load("typo.yaml", interpolate=True)
-        with pytest.raises(_jinja2.UndefinedError):
-            list(loader.load_all("typo.yaml", interpolate=True))
+    def test_unknown_format_is_offered(self, tmp_path):
+        _write(tmp_path / "notes.txt", "x")
+        _json(tmp_path / "good.json", {"x": 1})
+        seen = []
+        loader = Loader(base_dir=tmp_path, on_error=_recorder(seen, answer=True))
+        assert loader.load("notes.txt", "good.json") == {"x": 1}
+        assert isinstance(seen[0].error, UnsupportedFormatError)
 
 
-@pytest.mark.usefixtures("needs_yaml")
-class TestLoadAsErrorContext:
-    """`load_as` says which model, which field, and whether anything loaded.
+# ---------------------------------------------------------------------------
+# Formats
+# ---------------------------------------------------------------------------
 
-    A list document and a glob that matched nothing produced the same message,
-    "Loaded configuration must be a dictionary to load as a model", which named
-    neither the model nor what was actually loaded.
-    """
 
-    def test_load_as_non_mapping_names_model_and_type(self, tmp_path):
-        import dataclasses
+class TestFormatSelection:
+    def test_suffix_selects_each_format(self, tmp_path):
+        _write(tmp_path / "a.json", '{"j": 1}')
+        _write(tmp_path / "b.ini", "[i]\nk = v\n")
+        _write(tmp_path / "c.env", "E=1\n")
+        result = Loader(base_dir=tmp_path).load("a.json", "b.ini", "c.env")
+        assert result == {"j": 1, "i": {"k": "v"}, "E": "1"}
 
-        from yaconfiglib import ConfigLoader
+    @needs_toml
+    def test_toml(self, tmp_path):
+        _write(tmp_path / "a.toml", '[section]\nkey = "hello"\n')
+        assert Loader(base_dir=tmp_path).load("a.toml") == {"section": {"key": "hello"}}
 
-        @dataclasses.dataclass
-        class Inner:
-            port: int
+    @needs_yaml
+    def test_yaml(self, tmp_path):
+        _write(tmp_path / "a.yaml", "key: value\nnumber: 42\n")
+        _write(tmp_path / "b.yml", "other: true\n")
+        assert Loader(base_dir=tmp_path).load("a.yaml", "b.yml") == {
+            "key": "value",
+            "number": 42,
+            "other": True,
+        }
 
-        (tmp_path / "list.yaml").write_text("- 1\n- 2\n", encoding="utf-8")
-        loader = ConfigLoader(base_dir=str(tmp_path))
-        with pytest.raises(TypeError) as caught:
-            loader.load_as(Inner, "list.yaml")
-        message = str(caught.value)
-        assert "Inner" in message
-        assert "list" in message
+    def test_format_applies_to_every_source(self, tmp_path):
+        _write(tmp_path / "a.txt", '{"a": 1}')
+        _write(tmp_path / "b.conf", '{"b": 2}')
+        _write(tmp_path / "c.ini", '{"c": 3}')
+        loader = Loader(base_dir=tmp_path)
+        assert loader.load("a.txt", "b.conf", "c.ini", format="json") == {
+            "a": 1,
+            "b": 2,
+            "c": 3,
+        }
+        json_format = yaconfiglib.formats.get("json")
+        assert loader.load("a.txt", format=json_format) == {"a": 1}
 
-    def test_load_as_nothing_loaded_says_so(self, tmp_path):
-        import dataclasses
+    def test_format_reaches_streams(self):
+        assert Loader().load(io.StringIO("A=1\n"), format="dotenv") == {"A": "1"}
 
-        from yaconfiglib import ConfigLoader
+    def test_unclaimed_name_raises_before_opening(self, tmp_path):
+        with pytest.raises(UnsupportedFormatError):
+            Loader(base_dir=tmp_path).load("missing.unknown")
 
-        @dataclasses.dataclass
-        class Inner:
-            port: int
+    def test_format_options(self, tmp_path):
+        _write(tmp_path / "a.json", '{"rate": 1.5}')
+        loader = Loader(
+            base_dir=tmp_path, format_options={"json": {"parse_float": decimal.Decimal}}
+        )
+        assert loader.load("a.json") == {"rate": decimal.Decimal("1.5")}
+        assert list(loader.load_all("a.json")) == [{"rate": decimal.Decimal("1.5")}]
 
-        loader = ConfigLoader(base_dir=str(tmp_path))
-        with pytest.raises(TypeError) as caught:
-            loader.load_as(Inner, "conf.d/*.nomatch")
-        # "Nothing matched" and "wrong shape" are different problems.
-        assert "no source was loaded" in str(caught.value)
+    def test_format_options_only_reach_their_format(self, tmp_path):
+        _write(tmp_path / "a.ini", "[s]\nk = %(missing)s\n")
+        loader = Loader(
+            base_dir=tmp_path, format_options={"json": {"parse_float": decimal.Decimal}}
+        )
+        # Basic interpolation of an undefined reference fails in the INI parser.
+        with pytest.raises(yaconfiglib.ConfigError):
+            loader.load("a.ini")
+        loader = Loader(
+            base_dir=tmp_path, format_options={"ini": {"interpolation": None}}
+        )
+        assert loader.load("a.ini") == {"s": {"k": "%(missing)s"}}
 
-    def test_load_as_nested_field_error_names_path(self, tmp_path):
-        import dataclasses
+    def test_format_options_by_alias(self, tmp_path):
+        _write(tmp_path / "a.cfg", "[s]\nk = %(missing)s\n")
+        loader = Loader(
+            base_dir=tmp_path, format_options={"cfg": {"interpolation": None}}
+        )
+        assert loader.load("a.cfg") == {"s": {"k": "%(missing)s"}}
 
-        from yaconfiglib import ConfigLoader
+    def test_format_options_per_call(self, tmp_path):
+        _write(tmp_path / "a.json", '{"n": 1}')
+        loader = Loader(base_dir=tmp_path)
+        assert loader.load("a.json", format_options={"json": {"parse_int": str}}) == {
+            "n": "1"
+        }
+        assert loader.load("a.json") == {"n": 1}
 
-        @dataclasses.dataclass
-        class Inner:
-            port: int
+    def test_unknown_format_option(self, tmp_path):
+        _write(tmp_path / "a.json", "{}")
+        with pytest.raises(TypeError, match="nope"):
+            Loader(base_dir=tmp_path, format_options={"json": {"nope": 1}}).load(
+                "a.json"
+            )
 
-        @dataclasses.dataclass
-        class Outer:
-            db: Inner
+    def test_formats_does_not_limit_the_caller(self, tmp_path):
+        # formats= governs what a document may select; the caller's own sources
+        # are read by any registered format.
+        _write(tmp_path / "a.json", '{"a": 1}')
+        assert Loader(base_dir=tmp_path, formats=["yaml"]).load("a.json") == {"a": 1}
 
-        (tmp_path / "typo.yaml").write_text("db:\n  prot: 1\n", encoding="utf-8")
-        loader = ConfigLoader(base_dir=str(tmp_path))
-        with pytest.raises(TypeError) as caught:
-            loader.load_as(Outer, "typo.yaml")
-        error = caught.value
-        # The unknown key is filtered out, so Inner() is missing `port` — and
-        # the error now says which field of which model that was.
-        assert error.config_key == ("db",)
-        message = str(error)
-        assert "db" in message
-        assert "(Outer)" in message
+
+# ---------------------------------------------------------------------------
+# Sources of every kind, mixed
+# ---------------------------------------------------------------------------
+
+
+class TestMixedSources:
+    def test_every_kind_merges_in_order(self, tmp_path):
+        from pathapi.mempath import MemPath
+
+        _json(tmp_path / "base.json", {"order": ["file"], "file": True})
+        memory = MemPath("mem.json")
+        memory.write_bytes(b'{"mem": true, "order": ["mem"]}')
+        result = Loader(base_dir=tmp_path, merge="deep").load(
+            "base.json",
+            {"mapping": True, "order": ["mapping"]},
+            Text('{"text": true, "order": ["text"]}', format="json", name="t"),
+            Env("APP_", environ={"APP_ENV": "1", "OTHER": "x"}),
+            memory,
+        )
+        assert result == {
+            "order": ["file", "mapping", "text", "mem"],
+            "file": True,
+            "mapping": True,
+            "text": True,
+            "ENV": "1",
+            "mem": True,
+        }
+
+    def test_named_stream_among_paths(self, tmp_path):
+        _json(tmp_path / "a.json", {"a": 1})
+        stream_file = _json(tmp_path / "s.json", {"s": 1})
+        with open(stream_file, encoding="utf-8") as handle:
+            assert Loader(base_dir=tmp_path).load("a.json", handle) == {"a": 1, "s": 1}
+
+    def test_mapping_is_deep_copied(self):
+        layer = {"db": {"hosts": ["a"]}}
+        result = Loader(merge="deep").load(layer, {"db": {"hosts": ["b"]}})
+        result["db"]["hosts"].append("c")
+        assert layer == {"db": {"hosts": ["a"]}}
+
+    def test_single_mapping_is_copied(self):
+        layer = {"db": {"host": "a"}}
+        result = Loader().load(layer)
+        assert result == layer and result is not layer
+        assert result["db"] is not layer["db"]
+
+    def test_env_nested(self):
+        environ = {"APP_DB__HOST": "h", "APP_DB__PORT": "5432", "APP_DEBUG": "1"}
+        result = Loader().load(Env("APP_", nested="__", environ=environ))
+        assert result == {"DB": {"HOST": "h", "PORT": "5432"}, "DEBUG": "1"}
+
+    def test_text_bytes_use_the_loader_encoding(self):
+        data = '{"a": "café"}'.encode("cp1252")
+        assert Loader(encoding="cp1252").load(Text(data, format="json")) == {
+            "a": "café"
+        }
+        assert Loader().load(Text(data, format="json"), encoding="cp1252") == {
+            "a": "café"
+        }
+
+    def test_text_str_is_not_re_encoded(self):
+        assert Loader(encoding="ascii").load(Text('{"a": "日本"}', format="json")) == {
+            "a": "日本"
+        }
+
+    def test_command_scheme_is_a_source_not_a_glob(self, tmp_path):
+        command = (
+            f'cmd+json://"{sys.executable}" -c "print({{\'items\': [1, 2]}}.__len__())"'
+        )
+        result = Loader(base_dir=tmp_path, policy=Policy.trusted()).load(command)
+        assert result == 1
+
+    def test_command_refused_by_default(self):
+        with pytest.raises(CommandsDisabledError):
+            Loader().load('cmd+json://python -c "print(1)"')
+
+    def test_script_file_is_a_command(self, tmp_path):
+        script = self._script(tmp_path, "emit.json")
+        assert Loader(policy=Policy.trusted()).load(str(script)) == {"a": 1}
+
+    def test_script_file_refused_without_allow_commands(self, tmp_path):
+        script = _write(tmp_path / "emit.json.sh", "echo '{}'\n")
+        with pytest.raises(CommandsDisabledError):
+            Loader().load(str(script))
+
+    @staticmethod
+    def _script(tmp_path, stem):
+        if sys.platform == "win32":
+            return _write(tmp_path / (stem + ".cmd"), '@echo {"a": 1}\r\n')
+        script = _write(tmp_path / (stem + ".sh"), "#!/bin/sh\necho '{\"a\": 1}'\n")
+        script.chmod(0o755)
+        return script
+
+    def test_script_file_runs_when_format_is_given(self, tmp_path):
+        script = self._script(tmp_path, "emit.json")
+        assert Loader(policy=Policy.trusted()).load(str(script), format="json") == {
+            "a": 1
+        }
+        with pytest.raises(CommandsDisabledError):
+            Loader().load(str(script), format="json")
+
+    def test_loader_format_reads_a_script_files_output(self, tmp_path):
+        script = self._script(tmp_path, "emit")
+        assert Loader(policy=Policy.trusted()).load(str(script), format="json") == {
+            "a": 1
+        }
+
+
+class TestNoSources:
+    def test_load(self):
+        with pytest.raises(TypeError, match="source"):
+            Loader().load()
+
+    def test_load_all(self):
+        with pytest.raises(TypeError, match="source"):
+            list(Loader().load_all())
+
+    def test_only_skipped_sources_is_not_an_error(self):
+        assert Loader().load(None, "") is None
+        assert list(Loader().load_all(None, "")) == []
+
+
+class TestLoadAll:
+    def test_yields_each_source(self, tmp_path):
+        _json(tmp_path / "a.json", {"a": 1})
+        _json(tmp_path / "b.json", {"b": 2})
+        loader = Loader(base_dir=tmp_path)
+        assert list(loader.load_all("a.json", "b.json")) == [{"a": 1}, {"b": 2}]
+
+    def test_glob_yields_each_match(self, tmp_path):
+        _json(tmp_path / "a.json", {"a": 1})
+        _json(tmp_path / "b.json", {"b": 2})
+        assert list(Loader(base_dir=tmp_path).load_all("*.json")) == [
+            {"a": 1},
+            {"b": 2},
+        ]
+
+    @needs_yaml
+    def test_stream_yields_each_document(self, tmp_path):
+        _write(tmp_path / "m.yaml", "a: 1\n---\nb: 2\n")
+        _json(tmp_path / "c.json", {"c": 3})
+        documents = Loader(base_dir=tmp_path).load_all("m.yaml", "c.json")
+        assert list(documents) == [{"a": 1}, {"b": 2}, {"c": 3}]
+
+    @needs_yaml
+    def test_load_reads_every_document_of_a_stream(self, tmp_path):
+        _write(tmp_path / "m.yaml", "a: 1\n---\nb: 2\n")
+        loader = Loader(base_dir=tmp_path)
+        assert loader.load("m.yaml", collect="list") == [{"a": 1}, {"b": 2}]
+        assert loader.load("m.yaml") == {"a": 1, "b": 2}
+
+    def test_documents_are_not_merged(self):
+        documents = Loader(merge="deep").load_all({"a": {"x": 1}}, {"a": {"y": 2}})
+        assert list(documents) == [{"a": {"x": 1}}, {"a": {"y": 2}}]
+
+    def test_is_lazy(self, tmp_path):
+        _json(tmp_path / "a.json", {"a": 1})
+        _write(tmp_path / "bad.json", '{"a": }')
+        documents = Loader(base_dir=tmp_path).load_all("a.json", "bad.json")
+        assert next(documents) == {"a": 1}
+        with pytest.raises(ParseError):
+            next(documents)
+
+
+# ---------------------------------------------------------------------------
+# base_dir
+# ---------------------------------------------------------------------------
+
+
+class TestBaseDir:
+    @pytest.mark.parametrize("kind", ["str", "pathlib", "pathapi"])
+    def test_forms(self, tmp_path, kind):
+        from pathapi import LocalPath
+
+        _json(tmp_path / "conf" / "app.json", {"a": 1})
+        base = {
+            "str": str(tmp_path),
+            "pathlib": tmp_path,
+            "pathapi": LocalPath(str(tmp_path)),
+        }[kind]
+        loader = Loader(base_dir=base)
+        assert isinstance(loader.base_dir, LocalPath)
+        assert loader.load("conf/app.json") == {"a": 1}
+        assert loader.load(pathlib.Path("conf") / "app.json") == {"a": 1}
+
+    @pytest.mark.parametrize("empty", [None, ""])
+    def test_unset_means_the_working_directory(self, tmp_path, monkeypatch, empty):
+        _json(tmp_path / "app.json", {"a": 1})
+        monkeypatch.chdir(tmp_path)
+        loader = Loader(base_dir=empty)
+        assert loader.base_dir is None
+        assert loader.load("app.json") == {"a": 1}
+
+    def test_relative_base_dir(self, tmp_path, monkeypatch):
+        _json(tmp_path / "conf" / "app.json", {"a": 1})
+        monkeypatch.chdir(tmp_path)
+        assert Loader(base_dir="conf").load("app.json") == {"a": 1}
+
+    def test_absolute_source_is_not_joined(self, tmp_path):
+        source = _json(tmp_path / "app.json", {"a": 1})
+        other = tmp_path / "other"
+        other.mkdir()
+        assert Loader(base_dir=other).load(str(source)) == {"a": 1}
+        assert Loader(base_dir=other).load(source) == {"a": 1}
+
+    def test_pathapi_source_is_never_joined(self, tmp_path, monkeypatch):
+        from pathapi import LocalPath
+
+        _json(tmp_path / "cwd" / "app.json", {"where": "cwd"})
+        _json(tmp_path / "base" / "app.json", {"where": "base"})
+        monkeypatch.chdir(tmp_path / "cwd")
+        loader = Loader(base_dir=tmp_path / "base")
+        assert loader.load("app.json") == {"where": "base"}
+        assert loader.load(LocalPath("app.json")) == {"where": "cwd"}
+
+    def test_mempath_base_dir(self):
+        from pathapi.mempath import MemPath
+
+        root = MemPath("memroot")
+        root.mkdir(parents=True, exist_ok=True)
+        (root / "a.json").write_bytes(b'{"a": 1}')
+        (root / "b.json").write_bytes(b'{"b": 2}')
+        loader = Loader(base_dir=root)
+        assert loader.load("a.json") == {"a": 1}
+        assert loader.load("*.json") == {"a": 1, "b": 2}
+
+
+# ---------------------------------------------------------------------------
+# Streams
+# ---------------------------------------------------------------------------
+
+
+_STREAM_FILES = {
+    "toml": ("s.toml", 'title = "x"\n[db]\nport = 5432\n'),
+    "dotenv": ("e.env", "A=1\nB=2\n"),
+    "ini": ("i.ini", "[s]\nk = v\n"),
+    "json_exponent": ("num.json", '{"n": 1e5, "m": 2E-3}\n'),
+    "yaml": ("y.yaml", "a: [1, 2]\n"),
+}
+
+
+class TestStreams:
+    @pytest.mark.parametrize(
+        "key, mode",
+        [
+            pytest.param("toml", "r", id="toml_text", marks=needs_toml),
+            pytest.param("toml", "rb", id="toml_binary", marks=needs_toml),
+            pytest.param("dotenv", "r", id="dotenv"),
+            pytest.param("ini", "r", id="ini"),
+            pytest.param("json_exponent", "r", id="json"),
+            pytest.param("json_exponent", "rb", id="json_binary"),
+            pytest.param("yaml", "r", id="yaml", marks=needs_yaml),
+        ],
+    )
+    def test_name_selects_the_format(self, tmp_path, key, mode):
+        name, content = _STREAM_FILES[key]
+        path = _write(tmp_path / name, content)
+        kwargs = {} if "b" in mode else {"encoding": "utf-8"}
+        with open(path, mode, **kwargs) as handle:
+            from_stream = Loader().load(handle)
+        assert from_stream == Loader().load(str(path))
+
+    def test_unnamed_stream_needs_format(self):
+        with pytest.raises(UnsupportedFormatError):
+            Loader().load(io.StringIO('{"a": 1}'))
+        assert Loader().load(io.StringIO('{"a": 1}'), format="json") == {"a": 1}
+        assert Loader().load(io.BytesIO(b'{"a": 1}'), format="json") == {"a": 1}
+
+    @pytest.mark.parametrize("name", ["<stdin>", "<fdopen>"])
+    def test_pseudo_name_is_not_a_file_name(self, name):
+        class Named(io.StringIO):
+            pass
+
+        stream = Named('{"a": 1}')
+        stream.name = name
+        with pytest.raises(UnsupportedFormatError):
+            Loader().load(stream)
+        stream = Named('{"a": 1}')
+        stream.name = name
+        assert Loader().load(stream, format="json") == {"a": 1}
+
+    def test_descriptor_name_is_not_a_file_name(self, tmp_path):
+        path = _json(tmp_path / "c.json", {"a": 1})
+        with open(os.open(str(path), os.O_RDONLY), encoding="utf-8") as handle:
+            with pytest.raises(UnsupportedFormatError):
+                Loader().load(handle)
+        with open(os.open(str(path), os.O_RDONLY), encoding="utf-8") as handle:
+            assert Loader().load(handle, format="json") == {"a": 1}
+
+    @needs_yaml
+    def test_real_file_name_is_the_origin_of_includes(self, tmp_path, monkeypatch):
+        _write(tmp_path / "conf" / "app.yaml", "db: !include db.json\n")
+        _json(tmp_path / "conf" / "db.json", {"host": "from-conf"})
+        _json(tmp_path / "elsewhere" / "db.json", {"host": "from-cwd"})
+        monkeypatch.chdir(tmp_path / "elsewhere")
+        with open(tmp_path / "conf" / "app.yaml", encoding="utf-8") as handle:
+            assert Loader().load(handle) == {"db": {"host": "from-conf"}}
+
+    @needs_yaml
+    def test_unnamed_stream_includes_resolve_against_base_dir(self, tmp_path):
+        _json(tmp_path / "db.json", {"host": "h"})
+        stream = io.StringIO("db: !include db.json\n")
+        assert Loader(base_dir=tmp_path).load(stream, format="yaml") == {
+            "db": {"host": "h"}
+        }
+
+    @needs_yaml
+    def test_bytes_stream_uses_loader_encoding_for_includes(self, tmp_path):
+        _write(tmp_path / "sub.yaml", "inner: café\n", encoding="cp1252")
+        stream = io.BytesIO("sub: !include sub.yaml\n".encode("cp1252"))
+        result = Loader(base_dir=tmp_path).load(
+            stream, format="yaml", encoding="cp1252"
+        )
+        assert result == {"sub": {"inner": "café"}}
+
+    def test_text_stream_outside_the_loader_codec(self):
+        stream = io.StringIO('{"name": "日本"}')
+        assert Loader(encoding="cp1252").load(stream, format="json") == {"name": "日本"}
+
+    def test_duck_reader(self):
+        class Reader:
+            def read(self, *args):
+                return '{"a": 1}'
+
+        assert Loader().load(Reader(), format="json") == {"a": 1}
+
+    @pytest.mark.filterwarnings("ignore::DeprecationWarning")
+    def test_codecs_reader(self, tmp_path):
+        import codecs
+
+        path = _json(tmp_path / "c.json", {"a": 1})
+        with codecs.open(str(path), encoding="utf-8") as handle:
+            assert Loader().load(handle) == {"a": 1}
+
+    def test_spooled_temporary_file(self):
+        import tempfile
+
+        with tempfile.SpooledTemporaryFile(mode="w+b") as handle:
+            handle.write(b'{"server": {"port": 8080}}')
+            handle.seek(0)
+            assert Loader().load(handle, format="json") == {"server": {"port": 8080}}
+
+    def test_content_is_never_a_list_of_sources(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        _json(tmp_path / "other.json", {"secret": 1})
+        assert Loader().load(io.StringIO('"other.json"'), format="json") == "other.json"
+
+    def test_reader_returning_non_text(self):
+        class Reader:
+            def read(self, *args):
+                return 42
+
+        with pytest.raises(TypeError, match="read"):
+            Loader().load(Reader(), format="json")
+
+    def test_read_once(self):
+        calls = []
+
+        class Reader:
+            def read(self, *args):
+                calls.append(args)
+                return '{"a": 1}'
+
+        Loader().load(Reader(), format="json")
+        assert len(calls) == 1
+
+    def test_script_named_stream_is_never_run(self, tmp_path):
+        path = _write(tmp_path / "x.sh", '{"a": 1}\n')
+        with open(path, encoding="utf-8") as handle:
+            # No format reads a .sh name, and a stream's content is data.
+            with pytest.raises(UnsupportedFormatError):
+                Loader(policy=Policy.trusted()).load(handle)
+        with open(path, encoding="utf-8") as handle:
+            assert Loader(policy=Policy.trusted()).load(handle, format="json") == {
+                "a": 1
+            }
+
+    def test_marker_line_is_content(self):
+        assert Loader().load(io.StringIO("#!c.json\nA=1\n"), format="dotenv") == {
+            "A": "1"
+        }
+
+    def test_hash_key_is_the_file_stem(self, tmp_path):
+        path = _json(tmp_path / "service.json", {"a": 1})
+        with open(path, encoding="utf-8") as handle:
+            assert Loader(collect="hash").load(handle) == {"service": {"a": 1}}
+
+    def test_two_streams_stay_distinct(self):
+        result = Loader(collect="list").load(
+            io.StringIO('{"a": 1}'), io.StringIO('{"b": 2}'), format="json"
+        )
+        assert result == [{"a": 1}, {"b": 2}]

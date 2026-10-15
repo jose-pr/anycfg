@@ -1,31 +1,22 @@
-# examples/advanced.yaml
+# examples/advanced.yaml, loaded by run_advanced.py.
 
-# 1. Basic properties
+# 1. Plain values.
 app_name: "Yaconfiglib Demo"
 version: "1.0.0"
 
-# 2. Jinja Interpolation
-# This will be resolved dynamically if interpolate=True is passed to load()
+# 2. Interpolation: rendered once the whole document is loaded, when the
+#    loader is created with interpolate=True.
 welcome_message: "Welcome to {{ app_name }} v{{ version }}"
 
-# 3. Dynamic loading via !include tag
-# The !include tag allows you to recursively load
-# other configuration files directly from within YAML.
-# Paths are relative to this file.
-database_config: !include settings.json
+# 3. One source as a value. Relative paths resolve against this file.
+editor_settings: !include settings.json
 
-# 4. Transform and Key Factory capabilities
-# You can pass a dictionary to !include to specify advanced options:
-# - pathname: The file to load
-# - transform: A Jinja expression to transform the loaded data
-# - key_factory: A Jinja expression to dynamically generate the key
-dynamic_includes: !include {
-  pathname: "includeme.yaml",
-  transform: "{ pathname.name: value.include }",
-  key_factory: "%pathname.as_posix()"
-}
+# 4. Several sources, merged in order with the strategy named here.
+merged: !include {pathname: [includeme.yaml, local.yaml], merge: deep}
 
-# 5. Using environment variables
-# ConfigLoader(inject_env=True) puts a read-only snapshot of os.environ in
-# scope as `env`, so a value can refer to it. See docs/guide/templating.md.
+# 5. A glob that matches nothing gives the default instead.
+optional: !include {pathname: "conf.d/*.yaml", default: {enabled: false}}
+
+# 6. Environment variables: Loader(inject_env=True) puts a read-only snapshot
+#    of os.environ in scope as `env`.
 # system_user: "{{ env.USER }}"

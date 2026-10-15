@@ -4,13 +4,56 @@ import collections
 
 import pytest
 
-from yaconfiglib import ConfigLoader
-from yaconfiglib.backends.python_backend import PythonBackend
-from yaconfiglib.loader import ConfigLoaderMergeMethod, DotAccessibleDict
+import yaconfiglib
+from yaconfiglib import DotAccessibleDict, Loader
+from yaconfiglib._dotaccess import to_dot_access
 
 
-def _load(data, **loader_kwargs):
-    return ConfigLoader(**loader_kwargs).load(loader=PythonBackend(data))
+def _load(data, **settings):
+    return Loader(wrap=True, **settings).load(data)
+
+
+class TestWrapSetting:
+    def test_wrap_true_returns_dot_accessible_mappings(self):
+        config = _load({"db": {"host": "localhost", "port": 3306}})
+        assert type(config) is DotAccessibleDict
+        assert config.db.host == "localhost"
+        assert config.db.port == 3306
+        assert config.get("db.host") == "localhost"
+        assert config.get("db.missing", "default") == "default"
+
+    def test_wrap_with_the_class_is_the_same_as_true(self):
+        config = Loader(wrap=DotAccessibleDict).load({"db": {"host": "h"}})
+        assert type(config) is DotAccessibleDict and config.db.host == "h"
+
+    def test_no_wrap_returns_plain_data(self):
+        config = Loader().load({"db": {"host": "h"}})
+        assert type(config) is dict and type(config["db"]) is dict
+        assert type(Loader(wrap=False).load({"a": 1})) is dict
+
+    def test_wrap_callable_is_applied_to_the_result(self):
+        assert Loader(wrap=sorted).load({"b": 1, "a": 2}) == ["a", "b"]
+
+    def test_wrap_as_a_per_call_override(self):
+        loader = Loader()
+        assert type(loader.load({"a": 1}, wrap=True)) is DotAccessibleDict
+        assert type(loader.load({"a": 1})) is dict
+
+    def test_non_mapping_result_keeps_its_shape(self):
+        config = Loader(wrap=True, collect="list").load({"a": {"b": 1}}, {"c": 2})
+        assert type(config) is list
+        assert config[0].a.b == 1 and config[1].c == 2
+
+    def test_hash_collection_is_dot_accessible(self):
+        hashed = Loader(wrap=True, collect="hash", key=lambda name, doc: "doc").load(
+            {"a": {"b": 1}}
+        )
+        assert hashed.doc.a.b == 1
+
+    def test_load_all_documents_are_dot_accessible(self):
+        documents = list(Loader(wrap=True).load_all({"a": [{"b": 1}]}, {"c": 2}))
+        assert documents[0].a[0].b == 1
+        assert documents[1].c == 2
 
 
 class TestConvertOnce:
@@ -21,13 +64,18 @@ class TestConvertOnce:
         other = ["fallback"]
         assert config.get("logging", other) is other
         assert config.get("x.y", {}, dig=False) == {}
-        # Nothing was stored by any of those reads.
         assert list(config) == ["db"]
 
     def test_item_and_attribute_access_share_one_object(self):
         config = _load({"db": {"host": "h"}})
         assert config["db"].host == "h"
         assert config["db"] is config.db
+        assert isinstance(config["db"], DotAccessibleDict)
+
+    def test_nested_values_converted_before_any_read(self):
+        config = _load({"db": {"credentials": {"user": "postgres"}}})
+        assert isinstance(config["db"]["credentials"], DotAccessibleDict)
+        assert config.get("db.credentials.user") == "postgres"
 
     def test_reads_never_replace_stored_values(self):
         config = _load({"db": {"credentials": {"user": "u"}}})
@@ -42,8 +90,8 @@ class TestConvertOnce:
         assert held["credentials"] is held_nested
         assert held["port"] == 5432
 
-    def test_dicts_inside_lists_are_dot_accessible(self):
-        config = _load(
+    def test_dicts_inside_lists_and_tuples_are_dot_accessible(self):
+        config = DotAccessibleDict(
             {
                 "services": [{"name": "api"}],
                 "nested": [[{"name": "deep"}]],
@@ -53,25 +101,7 @@ class TestConvertOnce:
         assert config.services[0].name == "api"
         assert config.nested[0][0].name == "deep"
         assert config.pair[0].name == "tup"
-
-    def test_list_and_hash_merge_results_are_dot_accessible(self):
-        data = {"a": {"b": 1}}
-        listed = ConfigLoader(merge=ConfigLoaderMergeMethod.List).load(
-            loader=PythonBackend(data)
-        )
-        assert listed[0].a.b == 1
-        hashed = ConfigLoader(
-            merge=ConfigLoaderMergeMethod.Hash,
-            key_factory=lambda path, value: "doc",
-        ).load(loader=PythonBackend(data))
-        assert hashed.doc.a.b == 1
-
-    def test_load_all_results_are_dot_accessible(self):
-        # load_all needs a source; unlike load it supplies none of its own.
-        documents = list(
-            ConfigLoader().load_all("#!\n", loader=PythonBackend({"a": [{"b": 1}]}))
-        )
-        assert documents[0].a[0].b == 1
+        assert type(config.pair) is tuple
 
     @pytest.mark.usefixtures("needs_yaml")
     def test_yaml_anchor_aliases_stay_shared(self, tmp_path):
@@ -79,11 +109,9 @@ class TestConvertOnce:
             "defaults: &defaults\n  pool: 5\nsvc_a: *defaults\nsvc_b: *defaults\n",
             encoding="utf-8",
         )
-        config = ConfigLoader(base_dir=str(tmp_path)).load("main.yaml")
+        config = Loader(base_dir=tmp_path, wrap=True).load("main.yaml")
         assert config["svc_a"] is config["svc_b"]
-        # Reading through attributes must not break the sharing.
         assert config.svc_a is config.svc_b
-        assert config["svc_a"] is config.svc_b
 
     @pytest.mark.usefixtures("needs_yaml")
     def test_inline_and_included_list_entries_are_both_dot_accessible(self, tmp_path):
@@ -91,7 +119,7 @@ class TestConvertOnce:
         (tmp_path / "main.yaml").write_text(
             "services:\n  - name: inline\n  - !include srv.yaml\n", encoding="utf-8"
         )
-        config = ConfigLoader(base_dir=str(tmp_path)).load("main.yaml")
+        config = Loader(base_dir=tmp_path, wrap=True).load("main.yaml")
         assert config.services[0].name == "inline"
         assert config.services[1].name == "included"
 
@@ -103,16 +131,39 @@ class TestConvertOnce:
         config.l.append({"n": 3})
         assert source == {"db": {"host": "h"}, "l": [{"n": 1}]}
 
+    def test_to_dot_access_copies_instead_of_mutating(self):
+        source = {"db": {"host": "h"}, "l": [{"n": 1}]}
+        converted = to_dot_access(source)
+        assert type(converted) is DotAccessibleDict
+        assert type(source["db"]) is dict and type(source["l"][0]) is dict
+        assert converted["db"] is not source["db"]
+        assert to_dot_access([{"a": 1}])[0].a == 1
+        assert to_dot_access(5) == 5
+
+    def test_to_dot_access_keeps_aliasing(self):
+        shared = {"pool": 5}
+        converted = to_dot_access({"a": shared, "b": shared, "l": [shared]})
+        assert converted.a is converted.b is converted.l[0]
+
     def test_dict_subclass_values_convert_the_same_way_for_every_access(self):
         counters = collections.defaultdict(int)
-        config = _load({"counters": counters})
+        config = DotAccessibleDict({"counters": counters})
         assert type(config["counters"]) is DotAccessibleDict
         assert config.counters is config["counters"]
         assert config.get("counters.misses", "D") == "D"
         with pytest.raises(KeyError):
             config["counters"]["misses"]
-        # The source defaultdict was never touched by any of that.
         assert dict(counters) == {}
+
+    def test_non_dict_mappings_and_list_subclasses_are_left_alone(self):
+        class Tagged(list):
+            pass
+
+        proxy = __import__("types").MappingProxyType({"a": {"b": 1}})
+        tagged = Tagged([{"a": 1}])
+        config = DotAccessibleDict({"proxy": proxy, "tagged": tagged})
+        assert config["proxy"] is proxy
+        assert config["tagged"] is tagged
 
     def test_self_referencing_mapping_converts(self):
         cyclic = {}
@@ -142,12 +193,25 @@ class TestConvertOnce:
 class TestGetPaths:
     """What `get()` accepts as a path, and what it returns when one breaks."""
 
+    def test_dig_false_disables_traversal(self):
+        config = _load({"db": {"host": "localhost"}})
+        assert config.get("db.host", "default", dig=False) == "default"
+
+    def test_exact_key_outranks_traversal(self):
+        config = _load({"db.host": "exact", "db": {"host": "traversed"}})
+        assert config.get("db.host") == "exact"
+        assert config.get("db.host", dig=False) == "exact"
+
     def test_missing_non_string_key_returns_default(self):
-        config = _load({404: "not_found"})
+        config = DotAccessibleDict({404: "not_found"})
         assert config.get(404) == "not_found"
         assert config.get(500) is None
         assert config.get(None, "n") == "n"
         assert config.get(1.5, "f") == "f"
+
+    def test_unhashable_key_raises(self):
+        with pytest.raises(TypeError):
+            DotAccessibleDict({}).get(["a"])
 
     def test_nested_null_leaf_is_returned(self):
         config = _load({"password": None, "db": {"password": None}})
@@ -158,37 +222,48 @@ class TestGetPaths:
     def test_null_intermediate_returns_default(self):
         config = _load({"db": None})
         assert config.get("db.password", "x") == "x"
+        assert config.get(("db", "password"), "x") == "x"
+
+    def test_scalar_intermediate_returns_default(self):
+        config = _load({"db": "text"})
+        assert config.get("db.0", "x") == "x"
+        assert config.get(("db", 0), "x") == "x"
 
     def test_dotted_path_indexes_lists(self):
-        config = _load(
-            {"servers": [{"host": "a"}, [{"y": 0}, {"y": 1}]]},
-        )
+        config = _load({"servers": [{"host": "a"}, [{"y": 0}, {"y": 1}]]})
         assert config.get("servers.0.host") == "a"
         assert config.get("servers.1.1.y") == 1
 
-    def test_out_of_range_or_negative_index_returns_default(self):
-        config = _load({"servers": [{"host": "a"}]})
-        assert config.get("servers.5.host", "X") == "X"
-        assert config.get("servers.-1.host", "X") == "X"
+    def test_dotted_path_indexes_tuples(self):
+        config = DotAccessibleDict({"pair": ({"host": "a"}, {"host": "b"})})
+        assert config.get("pair.1.host") == "b"
+
+    @pytest.mark.parametrize("segment", ["5", "-1", "x", "\u0661"])
+    def test_bad_index_segment_returns_default(self, segment):
+        # U+0661 is ARABIC-INDIC DIGIT ONE: a digit, but not an ASCII one.
+        config = _load({"servers": [{"host": "a"}, {"host": "b"}]})
+        assert config.get(f"servers.{segment}.host", "X") == "X"
 
     def test_digit_segment_on_a_mapping_is_a_string_key(self):
-        config = _load({"codes": {"0": "zero", 0: "int"}})
+        config = DotAccessibleDict({"codes": {"0": "zero", 0: "int"}})
         assert config.get("codes.0") == "zero"
+        assert DotAccessibleDict({"codes": {0: "int"}}).get("codes.0", "D") == "D"
 
     def test_tuple_path_reaches_keys_containing_dots(self):
         config = _load({"metadata": {"labels": {"app.kubernetes.io/name": "web"}}})
         assert config.get(("metadata", "labels", "app.kubernetes.io/name")) == "web"
 
     def test_tuple_path_uses_int_keys_and_indexes(self):
-        config = _load({"codes": {404: "nf"}, "servers": [{"host": "a"}]})
+        config = DotAccessibleDict({"codes": {404: "nf"}, "servers": [{"host": "a"}]})
         assert config.get(("codes", 404)) == "nf"
         assert config.get(("servers", 0, "host")) == "a"
         # A digit string is not an index, and True is not 1.
         assert config.get(("servers", "0", "host"), "D") == "D"
         assert config.get(("servers", True, "host"), "D") == "D"
+        assert config.get(("servers", -1, "host"), "D") == "D"
 
     def test_exact_tuple_key_outranks_traversal(self):
-        config = _load({("a", "b"): "exact", "a": {"b": "traversed"}})
+        config = DotAccessibleDict({("a", "b"): "exact", "a": {"b": "traversed"}})
         assert config.get(("a", "b")) == "exact"
 
     def test_empty_tuple_and_dig_false_return_default(self):
@@ -197,10 +272,17 @@ class TestGetPaths:
         assert config.get((), "D") == "D"
 
     def test_dotted_string_does_not_match_nested_dotted_keys(self):
-        # Documented limitation: exact-key precedence is top level only, so the
-        # tuple form is the way to reach a nested key containing a dot.
+        # Exact-key precedence is top level only; the tuple form reaches these.
         config = _load({"metadata": {"labels": {"app.kubernetes.io/name": "web"}}})
         assert config.get("metadata.labels.app.kubernetes.io/name", "M") == "M"
+
+    def test_reads_through_a_later_defaultdict_never_insert(self):
+        config = DotAccessibleDict({})
+        counters = collections.defaultdict(int)
+        config["counters"] = counters
+        assert config.get("counters.misses", "D") == "D"
+        assert config.get(("counters", "misses"), "D") == "D"
+        assert dict(counters) == {}
 
 
 class TestAttributeProtocol:
@@ -215,7 +297,6 @@ class TestAttributeProtocol:
         config = _load({"items": [1, 2], "get": "g", "copy": "c"})
         assert config["items"] == [1, 2]
         assert config["get"] == "g"
-        # The attribute still resolves to the method, as it must for a dict.
         assert callable(config.items)
 
     @pytest.mark.parametrize("name", ["items", "get", "copy", "keys"])
@@ -235,6 +316,15 @@ class TestAttributeProtocol:
         tagged = Tagged({"a": 1})
         assert tagged.tag == "t"
         assert "tag" not in tagged
+
+    def test_subclass_type_survives_conversion(self):
+        class Tagged(DotAccessibleDict):
+            pass
+
+        inner = Tagged({"x": 1})
+        converted = to_dot_access({"in": inner})
+        assert type(converted["in"]) is Tagged
+        assert converted["in"] is not inner
 
     def test_delattr_removes_a_key(self):
         config = _load({"a": 1, "b": 2})
@@ -258,14 +348,21 @@ class TestAttributeProtocol:
         assert config.__or__(3) is NotImplemented
         assert config.__ror__(3) is NotImplemented
 
+    def test_or_stores_values_as_given(self):
+        plain = {"x": 1}
+        merged = _load({"a": 1}) | {"b": plain}
+        assert merged["b"] is plain
+
     def test_ior_keeps_the_class(self):
         config = _load({"a": 1})
         config |= {"b": 2}
         assert type(config) is DotAccessibleDict
         assert config["b"] == 2
 
-    def test_exported_from_the_package_root(self):
-        import yaconfiglib
+    def test_dict_gives_a_plain_dict_back(self):
+        config = _load({"a": 1})
+        assert type(dict(config)) is dict
 
+    def test_exported_from_the_package_root(self):
         assert yaconfiglib.DotAccessibleDict is DotAccessibleDict
         assert "DotAccessibleDict" in yaconfiglib.__all__

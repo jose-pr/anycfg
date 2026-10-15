@@ -1,8 +1,7 @@
-"""
-Shared pytest fixtures for yaconfiglib tests.
-"""
+"""Shared pytest fixtures for yaconfiglib tests."""
 
 import pathlib
+
 import pytest
 
 EXAMPLES_DIR = pathlib.Path(__file__).parent.parent / "examples"
@@ -10,7 +9,7 @@ EXAMPLES_DIR = pathlib.Path(__file__).parent.parent / "examples"
 
 @pytest.fixture
 def examples_dir():
-    """Return the path to the examples directory."""
+    """The examples directory."""
     return EXAMPLES_DIR
 
 
@@ -22,18 +21,26 @@ def needs_yaml():
 
 @pytest.fixture
 def needs_jinja2():
-    """Skip unless Jinja2 is installed (yaconfiglib[jinja2])."""
+    """Skip unless Jinja2 is installed (yaconfiglib[templates])."""
     pytest.importorskip("jinja2")
 
 
 @pytest.fixture
+def needs_tplx():
+    """Skip unless tplx is installed (yaconfiglib[templates])."""
+    pytest.importorskip("tplx")
+
+
+@pytest.fixture
 def needs_toml():
-    """Skip unless a TOML backend registered (yaconfiglib[toml] below 3.11).
+    """Skip unless TOML can be read: tomllib (3.11+) or tomli (yaconfiglib[toml])."""
+    try:
+        import tomllib  # noqa: F401
+    except ImportError:
+        pytest.importorskip("tomli")
 
-    Keyed on registration rather than a module name, so it keeps working
-    whichever parser the backend imports.
-    """
-    import yaconfiglib.backends
 
-    if not hasattr(yaconfiglib.backends, "TomlConfig"):
-        pytest.skip("TOML backend unavailable: install yaconfiglib[toml]")
+@pytest.fixture
+def needs_toml_writer():
+    """Skip unless tomli-w is installed (yaconfiglib[toml])."""
+    pytest.importorskip("tomli_w")

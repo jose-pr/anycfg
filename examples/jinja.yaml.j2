@@ -1,1 +1,6 @@
-{{ pathname.stem }}: {{ 'test' }}
+{#- Rendered by Jinja first, then parsed as YAML: the name before `.j2` picks the format. -#}
+name: {{ filename }}
+ports:
+{%- for port in range(8000, 8003) %}
+  - {{ port }}
+{%- endfor %}

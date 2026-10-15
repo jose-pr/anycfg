@@ -1,368 +1,404 @@
-"""
-Tests for MergeMethod (simple, substitute, deep) and typed_merge.
-"""
+"""The merge strategies: by function, by name, and through a Loader."""
 
-import dataclasses
+import collections
+import copy
+import datetime
+import decimal
+import enum
+import time
 import typing
-from argparse import Namespace
-from dataclasses import dataclass, field
 
 import pytest
 
-from yaconfiglib.utils.merge import (
-    MergeMethod,
-    OpaqueMerge,
-    TypedNamespace,
-    is_array,
-    is_scalar,
-    opaque,
-    typed_merge,
-)
+import yaconfiglib
+from yaconfiglib import DELETE, DotAccessibleDict, Loader
+from yaconfiglib import _merge
+from yaconfiglib._merge import deep, simple, substitute
 
+STRATEGIES = [simple, substitute, deep]
+STRATEGY_IDS = ["simple", "substitute", "deep"]
+RECURSIVE = [substitute, deep]
+RECURSIVE_IDS = ["substitute", "deep"]
 
-def _ip_factory(v):
-    """An ipaddress-style factory FUNCTION (not a class), used as a field hint.
 
-    Mirrors netutils.IPNetwork/IPAddress: callable, coerces a raw value, but is
-    not a class so it cannot be an argument to issubclass()/isinstance().
-    """
-    return f"net:{v}"
+@pytest.fixture
+def isolated_registry(monkeypatch):
+    """Register strategies into a copy, so a test cannot leak one into the session."""
+    monkeypatch.setattr(_merge, "_STRATEGIES", dict(_merge._STRATEGIES))
 
 
-class _NetConfig(Namespace):
-    # A field annotated by a factory function rather than a class — this is the
-    # real-world shape that used to crash typed_merge (issubclass() arg 1).
-    network: _ip_factory
-
-
-# ---------------------------------------------------------------------------
-# is_scalar / is_array helpers
-# ---------------------------------------------------------------------------
-
-
-class TestHelpers:
-    def test_scalar_primitives(self):
-        for v in (1, 3.14, True, False, "hello", b"bytes", None):
-            assert is_scalar(v), f"{v!r} should be scalar"
-
-    def test_not_scalar(self):
-        for v in ([], {}, (1, 2)):
-            assert not is_scalar(v), f"{v!r} should not be scalar"
-
-    def test_array_list(self):
-        assert is_array([1, 2, 3])
-
-    def test_array_tuple(self):
-        assert is_array((1, 2))
-
-    def test_not_array_dict(self):
-        assert not is_array({"a": 1})
-
-    def test_not_array_string(self):
-        assert not is_array("hello")
-
-    def test_mutable_array(self):
-        assert is_array([1], mutable=True)
-        assert not is_array((1,), mutable=True)
-
-    def test_binary_buffers_are_not_arrays(self):
-        # A binary buffer is a value, not a sequence to merge element-wise.
-        assert not is_array(bytearray(b"ab"))
-        assert not is_array(memoryview(b"ab"))
-
-
-# ---------------------------------------------------------------------------
-# Simple merge
-# ---------------------------------------------------------------------------
-
-
-class TestSimpleMerge:
-    m = MergeMethod.Simple
-
-    def test_scalar_replaces(self):
-        assert self.m(1, 2) == 2
-
-    def test_none_b_returns_a(self):
-        assert self.m("keep", None) == "keep"
-
-    def test_dict_update_shallow(self):
-        a = {"x": 1, "y": 2}
-        result = self.m(a, {"y": 99, "z": 3})
-        assert result == {"x": 1, "y": 99, "z": 3}
-
-    def test_dict_replaces_scalar(self):
-        assert self.m("old", {"k": "v"}) == {"k": "v"}
-
-    def test_list_replaced_wholesale(self):
-        result = self.m([1, 2, 3], [10, 20])
-        assert result == [10, 20]
-
-    def test_list_under_key_replaced(self):
-        assert self.m({"a": [1, 2, 3]}, {"a": [9]}) == {"a": [9]}
-
-    def test_list_extends_when_b_longer(self):
-        result = self.m([1], [10, 20, 30])
-        assert result == [10, 20, 30]
-
-    def test_list_replaces_scalar(self):
-        assert self.m("old", [1, 2]) == [1, 2]
-
-    def test_unknown_leaf_type_replaces(self):
-        class Weird:
-            pass
-
-        weird = Weird()
-        # Any value that is not a mapping or a list is a leaf, so it replaces
-        # rather than raising.
-        assert self.m({}, weird) is weird
-
-
-# ---------------------------------------------------------------------------
-# Substitute merge
-# ---------------------------------------------------------------------------
-
-
-class TestSubstituteMerge:
-    m = MergeMethod.Substitute
-
-    def test_scalar_replaces(self):
-        assert self.m("a", "b") == "b"
-
-    def test_list_replaces(self):
-        assert self.m([1, 2], [3, 4]) == [3, 4]
-
-    def test_list_replaces_scalar(self):
-        assert self.m("x", [1, 2]) == [1, 2]
-
-    def test_none_b_noop(self):
-        assert self.m("keep", None) == "keep"
-
-    def test_dict_recursive(self):
-        a = {"a": 1, "b": {"x": 10, "y": 20}}
-        b = {"b": {"y": 99, "z": 30}, "c": 3}
-        result = self.m(a, b)
-        assert result == {"a": 1, "b": {"x": 10, "y": 99, "z": 30}, "c": 3}
-
-    def test_dict_from_list_of_dicts(self):
-        a = {"a": 1}
-        b = [{"b": 2}, {"c": 3}]
-        result = self.m(a, b)
-        assert result == {"a": 1, "b": 2, "c": 3}
-
-
-# ---------------------------------------------------------------------------
-# Deep merge
-# ---------------------------------------------------------------------------
-
-
-class TestDeepMerge:
-    m = MergeMethod.Deep
-
-    def test_scalar_replaces(self):
-        assert self.m(1, 2) == 2
-
-    def test_none_b_noop(self):
-        assert self.m("keep", None) == "keep"
-
-    def test_none_a_takes_b(self):
-        assert self.m(None, 42) == 42
-
-    def test_dict_deep(self):
-        a = {"a": 1, "b": {"x": 10, "y": 20}}
-        b = {"b": {"y": 99, "z": 30}, "c": 3}
-        result = self.m(a, b)
-        assert result == {"a": 1, "b": {"x": 10, "y": 99, "z": 30}, "c": 3}
-
-    def test_list_extends_unique_scalars(self):
-        result = self.m([1, 2, 3], [3, 4, 5])
-        # 3 is already in a; 4 and 5 are appended
-        assert set(result) == {1, 2, 3, 4, 5}
-
-    def test_list_does_not_duplicate(self):
-        result = self.m([1, 2], [1, 2])
-        assert result == [1, 2]
-
-    def test_dict_from_list(self):
-        a = {"a": 1}
-        b = [{"b": 2}]
-        result = self.m(a, b)
-        assert result == {"a": 1, "b": 2}
-
-    def test_mergelists_false_no_positional_dict_merge(self):
-        a = [{"k": 1}]
-        b = [{"k": 2}]
-        # Without mergelists, dicts in lists are appended
-        result = self.m(a, b, mergelists=False)
-        assert len(result) == 2
-
-    def test_mergelists_true_merges_matching_dicts(self):
-        a = [{"k": 1, "v": "a"}]
-        b = [{"k": 1, "v": "b"}]
-        result = self.m(a, b, mergelists=True)
-        # dicts share key "k" → positional merge → single dict
-        assert len(result) == 1
-        assert result[0]["v"] == "b"
-
-    def test_mergelists_true_keeps_nonoverlapping_dict(self):
-        # Regression: a positionally-matched b dict sharing NO key with the a
-        # dict used to be popped before the overlap check, so it was neither
-        # merged nor appended — it vanished (returned [{'k': 1}]).
-        result = self.m([{"k": 1}], [{"z": 9}], mergelists=True)
-        assert result == [{"k": 1}, {"z": 9}]
-
-    def test_dedupe_is_type_aware(self):
-        # 1 == True == 1.0, but they are different configuration values, so an
-        # override must not be swallowed as a duplicate.
-        result = self.m([1, 0], [True, False, 1.0])
-
-        assert [type(item) for item in result] == [int, int, bool, bool, float]
-
-    @pytest.mark.parametrize("mergelists", [False, True], ids=["plain", "mergelists"])
-    def test_extension_keeps_source_order(self, mergelists):
-        result = self.m([], [1, {"a": 1}, 2], mergelists=mergelists)
-
-        assert result == [1, {"a": 1}, 2]
-
-    def test_unhashable_items_still_deduplicated(self):
-        assert self.m([[1]], [[1], [2]]) == [[1], [2]]
-
-    def test_mergelists_true_mixed_overlap_and_nonoverlap(self):
-        # First position overlaps (merges in place), second does not (appends).
-        a = [{"k": 1}, {"p": 1}]
-        b = [{"k": 2}, {"q": 2}]
-        result = self.m(a, b, mergelists=True)
-        assert result == [{"k": 2}, {"p": 1}, {"q": 2}]
-
-
-# ---------------------------------------------------------------------------
-# Leaf values and shape changes
-# ---------------------------------------------------------------------------
-
-STRATEGIES = [MergeMethod.Simple, MergeMethod.Substitute, MergeMethod.Deep]
-STRATEGY_IDS = ["Simple", "Substitute", "Deep"]
-
-
-class _Colour(__import__("enum").Enum):
-    """A plain Enum member: not an int, so no type whitelist would accept it."""
-
+class _Colour(enum.Enum):
     RED = "red"
     BLUE = "blue"
 
 
-def _leaf_document(which):
-    import datetime
-    import decimal
+class _ReadOnly(typing.Mapping):
+    """A Mapping that is not a dict and cannot be written to."""
 
-    Colour = _Colour
+    def __init__(self, **values):
+        self._values = dict(values)
 
+    def __getitem__(self, key):
+        return self._values[key]
+
+    def __iter__(self):
+        return iter(self._values)
+
+    def __len__(self):
+        return len(self._values)
+
+
+def _leaves(which):
     if which == "a":
         return {
             "release": datetime.date(2024, 1, 1),
             "at": datetime.datetime(2024, 1, 1, 10, 0),
             "cutoff": datetime.time(9, 0),
             "rate": decimal.Decimal("1.5"),
-            "colour": Colour.RED,
+            "colour": _Colour.RED,
             "tags": {"one"},
+            "blob": b"ab",
         }
     return {
         "release": datetime.date(2025, 6, 1),
         "at": datetime.datetime(2025, 6, 1, 11, 30),
         "cutoff": datetime.time(17, 45),
         "rate": decimal.Decimal("2.5"),
-        "colour": Colour.BLUE,
+        "colour": _Colour.BLUE,
         "tags": {"two"},
+        "blob": b"cd",
     }
 
 
-class TestLeafValues:
-    @pytest.mark.parametrize("strategy", STRATEGIES, ids=STRATEGY_IDS)
-    def test_non_whitelisted_leaf_replaces(self, strategy):
-        a = {"section": _leaf_document("a")}
-        b = {"section": _leaf_document("b")}
+# ---------------------------------------------------------------------------
+# simple
+# ---------------------------------------------------------------------------
 
-        result = strategy(a, b)
 
-        assert result["section"] == _leaf_document("b")
+class TestSimple:
+    def test_scalar_replaces(self):
+        assert simple(1, 2) == 2
 
-    @pytest.mark.parametrize("mergelists", [False, True], ids=["plain", "mergelists"])
-    def test_deep_list_keeps_non_whitelisted_items(self, mergelists):
-        import datetime
+    def test_top_level_keys_update(self):
+        assert simple({"x": 1, "y": 2}, {"y": 99, "z": 3}) == {"x": 1, "y": 99, "z": 3}
 
-        a = [datetime.date(2024, 1, 1), datetime.datetime(2024, 1, 1, 9, 0), {"x"}]
-        b = [datetime.date(2025, 1, 1), datetime.datetime(2025, 1, 1, 9, 0), {"y"}]
+    def test_nested_mapping_replaces_rather_than_merging(self):
+        assert simple({"db": {"host": "h", "port": 1}}, {"db": {"port": 2}}) == {
+            "db": {"port": 2}
+        }
 
-        result = MergeMethod.Deep(a, b, mergelists=mergelists)
+    def test_list_replaced_wholesale(self):
+        assert simple([1, 2, 3], [10, 20]) == [10, 20]
+        assert simple([1], [10, 20, 30]) == [10, 20, 30]
+        assert simple({"a": [1, 2, 3]}, {"a": [9]}) == {"a": [9]}
 
-        for item in b:
-            assert item in result
+    def test_shape_changes_replace(self):
+        assert simple("old", {"k": "v"}) == {"k": "v"}
+        assert simple("old", [1, 2]) == [1, 2]
+        assert simple({"k": 1}, 5) == 5
 
-    def test_deep_empty_base_list_takes_dates(self):
-        import datetime
+    def test_list_of_mappings_does_not_fold(self):
+        # Folding is a substitute/deep rule; simple replaces.
+        assert simple({"a": 1}, [{"b": 2}]) == [{"b": 2}]
 
-        assert MergeMethod.Deep([], [datetime.date(2025, 1, 1)]) == [
+    def test_unknown_leaf_type_replaces(self):
+        class Weird:
+            pass
+
+        weird = Weird()
+        assert simple({}, weird) is weird
+
+    def test_list_of_dates_replaces(self):
+        assert simple([datetime.date(2024, 1, 1)], [datetime.date(2025, 1, 1)]) == [
             datetime.date(2025, 1, 1)
         ]
 
-    def test_simple_list_of_dates_does_not_raise(self):
-        import datetime
+    def test_does_not_mutate_aliased_list_elements(self):
+        element = {"x": 1}
+        simple([element, element], [{"x": 2}])
+        assert element == {"x": 1}
 
-        result = MergeMethod.Simple(
-            [datetime.date(2024, 1, 1)], [datetime.date(2025, 1, 1)]
+    def test_two_top_level_lists_through_a_loader_replace(self):
+        assert Loader().load({"l": [1, 2]}, {"l": [3]}) == {"l": [3]}
+
+
+# ---------------------------------------------------------------------------
+# substitute
+# ---------------------------------------------------------------------------
+
+
+class TestSubstitute:
+    def test_scalar_replaces(self):
+        assert substitute("a", "b") == "b"
+
+    def test_lists_replace(self):
+        assert substitute([1, 2], [3, 4]) == [3, 4]
+        assert substitute({"a": [1, 2]}, {"a": [3]}) == {"a": [3]}
+
+    def test_mappings_recurse(self):
+        a = {"a": 1, "b": {"x": 10, "y": 20}}
+        b = {"b": {"y": 99, "z": 30}, "c": 3}
+        assert substitute(a, b) == {"a": 1, "b": {"x": 10, "y": 99, "z": 30}, "c": 3}
+
+    def test_none_a_takes_b(self):
+        assert substitute(None, {"a": 1}) == {"a": 1}
+
+
+# ---------------------------------------------------------------------------
+# deep
+# ---------------------------------------------------------------------------
+
+
+class TestDeep:
+    def test_scalar_replaces(self):
+        assert deep(1, 2) == 2
+
+    def test_none_a_takes_b(self):
+        assert deep(None, 42) == 42
+
+    def test_mappings_recurse(self):
+        a = {"a": 1, "b": {"x": 10, "y": 20}}
+        b = {"b": {"y": 99, "z": 30}, "c": 3}
+        assert deep(a, b) == {"a": 1, "b": {"x": 10, "y": 99, "z": 30}, "c": 3}
+
+    def test_list_extends_with_new_items_in_order(self):
+        assert deep([1, 2, 3], [3, 4, 5]) == [1, 2, 3, 4, 5]
+        assert deep([1, 2], [1, 2]) == [1, 2]
+        assert deep([], [datetime.date(2025, 1, 1)]) == [datetime.date(2025, 1, 1)]
+
+    def test_list_under_a_key_extends(self):
+        assert deep({"hosts": ["a"]}, {"hosts": ["a", "b"]}) == {"hosts": ["a", "b"]}
+
+    def test_dedupe_is_type_aware(self):
+        # 1 == True == 1.0, but they are different configuration values.
+        result = deep([1, 0], [True, False, 1.0])
+        assert [type(item) for item in result] == [int, int, bool, bool, float]
+
+    def test_dedupe_inside_b_itself(self):
+        assert deep([], [1, 1, 2, 1]) == [1, 2]
+
+    def test_unhashable_items_compare_by_structure(self):
+        assert deep([[1]], [[1], [2]]) == [[1], [2]]
+        assert deep([[1, [2]]], [[1, [2]]]) == [[1, [2]]]
+        assert deep([{1}], [{1}, {2}]) == [{1}, {2}]
+
+    def test_structural_dedupe_is_type_aware(self):
+        result = deep([[1]], [[True], (1,)])
+        assert result == [[1], [True], (1,)]
+        assert [type(item) for item in result] == [list, list, tuple]
+
+    def test_mappings_in_a_list_are_never_deduplicated(self):
+        assert deep([{"a": 1}], [{"a": 1}]) == [{"a": 1}, {"a": 1}]
+
+    @pytest.mark.parametrize("mergelists", [False, True], ids=["plain", "mergelists"])
+    def test_extension_keeps_source_order(self, mergelists):
+        assert deep([], [1, {"a": 1}, 2], mergelists=mergelists) == [1, {"a": 1}, 2]
+
+    def test_without_mergelists_mappings_append(self):
+        assert deep([{"k": 1}], [{"k": 2}]) == [{"k": 1}, {"k": 2}]
+        assert deep([{"k": 1}], [{"k": 2}], mergelists=False) == [{"k": 1}, {"k": 2}]
+
+    def test_mergelists_merges_same_index_mappings_sharing_a_key(self):
+        result = deep([{"k": 1, "v": "a"}], [{"k": 1, "v": "b"}], mergelists=True)
+        assert result == [{"k": 1, "v": "b"}]
+
+    def test_mergelists_keeps_a_mapping_sharing_no_key(self):
+        assert deep([{"k": 1}], [{"z": 9}], mergelists=True) == [{"k": 1}, {"z": 9}]
+
+    def test_mergelists_mixed_overlap(self):
+        a = [{"k": 1}, {"p": 1}]
+        b = [{"k": 2}, {"q": 2}]
+        assert deep(a, b, mergelists=True) == [{"k": 2}, {"p": 1}, {"q": 2}]
+
+    def test_mergelists_through_a_loader(self):
+        result = Loader(merge="deep", merge_options={"mergelists": True}).load(
+            {"svc": [{"name": "a", "port": 1}]}, {"svc": [{"name": "a", "port": 2}]}
         )
+        assert result == {"svc": [{"name": "a", "port": 2}]}
 
-        assert result == [datetime.date(2025, 1, 1)]
+    def test_mergelists_as_a_per_call_override(self):
+        loader = Loader(merge="deep")
+        a, b = {"svc": [{"name": "a"}]}, {"svc": [{"name": "a", "port": 2}]}
+        assert loader.load(a, b) == {"svc": [{"name": "a"}, {"name": "a", "port": 2}]}
+        assert loader.load(a, b, merge_options={"mergelists": True}) == {
+            "svc": [{"name": "a", "port": 2}]
+        }
 
-    def test_deep_bytearray_replaces(self):
-        assert MergeMethod.Deep(bytearray(b"ab"), bytearray(b"bc")) == bytearray(b"bc")
+    def test_tuple_extends_as_a_tuple(self):
+        result = deep((1, 2), (2, 3))
+        assert result == (1, 2, 3)
+        assert type(result) is tuple
+
+    def test_bytearray_replaces(self):
+        assert deep(bytearray(b"ab"), bytearray(b"bc")) == bytearray(b"bc")
+
+    @pytest.mark.parametrize("mergelists", [False, True], ids=["plain", "mergelists"])
+    def test_list_keeps_leaf_items_of_any_type(self, mergelists):
+        a = [datetime.date(2024, 1, 1), datetime.datetime(2024, 1, 1, 9, 0), {"x"}]
+        b = [datetime.date(2025, 1, 1), datetime.datetime(2025, 1, 1, 9, 0), {"y"}]
+        result = deep(a, b, mergelists=mergelists)
+        for item in a + b:
+            assert item in result
 
 
-class TestTypeChangingOverrides:
+# ---------------------------------------------------------------------------
+# Rules every strategy follows
+# ---------------------------------------------------------------------------
+
+
+class TestLeafRule:
+    @pytest.mark.parametrize("strategy", STRATEGIES, ids=STRATEGY_IDS)
+    def test_any_non_container_value_replaces(self, strategy):
+        result = strategy({"section": _leaves("a")}, {"section": _leaves("b")})
+        assert result["section"] == _leaves("b")
+
+    @pytest.mark.parametrize("strategy", STRATEGIES, ids=STRATEGY_IDS)
+    def test_text_is_a_leaf_not_a_sequence(self, strategy):
+        assert strategy("abc", "de") == "de"
+        assert strategy(b"abc", b"de") == b"de"
+
+
+class TestShapeChanges:
     CASES = {
         "scalar_to_dict": (5, {"k": 1}),
         "dict_to_scalar": ({"k": 1}, 5),
         "str_to_list": ("a", [1, 2]),
         "list_to_dict": ([1, 2], {"k": 1}),
         "dict_to_scalar_list": ({"k": 1}, [1, 2]),
+        "list_to_scalar": ([1, 2], "x"),
     }
 
-    @pytest.mark.parametrize(
-        "strategy",
-        [MergeMethod.Substitute, MergeMethod.Deep],
-        ids=["Substitute", "Deep"],
-    )
+    @pytest.mark.parametrize("strategy", STRATEGIES, ids=STRATEGY_IDS)
     @pytest.mark.parametrize("case", list(CASES), ids=list(CASES))
     def test_later_value_replaces(self, strategy, case):
         a, b = self.CASES[case]
-
         assert strategy({"x": a}, {"x": b})["x"] == b
 
-    @pytest.mark.parametrize(
-        "strategy",
-        [MergeMethod.Substitute, MergeMethod.Deep],
-        ids=["Substitute", "Deep"],
-    )
-    def test_mapping_folds_only_nonempty_all_mapping_lists(self, strategy):
-        # A list of mappings folds into the mapping...
-        assert strategy({"a": 1}, [{"b": 2}]) == {"a": 1, "b": 2}
-        # ...anything else replaces it, an empty list included ("clear this").
+
+class TestNoneIsNoOpinion:
+    @pytest.mark.parametrize("strategy", STRATEGIES, ids=STRATEGY_IDS)
+    def test_top_level_none_keeps_earlier(self, strategy):
+        assert strategy("keep", None) == "keep"
+        assert strategy({"a": 1}, None) == {"a": 1}
+
+    @pytest.mark.parametrize("strategy", STRATEGIES, ids=STRATEGY_IDS)
+    def test_none_value_keeps_earlier_value(self, strategy):
+        assert strategy({"a": 1, "b": {"c": 2}}, {"a": None, "b": None}) == {
+            "a": 1,
+            "b": {"c": 2},
+        }
+
+    @pytest.mark.parametrize("strategy", STRATEGIES, ids=STRATEGY_IDS)
+    def test_none_for_a_new_key_adds_it_as_none(self, strategy):
+        result = strategy({"a": 1}, {"b": None})
+        assert result == {"a": 1, "b": None}
+
+    @pytest.mark.parametrize("strategy", RECURSIVE, ids=RECURSIVE_IDS)
+    def test_nested_none_keeps_earlier_value(self, strategy):
+        result = strategy({"db": {"host": "h", "port": 1}}, {"db": {"host": None}})
+        assert result == {"db": {"host": "h", "port": 1}}
+
+    @pytest.mark.parametrize("strategy", STRATEGIES, ids=STRATEGY_IDS)
+    def test_through_a_loader(self, strategy):
+        result = Loader(merge=strategy).load({"a": 1}, {"a": None, "b": None})
+        assert result == {"a": 1, "b": None}
+
+
+class TestDelete:
+    def test_delete_is_exported_and_a_singleton(self):
+        assert yaconfiglib.DELETE is DELETE
+        assert copy.copy(DELETE) is DELETE
+        assert copy.deepcopy({"k": DELETE})["k"] is DELETE
+        assert repr(DELETE) == "DELETE"
+
+    def test_delete_pickles_to_itself(self):
+        import pickle
+
+        assert pickle.loads(pickle.dumps(DELETE)) is DELETE
+
+    @pytest.mark.parametrize("strategy", STRATEGIES, ids=STRATEGY_IDS)
+    def test_delete_removes_a_key(self, strategy):
+        assert strategy({"a": 1, "b": 2}, {"a": DELETE}) == {"b": 2}
+
+    @pytest.mark.parametrize("strategy", STRATEGIES, ids=STRATEGY_IDS)
+    def test_delete_of_an_absent_key_is_a_no_op(self, strategy):
+        assert strategy({"a": 1}, {"z": DELETE}) == {"a": 1}
+
+    @pytest.mark.parametrize("strategy", RECURSIVE, ids=RECURSIVE_IDS)
+    def test_nested_delete(self, strategy):
+        result = strategy({"db": {"host": "h", "port": 1}}, {"db": {"port": DELETE}})
+        assert result == {"db": {"host": "h"}}
+
+    @pytest.mark.parametrize("strategy", STRATEGIES, ids=STRATEGY_IDS)
+    def test_whole_document_delete_gives_none(self, strategy):
+        assert strategy({"a": 1}, DELETE) is None
+
+    def test_deep_list_skips_delete_items(self):
+        assert deep([1], [DELETE, 2]) == [1, 2]
+
+    @pytest.mark.parametrize("merge", ["simple", "substitute", "deep"])
+    def test_through_a_loader(self, merge):
+        result = Loader(merge=merge).load({"a": 1, "b": 2}, {"a": DELETE})
+        assert result == {"b": 2}
+
+    def test_markers_left_in_a_result_are_pruned(self):
+        # simple does not recurse, so the nested marker reaches the result.
+        result = Loader(merge="simple").load(
+            {"db": {"host": "h"}}, {"db": {"host": DELETE, "port": 1}}
+        )
+        assert result == {"db": {"port": 1}}
+        # A single source is not merged at all; its markers are still pruned.
+        assert Loader().load({"a": DELETE, "b": [1, DELETE]}) == {"b": [1]}
+
+    @pytest.mark.usefixtures("needs_yaml")
+    @pytest.mark.parametrize("merge", ["simple", "substitute", "deep"])
+    def test_yaml_delete_tag(self, tmp_path, merge):
+        (tmp_path / "base.yaml").write_text(
+            "host: h\nport: 1\ndb:\n  user: u\n  password: p\n", encoding="utf-8"
+        )
+        (tmp_path / "local.yaml").write_text(
+            "port: !delete\ndb:\n  user: u\n  password: !delete\n", encoding="utf-8"
+        )
+        result = Loader(base_dir=tmp_path, merge=merge).load("base.yaml", "local.yaml")
+        assert result == {"host": "h", "db": {"user": "u"}}
+
+    @pytest.mark.usefixtures("needs_yaml")
+    def test_yaml_delete_tag_in_a_single_document_is_pruned(self, tmp_path):
+        (tmp_path / "one.yaml").write_text("a: !delete\nb: 1\n", encoding="utf-8")
+        assert Loader(base_dir=tmp_path).load("one.yaml") == {"b": 1}
+
+
+class TestFolding:
+    @pytest.mark.parametrize("strategy", RECURSIVE, ids=RECURSIVE_IDS)
+    def test_list_of_mappings_folds_in_order(self, strategy):
+        assert strategy({"a": 1}, [{"b": 2}, {"c": 3}]) == {"a": 1, "b": 2, "c": 3}
+        assert strategy({"a": 1}, [{"a": 2}, {"a": 3}]) == {"a": 3}
+
+    @pytest.mark.parametrize("strategy", RECURSIVE, ids=RECURSIVE_IDS)
+    def test_any_other_list_replaces(self, strategy):
         assert strategy({"a": 1}, [42]) == [42]
+        assert strategy({"a": 1}, [{"b": 2}, 3]) == [{"b": 2}, 3]
+        # An empty list is "clear this", not "fold nothing in".
         assert strategy({"a": 1}, []) == []
 
+    def test_folds_recursively_under_deep(self):
+        result = deep(
+            {"db": {"host": "h", "opts": {"x": 1}}}, {"db": [{"opts": {"y": 2}}]}
+        )
+        assert result == {"db": {"host": "h", "opts": {"x": 1, "y": 2}}}
+
 
 # ---------------------------------------------------------------------------
-# Copy-on-write contract
+# Copy-on-write, type preservation, memo
 # ---------------------------------------------------------------------------
 
 
-class TestMergeCopyOnWrite:
+class TestCopyOnWrite:
     @pytest.mark.parametrize("strategy", STRATEGIES, ids=STRATEGY_IDS)
     def test_inputs_unchanged(self, strategy):
-        import copy
-
-        a = {"db": {"host": "shared", "pool": 5}, "hosts": ["a"], "n": 1}
-        b = {"db": {"host": "prod"}, "hosts": ["b"]}
-        a_before = copy.deepcopy(a)
-        b_before = copy.deepcopy(b)
+        a = {"db": {"host": "shared", "pool": 5}, "hosts": ["a"], "n": 1, "x": 1}
+        b = {"db": {"host": "prod"}, "hosts": ["b"], "x": DELETE, "y": None}
+        a_before, b_before = copy.deepcopy(a), copy.deepcopy(b)
 
         result = strategy(a, b)
 
@@ -370,48 +406,155 @@ class TestMergeCopyOnWrite:
         assert b == b_before
         assert result is not a
 
+    @pytest.mark.parametrize("mergelists", [False, True], ids=["plain", "mergelists"])
+    def test_deep_lists_unchanged(self, mergelists):
+        a = [{"k": 1}, 1]
+        b = [{"k": 2}, 2]
+        a_before, b_before = copy.deepcopy(a), copy.deepcopy(b)
+        deep(a, b, mergelists=mergelists)
+        assert a == a_before
+        assert b == b_before
+
+    @pytest.mark.parametrize("strategy", RECURSIVE, ids=RECURSIVE_IDS)
+    def test_override_does_not_rewrite_an_aliased_sibling(self, strategy):
+        shared = {"host": "shared", "pool": 5}
+        a = {"svc_a": shared, "svc_b": shared}
+
+        result = strategy(a, {"svc_a": {"pool": 9}})
+
+        assert result["svc_a"] == {"host": "shared", "pool": 9}
+        assert result["svc_b"] == {"host": "shared", "pool": 5}
+        assert shared == {"host": "shared", "pool": 5}
+
+    def test_folding_does_not_modify_the_target(self):
+        a = {"a": 1}
+        substitute(a, [{"b": 2}])
+        deep(a, [{"b": 2}])
+        assert a == {"a": 1}
+
+    @pytest.mark.usefixtures("needs_yaml")
+    @pytest.mark.parametrize("merge", ["deep", "substitute"])
+    def test_yaml_merge_key_override_does_not_leak(self, tmp_path, merge):
+        # `<<:` copies only top-level keys, so both environments share one `db`
+        # mapping; an override layer must not rewrite it for everyone.
+        (tmp_path / "app.yaml").write_text(
+            "defaults: &defaults\n"
+            "  db:\n"
+            "    host: shared\n"
+            "    pool: 5\n"
+            "  hosts: [a]\n"
+            "development:\n"
+            "  <<: *defaults\n"
+            "production:\n"
+            "  <<: *defaults\n",
+            encoding="utf-8",
+        )
+        (tmp_path / "override.yaml").write_text(
+            "production:\n  db:\n    host: prod-db\n  hosts: [b]\n", encoding="utf-8"
+        )
+
+        result = Loader(base_dir=tmp_path, merge=merge).load(
+            "app.yaml", "override.yaml"
+        )
+
+        assert result["production"]["db"]["host"] == "prod-db"
+        assert result["development"]["db"]["host"] == "shared"
+        assert result["defaults"]["db"]["host"] == "shared"
+        assert result["development"]["hosts"] == ["a"]
+
+    @pytest.mark.usefixtures("needs_yaml")
+    @pytest.mark.parametrize("merge", ["deep", "substitute"])
+    def test_later_layer_does_not_rewrite_an_earlier_layer_anchor(
+        self, tmp_path, merge
+    ):
+        (tmp_path / "base.yaml").write_text("v: 0\n", encoding="utf-8")
+        (tmp_path / "mid.yaml").write_text(
+            "common: &c\n  x: 1\nb: *c\n", encoding="utf-8"
+        )
+        (tmp_path / "top.yaml").write_text("b:\n  x: 2\n", encoding="utf-8")
+
+        result = Loader(base_dir=tmp_path, merge=merge).load(
+            "base.yaml", "mid.yaml", "top.yaml"
+        )
+
+        assert result["b"]["x"] == 2
+        assert result["common"]["x"] == 1
+
+    def test_mapping_sources_are_not_modified_by_a_loader(self):
+        a = {"db": {"host": "h"}, "l": [1]}
+        b = {"db": {"port": 1}, "l": [2]}
+        a_before, b_before = copy.deepcopy(a), copy.deepcopy(b)
+        Loader(merge="deep").load(a, b)
+        assert (a, b) == (a_before, b_before)
+
+
+class TestTypePreservation:
     @pytest.mark.parametrize("strategy", STRATEGIES, ids=STRATEGY_IDS)
-    def test_mapping_subclass_preserved(self, strategy):
-        import collections
-
-        from yaconfiglib.loader import DotAccessibleDict
-
+    def test_ordered_dict(self, strategy):
         ordered = collections.OrderedDict([("a", 1)])
-        assert type(strategy(ordered, {"b": 2})) is collections.OrderedDict
+        result = strategy(ordered, {"b": 2})
+        assert type(result) is collections.OrderedDict
+        assert list(result.items()) == [("a", 1), ("b", 2)]
 
-        default = collections.defaultdict(list, {"a": 1})
-        merged_default = strategy(default, {"b": 2})
-        assert type(merged_default) is collections.defaultdict
-        assert merged_default.default_factory is list
+    @pytest.mark.parametrize("strategy", STRATEGIES, ids=STRATEGY_IDS)
+    def test_defaultdict_keeps_its_factory(self, strategy):
+        source = collections.defaultdict(list, {"a": 1})
+        result = strategy(source, {"b": 2})
+        assert type(result) is collections.defaultdict
+        assert result.default_factory is list
+        assert result == {"a": 1, "b": 2}
+        assert dict(source) == {"a": 1}
 
+    @pytest.mark.parametrize("strategy", STRATEGIES, ids=STRATEGY_IDS)
+    def test_dict_subclasses(self, strategy):
+        class Tagged(dict):
+            pass
+
+        assert type(strategy(Tagged(a=1), {"b": 2})) is Tagged
         dot = DotAccessibleDict({"a": 1})
         assert type(strategy(dot, {"b": 2})) is DotAccessibleDict
 
-    def test_simple_readonly_mapping_with_overlapping_keys(self):
-        import typing
+    @pytest.mark.parametrize("strategy", RECURSIVE, ids=RECURSIVE_IDS)
+    def test_nested_subclass_kept(self, strategy):
+        inner = collections.OrderedDict([("x", 1)])
+        result = strategy({"in": inner}, {"in": {"y": 2}})
+        assert type(result["in"]) is collections.OrderedDict
+        assert result["in"] == {"x": 1, "y": 2}
 
-        class ReadOnly(typing.Mapping):
-            def __init__(self, **values):
-                self._values = dict(values)
-
-            def __getitem__(self, key):
-                return self._values[key]
-
-            def __iter__(self):
-                return iter(self._values)
-
-            def __len__(self):
-                return len(self._values)
-
-        result = MergeMethod.Simple(ReadOnly(a=1, b=2), {"b": 99})
-
+    @pytest.mark.parametrize("strategy", STRATEGIES, ids=STRATEGY_IDS)
+    def test_read_only_mapping_with_overlapping_keys(self, strategy):
+        source = _ReadOnly(a=1, b=2)
+        result = strategy(source, {"b": 99})
         assert dict(result) == {"a": 1, "b": 99}
+        assert dict(source) == {"a": 1, "b": 2}
 
-    @pytest.mark.parametrize(
-        "strategy",
-        [MergeMethod.Substitute, MergeMethod.Deep],
-        ids=["Substitute", "Deep"],
-    )
+    def test_list_subclass_kept_by_deep(self):
+        class Tagged(list):
+            pass
+
+        result = deep(Tagged([1]), [2])
+        assert type(result) is Tagged
+        assert result == [1, 2]
+
+
+class TestMemo:
+    @pytest.mark.parametrize("strategy", RECURSIVE, ids=RECURSIVE_IDS)
+    def test_node_aliased_in_both_inputs_stays_aliased(self, strategy):
+        shared_a = {"k": 1}
+        shared_b = {"k": 2}
+        result = strategy(
+            {"x": shared_a, "y": shared_a}, {"x": shared_b, "y": shared_b}
+        )
+        assert result["x"] is result["y"]
+        assert result["x"] == {"k": 2}
+
+    def test_aliased_lists_stay_aliased_under_deep(self):
+        la, lb = [1], [2]
+        result = deep({"x": la, "y": la}, {"x": lb, "y": lb})
+        assert result["x"] is result["y"]
+        assert result["x"] == [1, 2]
+
+    @pytest.mark.parametrize("strategy", RECURSIVE, ids=RECURSIVE_IDS)
     def test_cyclic_mappings_merge(self, strategy):
         a = {"name": "one"}
         a["self"] = a
@@ -423,655 +566,185 @@ class TestMergeCopyOnWrite:
         assert result["name"] == "two"
         assert result["self"] is result
 
-    def test_node_aliased_in_both_inputs_stays_aliased(self):
-        shared_a = {"k": 1}
-        shared_b = {"k": 2}
+    def test_cyclic_lists_terminate_under_deep(self):
+        a = [1]
+        a.append(a)
+        b = [2]
+        b.append(b)
+        result = deep(a, b)
+        assert len(result) == 4
+        assert result[:1] == [1] and result[2] == 2
 
-        result = MergeMethod.Deep(
-            {"x": shared_a, "y": shared_a}, {"x": shared_b, "y": shared_b}
-        )
+    def test_custom_strategy_threads_memo(self):
+        seen = []
 
-        assert result["x"] is result["y"]
+        def tracing(a, b, *, memo=None, **options):
+            seen.append(memo)
+            return deep(a, b, memo=memo, **options)
 
-    def test_simple_does_not_mutate_aliased_list_elements(self):
-        element = {"x": 1}
-
-        MergeMethod.Simple([element, element], [{"x": 2}])
-
-        assert element == {"x": 1}
-
-
-# ---------------------------------------------------------------------------
-# typed_merge
-# ---------------------------------------------------------------------------
-
-
-class TestTypedMerge:
-    def test_scalar_last_wins(self):
-        assert typed_merge(int, 1, 2, 3) == 3
-
-    def test_none_returns_none(self):
-        assert typed_merge(int) is None
-
-    def test_dict_merge(self):
-        result = typed_merge(dict, {"a": 1}, {"b": 2})
-        assert result == {"a": 1, "b": 2}
-
-    def test_exported_from_package_root(self):
-        import yaconfiglib
-
-        assert yaconfiglib.typed_merge is typed_merge
-        assert "typed_merge" in yaconfiglib.__all__
+        memo = {}
+        tracing({"a": {"b": 1}}, {"a": {"c": 2}}, memo=memo)
+        assert seen == [memo]
+        assert memo  # deep recorded the pairs it merged
 
 
 # ---------------------------------------------------------------------------
-# typed_merge — parametrized generics
-#
-# Regression cluster: generic args were read off the ORIGINAL `cls` rather than
-# the union-unwrapped origin, and the sequence branch tested a class object with
-# instance checks so it could never run. Result: plain generics coerced nothing,
-# union-wrapped generics picked NoneType as the child type and crashed, and
-# sequence element types were ignored. Nothing in the suite exercised `cls_args`
-# — every typed case used dataclass/Namespace field hints — which is how all
-# three shipped green. `typing.Dict`/`List` spellings keep the 3.9 floor.
+# Strategy registry and resolution
 # ---------------------------------------------------------------------------
 
 
-class TestTypedMergeGenerics:
-    def test_mapping_value_type_is_coerced(self):
-        # Was {'a': '1'}: cls_args came back empty for a non-union generic, so
-        # child_cls was never set and the value passed through uncoerced.
-        result = typed_merge(typing.Dict[str, int], {"a": "1"})
-        assert result == {"a": 1}
-        assert isinstance(result["a"], int)
-
-    def test_mapping_value_coercion_across_several_objects(self):
-        result = typed_merge(typing.Dict[str, int], {"a": "1"}, {"a": "2", "b": "3"})
-        assert result == {"a": 2, "b": 3}
-        assert all(isinstance(v, int) for v in result.values())
-
-    def test_sequence_element_type_is_coerced(self):
-        # Was [1, 2]: the sequence branch was unreachable, so this fell through
-        # to the scalar tail and returned the list unchanged.
-        result = typed_merge(typing.List[str], [1, 2])
-        assert result == ["1", "2"]
-        assert all(isinstance(v, str) for v in result)
-
-    def test_sequence_last_object_wins(self):
-        # Sequences keep last-object-wins semantics — not element-wise merging.
-        assert typed_merge(typing.List[str], [1, 2, 3], [9]) == ["9"]
-
-    def test_tuple_origin_rebuilds_a_tuple(self):
-        result = typed_merge(typing.Tuple[str, ...], (1, 2))
-        assert result == ("1", "2")
-        assert isinstance(result, tuple)
-
-    def test_optional_mapping_merges_instead_of_crashing(self):
-        # Was TypeError: NoneType takes no arguments — cls_args held the
-        # UNION's args, so child_cls became NoneType.
-        result = typed_merge(
-            typing.Optional[typing.Dict[str, int]], {"a": 1}, {"b": "2"}
-        )
-        assert result == {"a": 1, "b": 2}
-
-    def test_optional_sequence_coerces_elements(self):
-        assert typed_merge(typing.Optional[typing.List[str]], [1, 2]) == ["1", "2"]
-
-    def test_optional_scalar_last_wins(self):
-        # Union unwrap leaves a bare `int`, which has no args — the scalar tail.
-        assert typed_merge(typing.Optional[int], 1, "2") == 2
-
-    def test_str_hint_is_not_treated_as_a_sequence(self):
-        # str/bytes are Sequences; if they reached the sequence branch a string
-        # hint would be rebuilt character by character.
-        assert typed_merge(str, "hello") == "hello"
-        assert typed_merge(typing.Optional[str], "a", "b") == "b"
-
-    def test_bare_unparametrized_generic_has_no_args(self):
-        # No args → child_cls stays None → elements keep their own types.
-        result = typed_merge(list, [1, "a"])
-        assert result == [1, "a"]
-
-    def test_dataclass_field_annotated_bare_list(self):
-        # Pins the no-args path through a dataclass field hint: the element
-        # types must survive untouched rather than being coerced to anything.
-        @dataclass
-        class Cfg:
-            items: list = field(default_factory=list)
-
-        merged = typed_merge(Cfg, Cfg(items=[1, 2]), Cfg(items=[3]))
-        assert merged.items == [3]
-
-    def test_dataclass_field_annotated_parametrized_list(self):
-        @dataclass
-        class Cfg:
-            ports: typing.List[int] = field(default_factory=list)
-
-        merged = typed_merge(Cfg, Cfg(ports=["1"]), Cfg(ports=["8080", "443"]))
-        assert merged.ports == [8080, 443]
-        assert all(isinstance(p, int) for p in merged.ports)
-
-    def test_dataclass_field_annotated_parametrized_dict(self):
-        @dataclass
-        class Cfg:
-            limits: typing.Dict[str, int] = field(default_factory=dict)
-
-        merged = typed_merge(Cfg, Cfg(limits={"a": "1"}), Cfg(limits={"b": "2"}))
-        assert merged.limits == {"a": 1, "b": 2}
-
-
-# ---------------------------------------------------------------------------
-# typed_merge — non-class type hints (factory functions, opaque objects)
-# ---------------------------------------------------------------------------
-
-
-class TestTypedMergeNonClassHint:
-    def test_factory_function_hint_coerces_last_value(self):
-        # A non-class callable origin: last value wins, coerced through it.
-        assert typed_merge(_ip_factory, "10.0.0.0/8", "192.168.0.0/16") == (
-            "net:192.168.0.0/16"
-        )
-
-    def test_factory_rejecting_value_falls_back_to_raw(self):
-        def strict(v):
-            if not isinstance(v, str):
-                raise TypeError("need a str")
-            return v.upper()
-
-        # The factory rejects an int → merge stays total, returning the raw
-        # last value rather than raising.
-        assert typed_merge(strict, 1, 2) == 2
-
-    def test_non_class_non_callable_hint_last_wins(self):
-        sentinel = object()  # neither a class nor callable
-        assert typed_merge(sentinel, 1, 2) == 2
-
-    def test_factory_field_hint_on_namespace_does_not_crash(self):
-        # The regression: a Namespace field annotated by a factory function.
-        a = _NetConfig(network="10.0.0.0/8")
-        b = _NetConfig(network="192.168.0.0/16")
-        merged = typed_merge(_NetConfig, a, b)
-        assert merged.network == "net:192.168.0.0/16"
-
-
-# ---------------------------------------------------------------------------
-# typed_merge extension hooks: OpaqueMerge / opaque / TypedNamespace
-# ---------------------------------------------------------------------------
-
-
-class TestTypedMergeHooks:
-    def test_opaque_mixin_last_wins(self):
-        class Zone(OpaqueMerge, Namespace):
-            pass
-
-        merged = typed_merge(Zone, Zone(x=1), Zone(x=2))
-        assert merged.x == 2
-
-    def test_opaque_decorator_last_wins(self):
-        @opaque
-        class Zone(Namespace):
-            pass
-
-        merged = typed_merge(Zone, Zone(x="a"), Zone(x="z"))
-        assert merged.x == "z"
-
-    def test_opaque_bypasses_factory_function_field_hint(self):
-        # Without opacity a factory-function field hint drives per-field
-        # coercion; OpaqueMerge skips all field introspection.
-        class Zone(OpaqueMerge, Namespace):
-            network: _ip_factory  # a factory function, not a class
-
-        merged = typed_merge(Zone, Zone(network="a"), Zone(network="b"))
-        assert merged.network == "b"  # opaque → the raw last value, uncoerced
-
-    def test_typed_namespace_applies_parse_hooks(self):
-        class Cfg(TypedNamespace):
-            def _parse_port(self, v):
-                return int(v)
-
-        cfg = Cfg(port="8080", host="db")
-        assert cfg.port == 8080
-        assert cfg.host == "db"
-
-    def test_hooks_exported_from_package_root(self):
-        import yaconfiglib
-
-        for name in ("OpaqueMerge", "opaque", "TypedNamespace"):
-            assert name in yaconfiglib.__all__
-            assert getattr(yaconfiglib, name) is not None
-
-
-# ---------------------------------------------------------------------------
-# typed_merge: None sources, unions, Any, Annotated and unresolvable hints
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class _DB:
-    host: str = ""
-    port: int = 0
-
-
-@dataclass
-class _App:
-    db: typing.Optional[_DB] = None
-    name: str = ""
-
-
-class _Zone(OpaqueMerge, Namespace):
-    pass
-
-
-@dataclass
-class _PartiallyTyped:
-    port: int = 0
-    later: "NotDefinedAnywhere" = None  # noqa: F821 - unresolvable on purpose
-
-
-class _Recorder:
-    seen = None
-
-    @classmethod
-    def __merge__(cls, *objects, init=True):
-        _Recorder.seen = objects
-        return objects[-1]
-
-
-class TestTypedMergeNoneUnionsAndHints:
-    def test_optional_scalar_field_none_keeps_earlier_value(self):
-        @dataclass
-        class Cfg:
-            name: typing.Optional[str] = None
-            debug: typing.Optional[bool] = None
-
-        merged = typed_merge(Cfg, Cfg(name="x", debug=True), Cfg())
-        assert merged.name == "x"
-        assert merged.debug is True
-
-    def test_optional_dataclass_field_none_in_any_position(self):
-        db = _DB(host="h", port=5)
-        assert typed_merge(_App, _App(db=db), _App()).db == db
-        assert typed_merge(_App, _App(), _App(db=db)).db == db
-        # The same through mappings, which is how a config document arrives.
-        merged = typed_merge(_App, {"db": {"host": "h", "port": "5"}}, {"db": None})
-        assert merged.db == _DB(host="h", port=5)
-
-    def test_none_source_does_not_stringify_or_falsify(self):
-        assert typed_merge(str, "a", None) == "a"
-        assert typed_merge(bool, True, None) is True
-        assert typed_merge(int, 7, None) == 7
-
-    def test_untyped_mapping_none_value_keeps_earlier_value(self):
-        assert typed_merge(dict, {"a": 1}, {"a": None}) == {"a": 1}
-        assert typed_merge(dict, {"a": 1}, {"a": None}, {"a": 3}) == {"a": 3}
-
-    def test_all_none_sources_give_none(self):
-        assert typed_merge(str, None, None) is None
-        assert typed_merge(_App, None) is None
-        assert typed_merge(typing.Optional[typing.List[str]], ["a"], None) == ["a"]
-        assert typed_merge(dict, {"a": None}, {"a": None}) == {"a": None}
-
-    def test_union_skips_nonetype_member(self):
-        assert typed_merge(typing.Union[None, int], "5") == 5
-        assert typed_merge(typing.Optional[typing.Dict[str, int]], {"a": "1"}) == {
-            "a": 1
-        }
-
-    def test_union_keeps_value_matching_a_later_member(self):
-        assert typed_merge(typing.Union[str, int], 5) == 5
-        assert typed_merge(typing.Union[int, str], "abc") == "abc"
-        # Documented change: a string a str member already accepts is kept.
-        assert typed_merge(typing.Union[int, str], "8080") == "8080"
-
-    def test_union_coerces_non_matching_value_through_first_member(self):
-        # A pin on the documented first-member rule for a value no member takes.
-        assert typed_merge(typing.Union[int, float], "2") == 2
-
-    def test_opaque_type_inside_optional_stays_opaque(self):
-        z1, z2 = _Zone(x="a"), _Zone(x="z")
-        assert typed_merge(typing.Optional[_Zone], z1, z2) is z2
-
-        @dataclass
-        class Cfg:
-            zone: typing.Optional[_Zone] = None
-
-        merged = typed_merge(Cfg, Cfg(zone=z1), Cfg(zone=z2))
-        assert merged.zone is z2
-
-    def test_merge_hook_never_receives_none(self):
-        _Recorder.seen = None
-        r = _Recorder()
-        assert typed_merge(_Recorder, r, None) is r
-        assert _Recorder.seen == (r,)
-
-    def test_any_hint_last_value_wins(self):
-        assert typed_merge(typing.Any, {"a": 1}, "last") == "last"
-        assert typed_merge(typing.Optional[typing.Any], 1, "last") == "last"
-        assert typed_merge(typing.List[typing.Any], [1, "a", {"b": 2}]) == [
-            1,
-            "a",
-            {"b": 2},
-        ]
-        assert typed_merge(
-            typing.Dict[str, typing.Any], {"a": {"x": 1}}, {"a": "flat"}
-        ) == {"a": "flat"}
-
-    def test_dataclass_any_field(self):
-        @dataclass
-        class Cfg:
-            extra: typing.Any = None
-
-        merged = typed_merge(Cfg, Cfg(extra={"a": 1}), Cfg(extra=[1, 2]))
-        assert merged.extra == [1, 2]
-
-    def test_annotated_hint_is_unwrapped(self):
-        assert typed_merge(typing.Annotated[int, "port"], "5") == 5
-        assert typed_merge(
-            typing.Dict[str, typing.Annotated[int, "port"]], {"a": "5"}
-        ) == {"a": 5}
-        assert typed_merge(typing.Optional[typing.Annotated[int, "port"]], "5") == 5
-
-    def test_unresolvable_field_annotation_keeps_other_hints(self):
-        merged = typed_merge(_PartiallyTyped, _PartiallyTyped(port="8080"))
-        assert merged.port == 8080
-        assert merged.later is None
-
-
-# ---------------------------------------------------------------------------
-# typed_merge: sequence hints and scalar coercion
-# ---------------------------------------------------------------------------
-
-
-class _Point(typing.NamedTuple):
-    x: int
-    y: int
-
-
-class _Pair(tuple):
-    """A tuple subclass that cannot be rebuilt from an iterable of items."""
-
-    def __new__(cls, a, b):
-        return super().__new__(cls, (a, b))
-
-
-class TestTypedMergeSequencesAndScalars:
-    def test_abstract_sequence_hint(self):
-        assert typed_merge(typing.Sequence[str], [1, 2]) == ["1", "2"]
-        assert typed_merge(typing.MutableSequence[int], ["1", "2"]) == [1, 2]
-        # An abstract hint keeps the value's own concrete type.
-        assert typed_merge(typing.Sequence[int], ("1", "2")) == (1, 2)
-
-    def test_dataclass_sequence_field(self):
-        @dataclass
-        class Cfg:
-            hosts: typing.Sequence[str] = ()
-
-        assert typed_merge(Cfg, Cfg(hosts=["a"]), Cfg(hosts=[1, 2])).hosts == ["1", "2"]
-        assert typed_merge(Cfg, {"hosts": ["a"]}, {"hosts": [1]}).hosts == ["1"]
-
-    def test_namedtuple_hint_rebuilds_with_field_types(self):
-        merged = typed_merge(_Point, ("1", "2"))
-        assert merged == _Point(1, 2)
-        assert isinstance(merged, _Point)
-        # Arity is the type's own contract, and a surplus item must not vanish.
-        with pytest.raises(TypeError):
-            typed_merge(_Point, ("1", "2", "3"))
-
-    def test_list_of_namedtuples_and_ranges_kept(self):
-        points = [_Point(1, 2), _Point(3, 4)]
-        assert typed_merge(list, points) == points
-        assert typed_merge(typing.List[_Point], [("1", "2")]) == [_Point(1, 2)]
-        assert typed_merge(list, [range(3)]) == [range(3)]
-
-    def test_range_hint_returned_unchanged(self):
-        r = range(5)
-        assert typed_merge(range, r) is r
-
-    def test_heterogeneous_tuple_coerces_by_position(self):
-        assert typed_merge(typing.Tuple[int, str], ("1", 2)) == (1, "2")
-        # The homogeneous form still applies one type to every element.
-        assert typed_merge(typing.Tuple[int, ...], ("1", "2", "3")) == (1, 2, 3)
-
-    def test_heterogeneous_tuple_length_mismatch_raises(self):
-        with pytest.raises(TypeError):
-            typed_merge(typing.Tuple[int, str], ("1", "2", "3"))
-        with pytest.raises(TypeError):
-            typed_merge(typing.Tuple[int, str], ("1",))
-
-    def test_empty_tuple_hint(self):
-        assert typed_merge(typing.Tuple[()], ()) == ()
-
-    def test_sequence_hint_rejects_string_and_mapping_values(self):
-        with pytest.raises(TypeError):
-            typed_merge(typing.List[str], "abc")
-        with pytest.raises(TypeError):
-            typed_merge(typing.List[str], {"a": 1})
-        with pytest.raises(TypeError):
-            typed_merge(typing.List[int], 5)
-
-    def test_unconstructible_sequence_falls_back_to_last_value(self):
-        pair = _Pair("1", "2")
-        assert typed_merge(_Pair, pair) is pair
-
-    def test_bytearray_hint_still_accepts_bytes(self):
-        assert typed_merge(bytearray, b"ab") == bytearray(b"ab")
-
-    def test_bool_hint_parses_strings(self):
-        for word in ("true", "TRUE", " yes ", "On", "1"):
-            assert typed_merge(bool, word) is True, word
-        for word in ("false", "FALSE", " no ", "Off", "0"):
-            assert typed_merge(bool, word) is False, word
-
-        @dataclass
-        class Cfg:
-            debug: bool = False
-
-        assert typed_merge(Cfg, {"debug": "false"}).debug is False
-
-    def test_bool_hint_rejects_unrecognized_string(self):
+class TestRegistry:
+    def test_builtins_listed_sorted(self):
+        names = yaconfiglib.merge_strategies()
+        assert {"simple", "substitute", "deep"} <= set(names)
+        assert names == sorted(names)
+
+    @pytest.mark.parametrize("name", ["simple", "substitute", "deep", "DEEP", "Simple"])
+    def test_builtin_names_resolve_case_insensitively(self, name):
+        assert _merge.resolve_merge(name) is getattr(_merge, name.lower())
+
+    def test_default_strategy_is_simple(self):
+        result = Loader().load({"db": {"host": "h"}}, {"db": {"port": 1}})
+        assert result == {"db": {"port": 1}}
+
+    @pytest.mark.usefixtures("isolated_registry")
+    def test_register_merge_makes_a_name_selectable(self):
+        def right(a, b, *, memo=None, **options):
+            return b
+
+        yaconfiglib.register_merge("Right", right)
+        assert "right" in yaconfiglib.merge_strategies()
+        assert _merge.resolve_merge("right") is right
+        assert Loader(merge="right").load({"a": 1}, {"b": 2}) == {"b": 2}
+        assert Loader().load({"a": 1}, {"b": 2}, merge="RIGHT") == {"b": 2}
+
+    @pytest.mark.usefixtures("isolated_registry")
+    def test_register_merge_refuses_a_taken_name(self):
+        def right(a, b, *, memo=None, **options):
+            return b
+
+        with pytest.raises(ValueError, match="already registered"):
+            yaconfiglib.register_merge("deep", right)
         with pytest.raises(ValueError):
-            typed_merge(bool, "maybe")
+            yaconfiglib.register_merge("DEEP", right)
+        yaconfiglib.register_merge("deep", right, replace=True)
+        assert _merge.resolve_merge("deep") is right
 
+    def test_registry_isolation_restored(self):
+        # Runs after the tests above in file order: the replaced "deep" is gone.
+        assert _merge.resolve_merge("deep") is deep
 
-# ---------------------------------------------------------------------------
-# typed_merge: mapping, dataclass and namespace construction
-# ---------------------------------------------------------------------------
-
-
-class _HostsNS(TypedNamespace):
-    def _parse_hosts(self, value):
-        # Deliberately NOT idempotent: a second pass raises AttributeError.
-        return value.split(",")
-
-
-class _KwOnlyDict(dict):
-    """A dict subclass that takes no positional argument."""
-
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-
-
-@dataclass
-class _Derived:
-    a: int
-    b: int = field(init=False, default=0)
-
-    def __post_init__(self):
-        self.b = self.a * 2
-
-
-class TestTypedMergeMappingConstruction:
-    def test_mapping_with_non_string_keys(self):
-        assert typed_merge(dict, {80: "http"}, {443: "https"}) == {
-            80: "http",
-            443: "https",
-        }
-
-    def test_mapping_keys_coerced_through_key_type(self):
-        merged = typed_merge(typing.Dict[int, str], {"80": "http"}, {80: "web"})
-        assert merged == {80: "web"}
-        assert list(merged) == [80]
-
-    def test_dataclass_field_non_string_key_mapping(self):
-        @dataclass
-        class Cfg:
-            ports: typing.Dict[int, str] = None
-
-        merged = typed_merge(Cfg, Cfg(ports={"80": "http"}), Cfg(ports={"443": "tls"}))
-        assert merged.ports == {80: "http", 443: "tls"}
-
-    def test_abstract_mapping_hint_builds_dict(self):
-        merged = typed_merge(typing.Mapping[str, int], {"a": "1"}, {"b": "2"})
-        assert merged == {"a": 1, "b": 2}
-        assert type(merged) is dict
-
-    def test_concrete_mapping_origins_kept(self):
-        import collections
-
-        merged = typed_merge(
-            collections.OrderedDict, collections.OrderedDict(a=1), {"b": 2}
-        )
-        assert type(merged) is collections.OrderedDict
-        assert merged == {"a": 1, "b": 2}
-
-        kw = typed_merge(_KwOnlyDict, {"a": 1}, {"b": 2})
-        assert type(kw) is _KwOnlyDict
-        assert kw == {"a": 1, "b": 2}
-
-    def test_defaultdict_origin_keeps_default_factory(self):
-        import collections
-
-        source = collections.defaultdict(list, {"a": [1]})
-        merged = typed_merge(collections.defaultdict, source, {"b": [2]})
-        assert type(merged) is collections.defaultdict
-        assert merged.default_factory is list
-        assert merged == {"a": [1], "b": [2]}
-        assert merged["fresh"] == []
-
-    def test_typeddict_origin_still_merges(self):
-        class TD(typing.TypedDict):
-            host: str
-            port: int
-
-        merged = typed_merge(TD, {"host": "h", "port": "1"}, {"port": "2"})
-        assert merged == {"host": "h", "port": 2}
-
-    def test_dataclass_constructor_drops_only_init_false_fields(self):
-        merged = typed_merge(_Derived, _Derived(1), _Derived(2))
-        assert merged.a == 2
-        assert merged.b == 4
-
-        # The examples/example.py shape: a custom **kwargs __init__ plus a
-        # non-field attribute. Unknown keys must still reach the constructor.
-        @dataclass
-        class Test:
-            field_1: str
-            field_2: int
-            field_3: str
-
-            def __init__(self, **kwargs):
-                for arg in kwargs:
-                    setattr(self, arg, kwargs[arg])
-                self.field_4 = f"{self.field_1}_{self.field_2}"
-
-        example = typed_merge(
-            Test,
-            Test(field_1=11, field_2=22, field_3=33),
-            dict(field_1=1, field_2=2),
-            init=True,
-        )
-        assert vars(example) == {
-            "field_1": "1",
-            "field_2": 2,
-            "field_3": "33",
-            "field_4": "1_2",
-        }
-
-    def test_typed_namespace_non_idempotent_parser_runs_once(self):
-        merged = typed_merge(_HostsNS, _HostsNS(hosts="a,b"))
-        assert merged.hosts == ["a", "b"]
-        assert isinstance(merged, _HostsNS)
-
-    def test_typed_namespace_mixed_sources_parse_once(self):
-        merged = typed_merge(_HostsNS, _HostsNS(hosts="a,b"), {"hosts": "c,d"})
-        assert merged.hosts == ["c", "d"]
-        assert typed_merge(_HostsNS, {"hosts": "c,d"}).hosts == ["c", "d"]
-
-    def test_plain_namespace_source_parse_hook_still_applied(self):
-        class Source(Namespace):
-            def _parse_port(self, value):
-                return int(value)
-
-        merged = typed_merge(Namespace, Source(port="8080"))
-        assert merged.port == 8080
-
-
-@dataclasses.dataclass
-class _CtxInner:
-    port: int
-
-
-@dataclasses.dataclass
-class _CtxOuter:
-    db: _CtxInner
-
-
-@dataclasses.dataclass
-class _CtxPorts:
-    ports: typing.List[int]
-
-
-class TestTypedMergeErrorContext:
-    """A model failure points at the field, not just at the value.
-
-    `typed_merge(Outer, {"db": {"port": "abc"}})` reported only
-    `invalid literal for int() with base 10: 'abc'` — in a large configuration
-    that could be any of a hundred fields.
-    """
-
-    def test_field_coercion_error_names_field_path(self):
-        from yaconfiglib import typed_merge
-
-        with pytest.raises(ValueError) as caught:
-            typed_merge(_CtxOuter, {"db": {"port": "abc"}})
-        error = caught.value
-        assert error.config_key == ("db", "port")
-        assert error.config_model == "_CtxOuter"
-        message = str(error)
-        assert "db.port" in message
-        assert "(_CtxOuter)" in message
-
-    def test_unexpected_field_error_names_model(self):
-        from yaconfiglib import typed_merge
-
-        with pytest.raises(TypeError) as caught:
-            typed_merge(_CtxInner, {"prot": 1})
-        message = str(caught.value)
-        # The parenthesized form is the added context: 3.14's own message
-        # already says "_CtxInner.__init__()", so asserting that alone would
-        # pass there for the wrong reason.
-        assert "(_CtxInner)" in message
-        assert "prot" in message
-
-    def test_sequence_item_error_names_index(self):
-        from yaconfiglib import typed_merge
-
-        with pytest.raises(ValueError) as caught:
-            typed_merge(_CtxPorts, {"ports": ["1", "x"]})
-        assert "ports[1]" in str(caught.value)
-
-    def test_own_raises_are_config_errors(self):
-        import yaconfiglib
-        from yaconfiglib import typed_merge
-
-        # A scalar where a sequence is declared is this module's own refusal.
-        with pytest.raises(yaconfiglib.ConfigTypeError) as caught:
-            typed_merge(_CtxPorts, {"ports": "80"})
-        assert isinstance(caught.value, TypeError)
-
-    def test_error_types_unchanged(self):
-        from yaconfiglib import typed_merge
-
-        # The pin: int("abc") still surfaces as a ValueError.
+    def test_unknown_name_is_value_error_listing_names(self):
+        with pytest.raises(ValueError, match="deep") as caught:
+            Loader(merge="no-such-strategy")
+        assert "no-such-strategy" in str(caught.value)
         with pytest.raises(ValueError):
-            typed_merge(_CtxOuter, {"db": {"port": "abc"}})
+            Loader().load({"a": 1}, merge="no-such-strategy")
+
+    @pytest.mark.parametrize("bad", [42, None, dict, ["deep"]])
+    def test_non_callable_is_type_error(self, bad):
+        with pytest.raises(TypeError):
+            Loader(merge=bad)
+
+    def test_callable_strategy(self):
+        calls = []
+
+        def concat(a, b, *, memo=None, **options):
+            calls.append(options)
+            return {"seen": a.get("seen", [a]) + [b]}
+
+        result = Loader(merge=concat, merge_options={"flag": 1}).load(
+            {"a": 1}, {"b": 2}, {"c": 3}
+        )
+        assert result == {"seen": [{"a": 1}, {"b": 2}, {"c": 3}]}
+        assert calls == [{"flag": 1}, {"flag": 1}]
+
+    def test_callable_instance_strategy(self):
+        class Last:
+            def __call__(self, a, b, *, memo=None, **options):
+                return b
+
+        assert Loader(merge=Last()).load({"a": 1}, {"b": 2}) == {"b": 2}
+
+    def test_merge_protocol_is_exported(self):
+        assert yaconfiglib.Merge is _merge.Merge
+        assert "Merge" in yaconfiglib.__all__
+
+    def test_merge_failure_carries_a_merge_frame(self):
+        def broken(a, b, *, memo=None, **options):
+            raise RuntimeError("boom")
+
+        with pytest.raises(RuntimeError) as caught:
+            Loader(merge=broken).load({"a": 1}, {"b": 2})
+        frames = getattr(caught.value, "config_frames", ())
+        assert [frame.kind for frame in frames] == ["merge"]
+
+    def test_merge_failure_offered_to_on_error(self):
+        events = []
+
+        def broken(a, b, *, memo=None, **options):
+            if "bad" in b:
+                raise RuntimeError("boom")
+            return {**a, **b}
+
+        def on_error(event):
+            events.append(event.phase)
+            return True
+
+        result = Loader(merge=broken, on_error=on_error).load(
+            {"a": 1}, {"bad": 1}, {"c": 3}
+        )
+        assert result == {"a": 1, "c": 3}
+        assert events == ["merge"]
+
+
+# ---------------------------------------------------------------------------
+# Performance guards (not benchmarks: an order-of-magnitude bound)
+# ---------------------------------------------------------------------------
+
+
+class TestPerformance:
+    def test_wide_list_extension_is_linear(self):
+        a = list(range(4000))
+        b = list(range(2000, 6000))
+        started = time.perf_counter()
+        result = deep(a, b)
+        elapsed = time.perf_counter() - started
+        assert result == list(range(6000))
+        assert elapsed < 1.0, elapsed
+
+    def test_wide_unhashable_list_extension_is_linear(self):
+        a = [[i] for i in range(4000)]
+        b = [[i] for i in range(2000, 6000)]
+        started = time.perf_counter()
+        result = deep(a, b)
+        elapsed = time.perf_counter() - started
+        assert len(result) == 6000
+        assert elapsed < 1.0, elapsed
+
+    def test_alias_chain_of_lists_is_linear(self):
+        # Each level holds the previous one twice: 2**40 paths, 41 distinct nodes.
+        node = [0]
+        for _ in range(40):
+            node = [node, node]
+        other = [1]
+        for _ in range(40):
+            other = [other, other]
+        started = time.perf_counter()
+        result = deep([node], [node, other])
+        elapsed = time.perf_counter() - started
+        assert len(result) == 2
+        assert elapsed < 1.0, elapsed
+
+    @pytest.mark.parametrize("strategy", RECURSIVE, ids=RECURSIVE_IDS)
+    def test_alias_chain_of_mappings_is_linear(self, strategy):
+        a = {"v": 0}
+        b = {"v": 1}
+        for _ in range(40):
+            a = {"l": a, "r": a}
+            b = {"l": b, "r": b}
+        started = time.perf_counter()
+        result = strategy(a, b)
+        elapsed = time.perf_counter() - started
+        assert result["l"] is result["r"]
+        assert elapsed < 1.0, elapsed

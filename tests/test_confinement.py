@@ -1,10 +1,12 @@
-"""`confine_to=`: refusing a file read that resolves outside the allowed roots.
+"""`Policy(confine_to=...)`: refusing a local file read outside the allowed roots.
 
 Without confinement a document can read any file the process can, through an
-`!include` with an absolute path or ``..`` traversal — which is what
-`docs/guide/security.md` documented as uncovered. These tests pin both that the
-control works and that it stays off unless asked for.
+``!include`` with an absolute path or ``..``. These tests pin that the control
+works, that it stays off unless asked for, and that no spelling of a root or a
+path makes it fail open.
 """
+
+from __future__ import annotations
 
 import io
 import logging
@@ -12,12 +14,30 @@ import os
 import pathlib
 import subprocess
 import sys
+import zipfile
 
 import pytest
 
 import yaconfiglib
-from yaconfiglib import ConfigError, ConfigLoader, ConfinementError
-from yaconfiglib.errors import ConfigTypeError
+from yaconfiglib import (
+    ConfigError,
+    ConfigTypeError,
+    ConfinementError,
+    Loader,
+    Policy,
+    PolicyError,
+    sources,
+)
+from yaconfiglib import _confine
+
+ENV = "YACONFIGLIB_CONFINE_TO"
+WIN = sys.platform == "win32"
+
+
+@pytest.fixture(autouse=True)
+def _no_confinement_from_the_environment(monkeypatch):
+    # A developer's own YACONFIGLIB_CONFINE_TO must not change these results.
+    monkeypatch.delenv(ENV, raising=False)
 
 
 def _write(path, text):
@@ -27,10 +47,10 @@ def _write(path, text):
 
 
 def _tree(tmp_path):
-    """``conf/`` with a relative include target, and a secret outside it."""
+    """``conf/`` holding ``inside.json``, and ``secret.json`` beside it."""
     conf = tmp_path / "conf"
-    _write(conf / "inside.yaml", "inside: yes\n")
-    _write(tmp_path / "secret.yaml", "secret: s3cr3t\n")
+    _write(conf / "inside.json", '{"inside": true}')
+    _write(tmp_path / "secret.json", '{"secret": "s3cr3t"}')
     return conf
 
 
@@ -39,355 +59,388 @@ def _including(conf, target):
     return _write(conf / "app.yaml", f"data: !include '{target}'\n")
 
 
-@pytest.mark.usefixtures("needs_yaml")
+def _confined(conf, confine_to, **settings):
+    return Loader(base_dir=conf, policy=Policy(confine_to=confine_to), **settings)
+
+
+# ---------------------------------------------------------------------------
+# The rule
+# ---------------------------------------------------------------------------
+
+
 class TestConfinement:
     """One rule: a local file read must resolve inside one of the roots."""
 
-    def test_off_by_default_reads_outside(self, tmp_path):
-        # Directive 1: a trusted layout that includes from anywhere keeps
-        # working untouched. This is a pin, not a wish.
+    def test_off_by_default(self, tmp_path):
         conf = _tree(tmp_path)
-        _including(conf, (tmp_path / "secret.yaml").as_posix())
-        loader = ConfigLoader(base_dir=str(conf))
-        assert loader.load("app.yaml") == {"data": {"secret": "s3cr3t"}}
+        loader = Loader(base_dir=conf)
+        assert loader.load(str(tmp_path / "secret.json")) == {"secret": "s3cr3t"}
 
-    def test_include_inside_root_loads(self, tmp_path):
+    @pytest.mark.usefixtures("needs_yaml")
+    def test_off_by_default_for_includes(self, tmp_path):
         conf = _tree(tmp_path)
-        _including(conf, "inside.yaml")
-        loader = ConfigLoader(base_dir=str(conf), confine_to=[str(conf)])
+        _including(conf, (tmp_path / "secret.json").as_posix())
+        assert Loader(base_dir=conf).load("app.yaml") == {"data": {"secret": "s3cr3t"}}
+
+    @pytest.mark.usefixtures("needs_yaml")
+    def test_include_inside_a_root_loads(self, tmp_path):
+        conf = _tree(tmp_path)
+        _including(conf, "inside.json")
+        loader = _confined(conf, [str(conf)])
         assert loader.load("app.yaml") == {"data": {"inside": True}}
 
-    def test_absolute_include_outside_root_refused(self, tmp_path):
+    @pytest.mark.usefixtures("needs_yaml")
+    def test_absolute_include_outside_refused(self, tmp_path):
         conf = _tree(tmp_path)
-        _including(conf, (tmp_path / "secret.yaml").as_posix())
-        loader = ConfigLoader(base_dir=str(conf), confine_to=[str(conf)])
+        _including(conf, (tmp_path / "secret.json").as_posix())
         with pytest.raises(ConfinementError):
-            loader.load("app.yaml")
+            _confined(conf, [str(conf)]).load("app.yaml")
 
+    @pytest.mark.usefixtures("needs_yaml")
     def test_dotdot_escape_refused(self, tmp_path):
         conf = _tree(tmp_path)
-        # Relative to the including file (plan `include_path_resolution`), so
-        # this really does name <tmp>/secret.yaml.
-        _including(conf, "../secret.yaml")
-        loader = ConfigLoader(base_dir=str(conf), confine_to=True)
+        # Relative to the including file, so this names <tmp>/secret.json.
+        _including(conf, "../secret.json")
         with pytest.raises(ConfinementError):
-            loader.load("app.yaml")
+            _confined(conf, True).load("app.yaml")
 
-    def test_sibling_prefix_directory_refused(self, tmp_path):
-        # The measured prefix trap: "<tmp>/confidential/x.yaml" starts with
-        # "<tmp>/conf" as a string while lying outside that directory.
+    def test_top_level_source_outside_refused(self, tmp_path):
         conf = _tree(tmp_path)
-        _write(tmp_path / "confidential" / "x.yaml", "leaked: yes\n")
-        _including(conf, (tmp_path / "confidential" / "x.yaml").as_posix())
-        loader = ConfigLoader(base_dir=str(conf), confine_to=[str(conf)])
         with pytest.raises(ConfinementError):
-            loader.load("app.yaml")
+            _confined(conf, True).load(str(tmp_path / "secret.json"))
+
+    def test_relative_top_level_escape_refused(self, tmp_path):
+        conf = _tree(tmp_path)
+        with pytest.raises(ConfinementError):
+            _confined(conf, True).load("../secret.json")
+
+    def test_refused_before_the_file_is_opened(self, tmp_path):
+        # A missing file outside the roots is a refusal, not FileNotFoundError.
+        conf = _tree(tmp_path)
+        with pytest.raises(ConfinementError):
+            _confined(conf, True).load(str(tmp_path / "does-not-exist.json"))
+
+    def test_sibling_with_a_common_prefix_refused(self, tmp_path):
+        # "<tmp>/confidential/x.json" starts with "<tmp>/conf" as a string but
+        # lies outside it: containment is commonpath, never a prefix test.
+        conf = _tree(tmp_path)
+        leaked = _write(tmp_path / "confidential" / "x.json", '{"leaked": 1}')
+        with pytest.raises(ConfinementError):
+            _confined(conf, [str(conf)]).load(str(leaked))
 
     def test_any_of_several_roots_accepts(self, tmp_path):
         conf = _tree(tmp_path)
-        shared = _write(tmp_path / "shared" / "extra.yaml", "extra: 1\n")
-        _including(conf, shared.as_posix())
-        loader = ConfigLoader(
-            base_dir=str(conf), confine_to=[str(conf), str(shared.parent)]
-        )
-        assert loader.load("app.yaml") == {"data": {"extra": 1}}
+        shared = _write(tmp_path / "shared" / "extra.json", '{"extra": 1}')
+        loader = _confined(conf, [str(conf), str(shared.parent)])
+        assert loader.load(str(shared)) == {"extra": 1}
+        assert loader.load("inside.json") == {"inside": True}
 
     def test_pathsep_string_is_split(self, tmp_path):
         conf = _tree(tmp_path)
-        shared = _write(tmp_path / "shared" / "extra.yaml", "extra: 1\n")
-        _including(conf, shared.as_posix())
-        # The PATH spelling, so one environment variable can carry the roots.
-        # os.pathsep, never a literal ":": that would split "C:".
+        shared = _write(tmp_path / "shared" / "extra.json", '{"extra": 1}')
+        # os.pathsep, never ":": a literal colon would split "C:".
         roots = os.pathsep.join([str(conf), str(shared.parent)])
-        loader = ConfigLoader(base_dir=str(conf), confine_to=roots)
-        assert loader.load("app.yaml") == {"data": {"extra": 1}}
-
-    def test_env_var_is_read_when_argument_absent(self, tmp_path, monkeypatch):
-        conf = _tree(tmp_path)
-        _including(conf, (tmp_path / "secret.yaml").as_posix())
-        monkeypatch.setenv("YACONFIGLIB_CONFINE_TO", str(conf))
-        loader = ConfigLoader(base_dir=str(conf))
+        assert _confined(conf, roots).load(str(shared)) == {"extra": 1}
         with pytest.raises(ConfinementError):
-            loader.load("app.yaml")
+            _confined(conf, roots).load(str(tmp_path / "secret.json"))
 
-    def test_argument_overrides_env_var(self, tmp_path, monkeypatch):
+    def test_a_single_path_object_is_one_root(self, tmp_path):
         conf = _tree(tmp_path)
-        _including(conf, (tmp_path / "secret.yaml").as_posix())
-        # The environment names a root that WOULD accept the include; the
-        # argument names one that refuses. An env var that could widen an
-        # in-code allowlist would be an escalation, so the argument wins.
-        monkeypatch.setenv("YACONFIGLIB_CONFINE_TO", str(tmp_path))
-        loader = ConfigLoader(base_dir=str(conf), confine_to=[str(conf)])
+        loader = _confined(conf, pathlib.Path(conf))
+        assert loader.load("inside.json") == {"inside": True}
         with pytest.raises(ConfinementError):
-            loader.load("app.yaml")
+            loader.load(str(tmp_path / "secret.json"))
+
+    def test_true_means_base_dir(self, tmp_path):
+        conf = _tree(tmp_path)
+        assert _confined(conf, True).load("inside.json") == {"inside": True}
+
+    def test_true_without_base_dir_means_the_working_directory(
+        self, tmp_path, monkeypatch
+    ):
+        conf = _tree(tmp_path)
+        monkeypatch.chdir(conf)
+        loader = Loader(policy=Policy(confine_to=True))
+        assert loader.load("inside.json") == {"inside": True}
+        with pytest.raises(ConfinementError):
+            loader.load(str(tmp_path / "secret.json"))
+
+    @pytest.mark.parametrize("value", [None, False])
+    def test_none_and_false_are_off(self, tmp_path, value):
+        conf = _tree(tmp_path)
+        loader = _confined(conf, value)
+        assert loader.load(str(tmp_path / "secret.json")) == {"secret": "s3cr3t"}
 
     def test_empty_allowlist_refuses_everything(self, tmp_path):
-        # "The allowlist is empty" means nothing is permitted — including the
-        # top-level source. Treating it as "off" would silently disable a
-        # security control.
         conf = _tree(tmp_path)
-        _including(conf, "inside.yaml")
-        loader = ConfigLoader(base_dir=str(conf), confine_to=[])
-        with pytest.raises(ConfinementError):
-            loader.load("app.yaml")
+        with pytest.raises(ConfinementError) as caught:
+            _confined(conf, []).load("inside.json")
+        assert "allowlist is empty" in str(caught.value)
 
-    def test_top_level_source_is_checked(self, tmp_path):
-        # The documented cost of one rule for every source: confine_to=True
-        # refuses the caller's own path outside base_dir, which is what
-        # asking to confine to base_dir means.
+    def test_load_all_is_confined(self, tmp_path):
         conf = _tree(tmp_path)
-        loader = ConfigLoader(base_dir=str(conf), confine_to=True)
-        with pytest.raises(ConfinementError):
-            loader.load(str(tmp_path / "secret.yaml"))
-
-    def test_in_memory_and_command_sources_are_exempt(self, tmp_path):
-        # Exempt by type: neither has a location to confine. The command
-        # source stays governed by allow_commands.
-        loader = ConfigLoader(base_dir=str(tmp_path), confine_to=[])
-        assert loader.load("#!doc.yaml\nk: v\n") == {"k": "v"}
-        cmd = f'cmd://"{sys.executable}" -c "print(\'k: v\')"'
-        assert loader.load(cmd, timeout=60) == {"k": "v"}
-
-    def test_load_all_is_confined_too(self, tmp_path):
-        # It reaches the check by calling the same `_load`, which is an
-        # implementation detail: a `load_all` that grew its own source loop
-        # would lose confinement silently, and nothing else would notice.
-        conf = _tree(tmp_path)
-        _write(conf / "second.yaml", "second: 1\n")
-        loader = ConfigLoader(base_dir=str(conf), confine_to=[str(conf)])
-        assert list(loader.load_all("inside.yaml", "second.yaml")) == [
+        _write(conf / "second.json", '{"second": 1}')
+        loader = _confined(conf, [str(conf)])
+        assert list(loader.load_all("inside.json", "second.json")) == [
             {"inside": True},
             {"second": 1},
         ]
         with pytest.raises(ConfinementError):
-            list(loader.load_all(str(tmp_path / "secret.yaml")))
+            list(loader.load_all(str(tmp_path / "secret.json")))
 
-    def test_the_skip_warning_names_no_configuration_text(self, tmp_path, caplog):
-        # Plan 12's log-hygiene rule, for this error: source, phase and error
-        # TYPE, never the message — which here would list every allowed root.
+    def test_per_call_policy_confines(self, tmp_path):
         conf = _tree(tmp_path)
-        loader = ConfigLoader(
-            base_dir=str(conf), confine_to=[str(conf)], ignore_error=True
-        )
-        with caplog.at_level(logging.WARNING):
-            assert loader.load("inside.yaml", str(tmp_path / "secret.yaml")) == {
-                "inside": True
-            }
-        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
-        assert len(warnings) == 1
-        text = warnings[0].getMessage()
-        assert "secret.yaml" in text and "ConfinementError" in text
-        assert "load" in text
-        # The refusal's own wording, and so the root list, must not be in it.
-        assert "refusing to read" not in text
-        assert "confine_to=" not in text
+        loader = Loader(base_dir=conf)
+        with pytest.raises(ConfinementError):
+            loader.load(
+                str(tmp_path / "secret.json"), policy=Policy(confine_to=[str(conf)])
+            )
+        assert loader.load(str(tmp_path / "secret.json")) == {"secret": "s3cr3t"}
 
-    def test_symlink_inside_root_to_outside_loads(self, tmp_path):
-        # Directive 5, and the reason the check is lexical: a link inside a
-        # root was put there by whoever administers the root. A
-        # realpath-based check would refuse this load, which is exactly the
-        # behaviour that was rejected.
+    def test_module_level_load_is_confined(self, tmp_path):
         conf = _tree(tmp_path)
-        outside = tmp_path / "secret.yaml"
-        link = conf / "linked.yaml"
+        with pytest.raises(ConfinementError):
+            yaconfiglib.load(
+                str(tmp_path / "secret.json"), policy=Policy(confine_to=[str(conf)])
+            )
+
+    def test_refusal_names_target_and_roots(self, tmp_path):
+        conf = _tree(tmp_path)
+        other = tmp_path / "shared"
+        other.mkdir()
+        with pytest.raises(ConfinementError) as caught:
+            _confined(conf, [str(conf), str(other)]).load(str(tmp_path / "secret.json"))
+        message = os.path.normcase(str(caught.value))
+        assert os.path.normcase(str(tmp_path / "secret.json")) in message
+        for root in (conf, other):
+            assert os.path.normcase(str(root)) in message
+        error = caught.value
+        assert isinstance(error, PolicyError)
+        assert isinstance(error, ConfigError)
+        assert isinstance(error, PermissionError)
+
+    def test_symlink_inside_a_root_to_outside_loads(self, tmp_path):
+        # Lexical by design: a link inside a root was put there by whoever
+        # administers the root.
+        conf = _tree(tmp_path)
+        outside = tmp_path / "secret.json"
+        link = conf / "linked.json"
         try:
             os.symlink(str(outside), str(link))
         except (OSError, NotImplementedError):
-            # Windows needs Developer Mode or elevation for a file symlink;
-            # mklink is the fallback, and a refusal is a skip, not a failure.
             completed = subprocess.run(
                 ["cmd", "/d", "/c", "mklink", str(link), str(outside)],
                 capture_output=True,
             )
             if completed.returncode != 0 or not os.path.islink(str(link)):
                 pytest.skip("cannot create a file symlink here")
-        _including(conf, "linked.yaml")
-        loader = ConfigLoader(base_dir=str(conf), confine_to=True)
-        assert loader.load("app.yaml") == {"data": {"secret": "s3cr3t"}}
+        assert _confined(conf, True).load("linked.json") == {"secret": "s3cr3t"}
 
-    def test_refusal_names_target_and_roots(self, tmp_path):
+
+# ---------------------------------------------------------------------------
+# on_error
+# ---------------------------------------------------------------------------
+
+
+class TestRefusalAndOnError:
+    def test_refusal_is_offered_to_on_error(self, tmp_path):
         conf = _tree(tmp_path)
-        other = tmp_path / "shared"
-        other.mkdir()
-        _including(conf, (tmp_path / "secret.yaml").as_posix())
-        loader = ConfigLoader(base_dir=str(conf), confine_to=[str(conf), str(other)])
-        with pytest.raises(ConfinementError) as caught:
-            loader.load("app.yaml")
-        message = str(caught.value)
-        # The resolved target, and every root it was checked against: a
-        # refusal nobody can diagnose gets switched off.
-        assert os.path.normcase(str(tmp_path / "secret.yaml")) in os.path.normcase(
-            message
+        events = []
+        loader = _confined(
+            conf, [str(conf)], on_error=lambda event: events.append(event) or True
         )
-        for root in (conf, other):
-            assert os.path.normcase(str(root)) in os.path.normcase(message)
-        # An OSError for a CLI, a ConfigError for this library's own handling.
-        assert isinstance(caught.value, (ConfigError, PermissionError))
+        result = loader.load("inside.json", str(tmp_path / "secret.json"))
+        assert result == {"inside": True}
+        assert len(events) == 1
+        assert isinstance(events[0].error, ConfinementError)
+        assert events[0].phase == "load"
 
-
-@pytest.mark.usefixtures("needs_yaml")
-class TestConfinementCannotFailOpenSilently:
-    """The ways a caller could *believe* confinement is on and have none.
-
-    Every case here read the outside file before 2026-09-17. A control that
-    fails open without a word is worse than one that is absent, because the
-    absent one is visible — so each of these now raises or is enforced.
-    """
-
-    def test_per_call_confine_to_is_refused(self, tmp_path):
-        # It is a constructor setting, so it used to land in **reader_args,
-        # reach the backend and be dropped: the caller asked for confinement
-        # and got none. Every OTHER unknown keyword is still ignored by
-        # design (backends are pluggable); this one is special-cased because
-        # silence is the wrong answer for a security option.
+    def test_skip_warning_names_no_configuration_text(self, tmp_path, caplog):
+        # Source, phase and error type, never the message, which lists every
+        # allowed root.
         conf = _tree(tmp_path)
-        loader = ConfigLoader(base_dir=str(conf))
-        with pytest.raises(ConfigTypeError) as caught:
-            loader.load("inside.yaml", confine_to=[str(conf)])
-        message = str(caught.value)
-        assert "ConfigLoader" in message
-        # The message has to say where the keyword does work.
-        assert "load" in message
+        loader = _confined(conf, [str(conf)], on_error=True)
+        with caplog.at_level(logging.WARNING):
+            result = loader.load("inside.json", str(tmp_path / "secret.json"))
+        assert result == {"inside": True}
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        text = warnings[0].getMessage()
+        assert "secret.json" in text
+        assert "ConfinementError" in text
+        assert "load" in text
+        assert "refusing to read" not in text
+        assert "confine_to=" not in text
 
-    def test_per_call_confine_to_is_refused_by_load_all(self, tmp_path):
+    def test_declined_refusal_raises(self, tmp_path):
         conf = _tree(tmp_path)
-        loader = ConfigLoader(base_dir=str(conf))
-        with pytest.raises(ConfigTypeError):
-            list(loader.load_all("inside.yaml", confine_to=[str(conf)]))
-
-    def test_module_level_confine_to_still_reaches_the_loader(self, tmp_path):
-        # The counterpart: yaconfiglib.load() routes constructor names to the
-        # loader, so the same keyword must keep working there.
-        conf = _tree(tmp_path)
+        loader = _confined(conf, [str(conf)], on_error=lambda event: False)
         with pytest.raises(ConfinementError):
-            yaconfiglib.load(
-                str(tmp_path / "secret.yaml"),
-                base_dir=str(conf),
-                confine_to=[str(conf)],
-            )
+            loader.load(str(tmp_path / "secret.json"))
 
-    def test_assigning_confine_to_takes_effect(self, tmp_path):
-        # The attribute used to report a root set that nothing enforced.
-        conf = _tree(tmp_path)
-        loader = ConfigLoader(base_dir=str(conf))
-        assert loader.load(str(tmp_path / "secret.yaml")) == {"secret": "s3cr3t"}
-        loader.confine_to = [str(conf)]
-        assert loader.confine_to == [str(conf)]
-        with pytest.raises(ConfinementError):
-            loader.load(str(tmp_path / "secret.yaml"))
 
-    def test_assigning_confine_to_none_turns_it_off(self, tmp_path):
-        # And the other direction, which used to stay confined.
-        conf = _tree(tmp_path)
-        loader = ConfigLoader(base_dir=str(conf), confine_to=[str(conf)])
-        with pytest.raises(ConfinementError):
-            loader.load(str(tmp_path / "secret.yaml"))
-        loader.confine_to = None
-        assert loader.load(str(tmp_path / "secret.yaml")) == {"secret": "s3cr3t"}
+# ---------------------------------------------------------------------------
+# Every kind of source
+# ---------------------------------------------------------------------------
 
-    def test_stream_on_an_outside_file_is_refused(self, tmp_path):
-        # A stream materializes into a MemPath, which has no location, so the
-        # check downstream saw nothing to confine while the caller's own
-        # `open()` had already handed us the file.
+
+class TestSources:
+    def test_stream_on_an_outside_file_refused(self, tmp_path):
         conf = _tree(tmp_path)
-        loader = ConfigLoader(base_dir=str(conf), confine_to=[str(conf)])
-        with open(tmp_path / "secret.yaml", encoding="utf-8") as handle:
+        with open(tmp_path / "secret.json", encoding="utf-8") as handle:
             with pytest.raises(ConfinementError):
-                loader.load(handle)
+                _confined(conf, [str(conf)]).load(handle)
 
-    def test_stream_inside_a_root_still_loads(self, tmp_path):
+    def test_stream_inside_a_root_loads(self, tmp_path):
         conf = _tree(tmp_path)
-        loader = ConfigLoader(base_dir=str(conf), confine_to=[str(conf)])
-        with open(conf / "inside.yaml", encoding="utf-8") as handle:
-            assert loader.load(handle) == {"inside": True}
+        with open(conf / "inside.json", encoding="utf-8") as handle:
+            assert _confined(conf, [str(conf)]).load(handle) == {"inside": True}
 
-    def test_a_nameless_stream_stays_exempt(self, tmp_path):
-        # There is no location to confine, and treating "<stdin>" as a
-        # filename would resolve it under the working directory and refuse a
-        # perfectly ordinary pipe. Both spellings must stay loadable.
+    def test_binary_stream_on_an_outside_file_refused(self, tmp_path):
         conf = _tree(tmp_path)
-        loader = ConfigLoader(base_dir=str(conf), confine_to=[str(conf)])
-        assert loader.load(io.StringIO("k: v\n")) == {"k": "v"}
+        with open(tmp_path / "secret.json", "rb") as handle:
+            with pytest.raises(ConfinementError):
+                _confined(conf, [str(conf)]).load(handle)
+
+    def test_refused_stream_is_skippable(self, tmp_path):
+        conf = _tree(tmp_path)
+        loader = _confined(conf, [str(conf)], on_error=True)
+        with open(tmp_path / "secret.json", encoding="utf-8") as handle:
+            assert loader.load("inside.json", handle) == {"inside": True}
+
+    def test_nameless_streams_are_exempt(self, tmp_path):
+        conf = _tree(tmp_path)
+        loader = _confined(conf, [str(conf)])
+        assert loader.load(io.StringIO('{"k": "v"}'), format="json") == {"k": "v"}
 
         class _Pipe(io.StringIO):
             name = "<stdin>"
 
-        assert loader.load(_Pipe("k: v\n")) == {"k": "v"}
+        assert loader.load(_Pipe('{"k": "v"}'), format="json") == {"k": "v"}
 
-    def test_command_output_includes_are_confined(self, tmp_path):
-        # The output is parsed by a NEW loader, so the roots have to be handed
-        # over: the same !include was refused in a file and honoured here.
-        conf = _tree(tmp_path)
-        emit = tmp_path / "emit.py"
-        emit.write_text(
-            "print(\"data: !include '%s'\")\n" % (tmp_path / "secret.yaml").as_posix(),
-            encoding="utf-8",
+    def test_sources_that_are_not_files_are_exempt(self, tmp_path):
+        loader = _confined(tmp_path, [])
+        assert loader.load(sources.Text('{"t": 1}', format="json")) == {"t": 1}
+        assert loader.load(sources.Data({"d": 1})) == {"d": 1}
+        assert loader.load({"m": 1}) == {"m": 1}
+        env = sources.Env("APP_", environ={"APP_E": "1"})
+        assert loader.load(env) == {"E": "1"}
+
+    def test_command_source_is_exempt(self, tmp_path):
+        loader = Loader(
+            base_dir=tmp_path, policy=Policy(allow_commands=True, confine_to=[])
         )
-        loader = ConfigLoader(base_dir=str(conf), confine_to=[str(conf)])
-        cmd = f'cmd://"{sys.executable}" "{emit}"'
+        source = f'cmd+json://"{sys.executable}" -c "print(1)"'
+        assert loader.load(source) == 1
+
+    def test_mempath_is_exempt(self):
+        from pathapi.mempath import MemPath
+
+        path = MemPath("/yacltest-confine/x.json")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('{"m": 1}')
+        assert Loader(policy=Policy(confine_to=[])).load(path) == {"m": 1}
+
+    def test_non_local_path_refused_while_confined(self, tmp_path):
+        from pathapi import LocalPath
+        from pathapi.archive import ZipPath
+
+        archive = tmp_path / "a.zip"
+        with zipfile.ZipFile(archive, "w") as handle:
+            handle.writestr("x.json", '{"z": 1}')
+        member = ZipPath("x.json", archive=LocalPath(str(archive)))
+        assert Loader().load(member) == {"z": 1}
+        # Inside no local root, even with the archive itself inside one.
+        with pytest.raises(ConfinementError) as caught:
+            Loader(policy=Policy(confine_to=[str(tmp_path)])).load(member)
+        assert "only local files" in str(caught.value)
+
+    @pytest.mark.usefixtures("needs_yaml")
+    def test_includes_in_in_memory_text_are_confined(self, tmp_path):
+        conf = _tree(tmp_path)
+        loader = _confined(conf, [str(conf)])
+        inside = sources.Text("x: !include inside.json\n", format="yaml")
+        assert loader.load(inside) == {"x": {"inside": True}}
+        outside = sources.Text("x: !include ../secret.json\n", format="yaml")
         with pytest.raises(ConfinementError):
-            loader.load(cmd, timeout=60)
+            loader.load(outside)
 
-    def test_command_output_includes_inside_a_root_still_load(self, tmp_path):
+    @pytest.mark.usefixtures("needs_yaml")
+    def test_includes_in_command_output_are_confined(self, tmp_path):
         conf = _tree(tmp_path)
-        emit = tmp_path / "emit_ok.py"
-        emit.write_text(
-            "print(\"data: !include '%s'\")\n" % (conf / "inside.yaml").as_posix(),
-            encoding="utf-8",
+        secret = (tmp_path / "secret.json").as_posix()
+        emit = _write(tmp_path / "emit.py", f"print(\"data: !include '{secret}'\")\n")
+        loader = Loader(
+            base_dir=conf,
+            policy=Policy(allow_commands=True, confine_to=[str(conf)]),
         )
-        loader = ConfigLoader(base_dir=str(conf), confine_to=[str(conf)])
-        cmd = f'cmd://"{sys.executable}" "{emit}"'
-        assert loader.load(cmd, timeout=60) == {"data": {"inside": True}}
+        with pytest.raises(ConfinementError):
+            loader.load(f'cmd+yaml://"{sys.executable}" "{emit}"')
+
+    @pytest.mark.usefixtures("needs_yaml")
+    def test_includes_in_command_output_inside_a_root_load(self, tmp_path):
+        conf = _tree(tmp_path)
+        inside = (conf / "inside.json").as_posix()
+        emit = _write(tmp_path / "emit.py", f"print(\"data: !include '{inside}'\")\n")
+        loader = Loader(
+            base_dir=conf,
+            policy=Policy(allow_commands=True, confine_to=[str(conf)]),
+        )
+        assert loader.load(f'cmd+yaml://"{sys.executable}" "{emit}"') == {
+            "data": {"inside": True}
+        }
+
+    @pytest.mark.usefixtures("needs_yaml")
+    def test_nested_includes_are_confined(self, tmp_path):
+        conf = _tree(tmp_path)
+        _write(conf / "mid.yaml", "deep: !include ../secret.json\n")
+        _write(conf / "top.yaml", "mid: !include mid.yaml\n")
+        with pytest.raises(ConfinementError):
+            _confined(conf, True).load("top.yaml")
+
+
+# ---------------------------------------------------------------------------
+# Glob patterns
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.usefixtures("needs_yaml")
-class TestConfinementGlobPatterns:
-    """A pattern must not become a filename oracle.
-
-    Expansion stats and lists real directories, and it runs *before* the
-    check, so a document could aim a pattern outside the roots, let expansion
-    discover a real filename there, and read that name back out of the
-    refusal — learning what exists on disk without ever reading a byte.
-    """
+class TestGlobPatterns:
+    """A pattern must not become a filename oracle."""
 
     def _tree(self, tmp_path):
         conf = tmp_path / "conf"
-        (conf / "sub").mkdir(parents=True)
         _write(conf / "sub" / "ok.yaml", "ok: 1\n")
         _write(tmp_path / "outside" / "secret_token.yaml", "p: SECRET\n")
         return conf
 
     def _load(self, conf, pattern):
         _write(conf / "app.yaml", f"x: !include '{pattern}'\n")
-        return ConfigLoader(
-            base_dir=str(conf), recursive=True, confine_to=[str(conf)]
-        ).load("app.yaml")
+        return _confined(conf, [str(conf)], recursive=True).load("app.yaml")
 
-    def test_pattern_outside_roots_is_refused_without_naming_a_match(self, tmp_path):
+    def test_pattern_outside_the_roots_refused_without_naming_a_match(self, tmp_path):
         conf = self._tree(tmp_path)
         outside = (tmp_path / "outside" / "secret_tok*").as_posix()
         with pytest.raises(ConfinementError) as caught:
             self._load(conf, outside)
-        # The document guessed a prefix; it must not be told the rest.
         assert "secret_token.yaml" not in str(caught.value)
 
     def test_a_right_and_a_wrong_guess_are_indistinguishable(self, tmp_path):
+        # The literal base is checked before expansion, so the directory is
+        # never listed and whether a file exists cannot be observed.
         conf = self._tree(tmp_path)
         messages = []
         for guess in ("secret_tok*", "nothing_her*"):
             with pytest.raises(ConfinementError) as caught:
                 self._load(conf, (tmp_path / "outside" / guess).as_posix())
             messages.append(str(caught.value).replace(guess, "<guess>"))
-        # Same outcome, same text: whether the file exists is no longer
-        # observable, and the directory was never listed to find out.
         assert messages[0] == messages[1]
 
-    def test_a_wildcard_escaping_after_a_legal_prefix_names_only_the_pattern(
+    def test_wildcard_escaping_after_a_legal_prefix_names_only_the_pattern(
         self, tmp_path
     ):
-        # `*/../..` leaves the root *after* a prefix inside it, so the prefix
-        # check cannot catch it and each match is checked instead. The
-        # refusal names the pattern the document wrote, never the match.
+        # The prefix is inside the root, so each match is checked instead, and
+        # a refused match is reported by the pattern the document wrote.
         conf = self._tree(tmp_path)
         with pytest.raises(ConfinementError) as caught:
             self._load(conf, "*/../../outside/secret_tok*")
@@ -395,166 +448,228 @@ class TestConfinementGlobPatterns:
         assert "secret_token.yaml" not in message
         assert "secret_tok*" in message
 
-    def test_a_pattern_inside_the_roots_still_expands(self, tmp_path):
+    def test_pattern_inside_the_roots_expands(self, tmp_path):
         conf = self._tree(tmp_path)
         assert self._load(conf, "sub/*.yaml") == {"x": {"ok": 1}}
 
-    def test_a_refused_pattern_is_skippable(self, tmp_path):
+    def test_top_level_pattern_outside_refused(self, tmp_path):
+        conf = self._tree(tmp_path)
+        with pytest.raises(ConfinementError):
+            _confined(conf, [str(conf)]).load(
+                (tmp_path / "outside" / "*.yaml").as_posix()
+            )
+
+    def test_refused_pattern_is_skippable(self, tmp_path):
         conf = self._tree(tmp_path)
         _write(conf / "own.yaml", "own: 1\n")
-        loader = ConfigLoader(
-            base_dir=str(conf),
-            recursive=True,
-            confine_to=[str(conf)],
-            ignore_error=True,
-        )
+        loader = _confined(conf, [str(conf)], recursive=True, on_error=True)
         assert loader.load(
             "own.yaml", (tmp_path / "outside" / "*.yaml").as_posix()
         ) == {"own": 1}
 
-    def test_a_refused_stream_is_skippable(self, tmp_path):
-        # Checked in _iter_sources rather than _load, so the offer has to be
-        # made there — otherwise this was the one refusal a predicate could
-        # not skip, while a refused path and a refused pattern both could.
-        conf = self._tree(tmp_path)
-        _write(conf / "own.yaml", "own: 1\n")
-        loader = ConfigLoader(
-            base_dir=str(conf), confine_to=[str(conf)], ignore_error=True
-        )
-        with open(tmp_path / "outside" / "secret_token.yaml", encoding="utf-8") as fp:
-            assert loader.load("own.yaml", fp) == {"own": 1}
+
+# ---------------------------------------------------------------------------
+# Root forms
+# ---------------------------------------------------------------------------
 
 
-@pytest.mark.usefixtures("needs_yaml")
-class TestConfinementRootForms:
-    """What counts as a root, and what is refused rather than guessed at.
+class TestRootForms:
+    """What counts as a root, and what is refused rather than guessed at."""
 
-    `os.path.abspath` resolves anything unanchored against the working
-    directory, so before 2026-09-17 a typo, a stray space from an environment
-    variable or an empty list entry silently became a root under the cwd — a
-    directory an attacker may be able to write to. An allowlist is the wrong
-    place to guess.
-    """
-
-    def test_relative_root_is_refused(self, tmp_path):
-        # `abspath` would resolve it against the working directory and hand
-        # back a root nobody named — possibly one an attacker can write to.
+    def test_relative_root_refused(self, tmp_path):
         conf = _tree(tmp_path)
         with pytest.raises(ConfigTypeError) as caught:
-            ConfigLoader(base_dir=str(conf), confine_to=["conf"])
+            _confined(conf, ["conf"]).load("inside.json")
         message = str(caught.value)
         assert "absolute" in message
-        # It must say what to do instead.
         assert "confine_to=True" in message
 
     @pytest.mark.parametrize(
-        "root",
-        [".", "conf", "~/conf", pytest.param("C:conf", id="drive_relative")],
+        "root", [".", "conf", "~/conf", pytest.param("C:conf", id="drive_relative")]
     )
-    def test_unanchored_root_forms_are_refused(self, tmp_path, root):
-        if root == "C:conf" and sys.platform != "win32":
+    def test_unanchored_roots_refused(self, tmp_path, root):
+        if root == "C:conf" and not WIN:
             pytest.skip("drive-relative paths are a Windows spelling")
+        conf = _tree(tmp_path)
         with pytest.raises(ConfigTypeError):
-            ConfigLoader(base_dir=str(tmp_path), confine_to=[root])
+            _confined(conf, [root]).load("inside.json")
 
-    def test_empty_entries_do_not_become_the_working_directory(self, tmp_path):
-        # `[""]` is the shape `os.environ.get(X, "").split(os.pathsep)` makes
-        # in a caller's own code. It used to open the whole cwd tree; it now
-        # means what `""` means — an empty allowlist, which allows nothing.
+    @pytest.mark.parametrize("value", [[""], "", os.pathsep, os.pathsep * 3], ids=repr)
+    def test_empty_entries_make_an_empty_allowlist(self, tmp_path, value):
+        # Never the working directory: [""] is what splitting an unset
+        # variable produces in a caller's own code.
         conf = _tree(tmp_path)
-        loader = ConfigLoader(base_dir=str(conf), confine_to=[""])
-        assert loader._confine_roots == ()
-        _including(conf, "inside.yaml")
-        with pytest.raises(ConfinementError):
-            loader.load("app.yaml")
-
-    def test_env_value_with_a_stray_space_is_refused(self, tmp_path, monkeypatch):
-        # `abspath` strips a trailing space but keeps a leading one, so
-        # " C:\\other" stopped being drive-anchored and landed under the cwd —
-        # silently dropping the root the operator actually named.
-        conf = _tree(tmp_path)
-        other = tmp_path / "other"
-        other.mkdir()
-        monkeypatch.setenv("YACONFIGLIB_CONFINE_TO", f"{conf}{os.pathsep} {other}")
-        with pytest.raises(ConfigTypeError):
-            ConfigLoader(base_dir=str(conf))
-
-    def test_absolute_roots_are_unaffected(self, tmp_path):
-        conf = _tree(tmp_path)
-        _including(conf, "inside.yaml")
-        loader = ConfigLoader(base_dir=str(conf), confine_to=[str(conf)])
-        assert loader.load("app.yaml") == {"data": {"inside": True}}
-
-    def test_a_single_path_object_is_one_root(self, tmp_path):
-        # Not a sequence and not a string: the branch that neither splits on
-        # os.pathsep nor iterates.
-        conf = _tree(tmp_path)
-        _including(conf, "inside.yaml")
-        loader = ConfigLoader(base_dir=str(conf), confine_to=pathlib.Path(conf))
-        assert loader.load("app.yaml") == {"data": {"inside": True}}
-        with pytest.raises(ConfinementError):
-            loader.load(str(tmp_path / "secret.yaml"))
-
-    def test_confine_to_false_is_off(self, tmp_path):
-        # `False` and `None` differ from an empty allowlist, which refuses
-        # everything; a test says so because the three are one keyword.
-        conf = _tree(tmp_path)
-        loader = ConfigLoader(base_dir=str(conf), confine_to=False)
-        assert loader.load(str(tmp_path / "secret.yaml")) == {"secret": "s3cr3t"}
-
-    def test_an_empty_string_argument_fails_closed(self, tmp_path):
-        # The argument side of the rule the env var already has a test for.
-        conf = _tree(tmp_path)
-        _including(conf, "inside.yaml")
-        loader = ConfigLoader(base_dir=str(conf), confine_to="")
-        assert loader._confine_roots == ()
         with pytest.raises(ConfinementError) as caught:
-            loader.load("app.yaml")
+            _confined(conf, value).load("inside.json")
         assert "allowlist is empty" in str(caught.value)
+
+    def test_empty_entries_beside_a_root_are_dropped(self, tmp_path):
+        conf = _tree(tmp_path)
+        roots = os.pathsep + str(conf) + os.pathsep
+        assert _confined(conf, roots).load("inside.json") == {"inside": True}
+        assert _confined(conf, ["", str(conf)]).load("inside.json") == {"inside": True}
 
     @pytest.mark.parametrize(
         ("value", "expected"),
         [(5, "confine_to="), ([5], "every confine_to= root")],
         ids=["wrong_type", "wrong_element_type"],
     )
-    def test_a_non_path_value_is_rejected(self, tmp_path, value, expected):
+    def test_a_non_path_value_rejected(self, tmp_path, value, expected):
+        conf = _tree(tmp_path)
         with pytest.raises(ConfigTypeError) as caught:
-            ConfigLoader(base_dir=str(tmp_path), confine_to=value)
+            _confined(conf, value).load("inside.json")
         message = str(caught.value)
         assert expected in message
-        # The message has to name the type it got, or a caller cannot see
-        # which of several roots is wrong.
         assert "int" in message
 
-    @pytest.mark.skipif(
-        sys.platform != "win32", reason="extended-length paths are a Windows spelling"
-    )
+    @pytest.mark.skipif(WIN, reason="':' cannot appear in a Windows file name")
+    def test_sequence_entries_are_never_split(self, tmp_path):
+        root = tmp_path / "a:b"
+        _write(root / "x.json", '{"x": 1}')
+        loader = Loader(policy=Policy(confine_to=[str(root)]))
+        assert loader.load(str(root / "x.json")) == {"x": 1}
+
+    @pytest.mark.skipif(not WIN, reason="extended-length paths are a Windows spelling")
     @pytest.mark.parametrize("side", ["target", "root"])
-    def test_extended_length_prefix_is_stripped_on_either_side(self, tmp_path, side):
-        # `commonpath` raises for `\\?\C:\...` against `C:\...`, so without
-        # stripping a legitimately-spelled path is refused. Reachable from
-        # either side, which is why both are pinned — the plan that shipped
-        # the stripping recorded it as unreachable without a probe.
+    def test_extended_length_prefix_stripped_on_either_side(self, tmp_path, side):
         conf = _tree(tmp_path)
         extended = "\\\\?\\" + str(conf)
         if side == "target":
-            loader = ConfigLoader(base_dir=str(conf), confine_to=[str(conf)])
-            target = extended + "\\inside.yaml"
+            loader = _confined(conf, [str(conf)])
+            target = extended + "\\inside.json"
         else:
-            loader = ConfigLoader(base_dir=str(conf), confine_to=[extended])
-            target = str(conf / "inside.yaml")
+            loader = _confined(conf, [extended])
+            target = str(conf / "inside.json")
         assert loader.load(target) == {"inside": True}
 
-    def test_a_unc_share_root_contains_its_files(self):
-        # Lexical, so no share has to exist: `commonpath` treats a bare
-        # `\\host\share` as RELATIVE (a drive with no root component) and used
-        # to raise, which `_within_roots` read as "not contained" — denying a
-        # whole legitimate root.
-        from yaconfiglib.utils.source import _confinement_root_key, _within_roots
+    @pytest.mark.skipif(not WIN, reason="extended-length paths are a Windows spelling")
+    def test_extended_length_target_outside_still_refused(self, tmp_path):
+        conf = _tree(tmp_path)
+        target = "\\\\?\\" + str(tmp_path / "secret.json")
+        with pytest.raises(ConfinementError):
+            _confined(conf, [str(conf)]).load(target)
 
-        if sys.platform != "win32":
-            pytest.skip("UNC paths are a Windows spelling")
-        roots = (_confinement_root_key(r"\\srv\share"),)
-        assert _within_roots(r"\\srv\share\conf\app.yaml", roots)
-        assert _within_roots(r"\\srv\share\app.yaml", roots)
-        assert not _within_roots(r"\\srv\other\app.yaml", roots)
+    @pytest.mark.skipif(not WIN, reason="UNC paths are a Windows spelling")
+    def test_a_bare_unc_share_root_contains_its_files(self):
+        # Lexical, so no share has to exist. commonpath treats a bare share as
+        # relative; the root key gives it the separator it needs.
+        roots = (_confine.root_key(r"\\srv\share"),)
+        assert _confine.within_roots(r"\\srv\share\conf\app.yaml", roots)
+        assert _confine.within_roots(r"\\srv\share\app.yaml", roots)
+        assert not _confine.within_roots(r"\\srv\other\app.yaml", roots)
+
+    @pytest.mark.skipif(not WIN, reason="UNC paths are a Windows spelling")
+    def test_a_bare_unc_share_is_an_accepted_root(self, tmp_path):
+        conf = _tree(tmp_path)
+        # Accepted as absolute (not ConfigTypeError); a local file is outside it.
+        with pytest.raises(ConfinementError):
+            _confined(conf, r"\\srv\share").load("inside.json")
+
+    def test_commonpath_not_prefix(self):
+        root = os.path.abspath(os.path.join(os.sep, "srv", "conf"))
+        roots = (_confine.root_key(root),)
+        assert _confine.within_roots(os.path.join(root, "a.yaml"), roots)
+        assert not _confine.within_roots(
+            os.path.join(os.path.dirname(root), "confidential", "a.yaml"), roots
+        )
+        assert not _confine.within_roots(
+            os.path.join(root, "..", "confidential", "a.yaml"), roots
+        )
+
+
+# ---------------------------------------------------------------------------
+# YACONFIGLIB_CONFINE_TO
+# ---------------------------------------------------------------------------
+
+
+class TestEnvironmentVariable:
+    def test_read_when_the_policy_leaves_it_unset(self, tmp_path, monkeypatch):
+        conf = _tree(tmp_path)
+        monkeypatch.setenv(ENV, str(conf))
+        loader = Loader(base_dir=conf)
+        assert loader.load("inside.json") == {"inside": True}
+        with pytest.raises(ConfinementError):
+            loader.load(str(tmp_path / "secret.json"))
+
+    def test_read_at_load_time(self, tmp_path, monkeypatch):
+        conf = _tree(tmp_path)
+        loader = Loader(base_dir=conf)
+        assert loader.load(str(tmp_path / "secret.json")) == {"secret": "s3cr3t"}
+        monkeypatch.setenv(ENV, str(conf))
+        with pytest.raises(ConfinementError):
+            loader.load(str(tmp_path / "secret.json"))
+
+    def test_pathsep_separated(self, tmp_path, monkeypatch):
+        conf = _tree(tmp_path)
+        shared = _write(tmp_path / "shared" / "extra.json", '{"extra": 1}')
+        monkeypatch.setenv(ENV, os.pathsep.join([str(conf), str(shared.parent)]))
+        assert Loader(base_dir=conf).load(str(shared)) == {"extra": 1}
+
+    def test_explicit_roots_ignore_it(self, tmp_path, monkeypatch):
+        # The variable names a root that would accept the read; an explicit
+        # value wins, so the environment can never widen an in-code allowlist.
+        conf = _tree(tmp_path)
+        monkeypatch.setenv(ENV, str(tmp_path))
+        with pytest.raises(ConfinementError):
+            _confined(conf, [str(conf)]).load(str(tmp_path / "secret.json"))
+
+    def test_explicit_false_ignores_it(self, tmp_path, monkeypatch):
+        conf = _tree(tmp_path)
+        monkeypatch.setenv(ENV, str(conf))
+        loader = _confined(conf, False)
+        assert loader.load(str(tmp_path / "secret.json")) == {"secret": "s3cr3t"}
+
+    def test_unset_is_off(self, tmp_path):
+        conf = _tree(tmp_path)
+        assert ENV not in os.environ
+        loader = Loader(base_dir=conf)
+        assert loader.load(str(tmp_path / "secret.json")) == {"secret": "s3cr3t"}
+
+    def test_empty_refuses_everything(self, tmp_path, monkeypatch):
+        conf = _tree(tmp_path)
+        monkeypatch.setenv(ENV, "")
+        with pytest.raises(ConfinementError) as caught:
+            Loader(base_dir=conf).load("inside.json")
+        assert "allowlist is empty" in str(caught.value)
+
+    def test_relative_root_refused(self, tmp_path, monkeypatch):
+        conf = _tree(tmp_path)
+        monkeypatch.setenv(ENV, "conf")
+        with pytest.raises(ConfigTypeError):
+            Loader(base_dir=conf).load("inside.json")
+
+    def test_stray_space_after_the_separator_refused(self, tmp_path, monkeypatch):
+        # " /other" is not anchored: quietly resolving it under the working
+        # directory would drop the root the operator named.
+        conf = _tree(tmp_path)
+        other = tmp_path / "other"
+        other.mkdir()
+        monkeypatch.setenv(ENV, f"{conf}{os.pathsep} {other}")
+        with pytest.raises(ConfigTypeError):
+            Loader(base_dir=conf).load("inside.json")
+
+    def test_import_never_fails_on_a_relative_value(self, tmp_path):
+        # A bad value must not break importing the package; the first load
+        # that consults it raises instead.
+        package_root = str(pathlib.Path(yaconfiglib.__file__).resolve().parent.parent)
+        code = (
+            "import sys\n"
+            f"sys.path.insert(0, {package_root!r})\n"
+            "import yaconfiglib\n"
+            "print('imported')\n"
+            "try:\n"
+            "    yaconfiglib.loads('{}', format='json')\n"
+            "except yaconfiglib.ConfigTypeError:\n"
+            "    print('ConfigTypeError')\n"
+        )
+        environ = dict(os.environ)
+        environ[ENV] = os.path.join("relative", "dir")
+        done = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True,
+            text=True,
+            env=environ,
+            timeout=60,
+        )
+        assert done.returncode == 0, done.stderr
+        assert done.stdout.split() == ["imported", "ConfigTypeError"]
