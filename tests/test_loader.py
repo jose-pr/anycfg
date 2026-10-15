@@ -164,6 +164,7 @@ class TestOverrides:
             ("inject_env", False),
             ("wrap", None),
             ("on_error", False),
+            ("path_filter", None),
             ("format_options", {"json": {}}),
         ],
     )

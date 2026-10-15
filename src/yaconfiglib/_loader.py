@@ -94,6 +94,8 @@ class LoadEvent(_ty.NamedTuple):
 
 
 OnError = _ty.Union[bool, _ty.Callable[[LoadEvent], bool]]
+#: ``path_filter=``: given each path before it is read; falsy refuses it.
+PathFilter = _ty.Callable[[Path], _ty.Any]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -108,6 +110,7 @@ class _Call:
     key: "_ty.Callable[[str, _ty.Any], _ty.Any]"
     recursive: bool
     bound_loops: bool
+    path_filter: "_ty.Optional[PathFilter]"
     interpolate: InterpolateChoice
     #: What *interpolate* resolves to under *policy*; None when off.
     interpolator: "_ty.Optional[Interpolator]"
@@ -356,7 +359,12 @@ class _Session:
     def check_confinement(
         self, path: _ty.Any, pattern: _ty.Optional[str] = None
     ) -> None:
-        """Refuse *path* unless confinement allows it; nothing has been read yet."""
+        """Refuse *path* unless confinement and ``path_filter`` allow it.
+
+        Nothing has been read yet.
+        """
+        if isinstance(path, Path) and self.call.path_filter is not None:
+            self.check_filter(path, pattern)
         roots = self.roots
         if roots is None:
             return
@@ -381,6 +389,22 @@ class _Session:
             _add_error_context(error, source=str(pattern))
         else:
             error = ConfinementError(f"refusing to read {named}: {detail}")
+            _add_error_context(error, source=str(path))
+        raise error
+
+    def check_filter(self, path: Path, pattern: "_ty.Optional[str]") -> None:
+        """Refuse *path* when the caller's ``path_filter`` returns a falsy value."""
+        if self.call.path_filter(path):
+            return
+        if pattern is not None:
+            # As for confinement: never name a file the document did not write.
+            logger.debug("path_filter refused %s, matched by %s", path, pattern)
+            error = ConfinementError(
+                f"refusing to read a match of {pattern}: path_filter refused it"
+            )
+            _add_error_context(error, source=str(pattern))
+        else:
+            error = ConfinementError(f"refusing to read {path}: path_filter refused it")
             _add_error_context(error, source=str(path))
         raise error
 
@@ -879,6 +903,7 @@ _OVERRIDABLE = frozenset(
         "inject_env",
         "wrap",
         "on_error",
+        "path_filter",
         "format_options",
     }
 )
@@ -909,6 +934,15 @@ class Loader:
             file stem by default.
         recursive: Whether ``**`` in a glob source descends into directories.
         bound_loops: Bound a ``**`` walk through a Windows junction loop.
+        path_filter: ``(path) -> bool``, asked about every path before it is
+            read — a top-level source, an include, a script, a glob pattern
+            before it is expanded and each match — with the pathapi ``Path``
+            that would be read. A falsy result refuses it with
+            `ConfinementError` (offered to ``on_error``); an exception it
+            raises propagates. A ``str`` source, top-level or from a document,
+            always becomes a local path; any other kind of ``Path`` comes only
+            from the caller, so this is where a caller who passes remote paths
+            vets them.
         interpolate: Render the template text in the merged document's
             strings, once, after merging: `True` with Jinja, a tplx engine's
             name or class (``"liquid"``, ``"envsubst"``) with that engine,
@@ -942,6 +976,7 @@ class Loader:
         key: "_ty.Optional[_ty.Callable[[str, _ty.Any], _ty.Any]]" = None,
         recursive: bool = False,
         bound_loops: bool = True,
+        path_filter: "_ty.Optional[PathFilter]" = None,
         interpolate: InterpolateChoice = False,
         inject_env: bool = False,
         wrap: _ty.Any = None,
@@ -959,6 +994,7 @@ class Loader:
                 key=key,
                 recursive=recursive,
                 bound_loops=bound_loops,
+                path_filter=path_filter,
                 interpolate=interpolate,
                 inject_env=inject_env,
                 wrap=wrap,
@@ -986,6 +1022,9 @@ class Loader:
         on_error = values["on_error"]
         if not (isinstance(on_error, bool) or callable(on_error)):
             raise TypeError("on_error= takes a bool or a callable (LoadEvent) -> bool")
+        path_filter = values["path_filter"]
+        if path_filter is not None and not callable(path_filter):
+            raise TypeError("path_filter= takes a callable (path) -> bool, or None")
         format_options = dict(values["format_options"] or {})
         for name, opts in format_options.items():
             # An unknown format name or option raises here, not at first use.
@@ -999,6 +1038,7 @@ class Loader:
             key=values["key"] or _default_key,
             recursive=bool(values["recursive"]),
             bound_loops=bool(values["bound_loops"]),
+            path_filter=path_filter,
             interpolate=values["interpolate"],
             interpolator=resolve_interpolator(values["interpolate"], policy),
             inject_env=bool(values["inject_env"]),

@@ -91,6 +91,7 @@ pointing here.
 
 `Loader(*, base_dir=None, policy=None, encoding="utf-8", merge="simple",
 merge_options=None, collect=None, key=None, recursive=False, bound_loops=True,
+path_filter=None,
 interpolate=False, inject_env=False, wrap=None, on_error=False,
 format_options=None, formats=None)`
 
@@ -100,7 +101,7 @@ format_options=None, formats=None)`
   — every document of every source, each finished on its own (interpolated, wrapped,
   hydrated); a `---` stream yields each of its documents.
 - `**overrides`: any of `policy`, `encoding`, `merge`, `merge_options`, `collect`,
-  `key`, `recursive`, `interpolate`, `inject_env`, `wrap`,
+  `key`, `recursive`, `path_filter`, `interpolate`, `inject_env`, `wrap`,
   `on_error`, `format_options` — for that call only (`policy=None` keeps the
   loader's). Anything else is `TypeError` (format options go in
   `format_options={"json": {...}}`). No sources is `TypeError`.
@@ -127,6 +128,13 @@ Settings:
 - `recursive` — `**` in a glob descends into directories. `bound_loops` — bound a `**`
   walk through a Windows junction loop (on by default; a POSIX directory symlink is
   never descended).
+- `path_filter` — `(path) -> bool`, asked about every path before it is read: a
+  top-level source, an include, a script, a glob pattern before it is expanded and
+  each match, as the pathapi `Path` that would be read. A falsy answer refuses it
+  with `ConfinementError` (offered to `on_error`; a refused match is named by its
+  pattern); an exception it raises propagates. A `str` source — top-level or from a
+  document — always becomes a `LocalPath`; any other `Path` (remote, in-memory)
+  only ever comes from the caller, so this is where a caller vets those.
 - `interpolate`, `inject_env` — see "Interpolation".
 - `wrap` — `None` returns plain data; `True` (or `DotAccessibleDict`) returns
   dot-accessible mappings; a callable is applied to the result. Ignored with `into=`.
