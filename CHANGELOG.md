@@ -78,7 +78,7 @@ replacement.
   `TemplateInterpolator` (Jinja by default, any tplx engine with expressions).
   `JinjaInterpolator`, `utils.jinja2` and its caches are gone. `transform=` and
   `key=` take callables; their Jinja-string forms are gone.
-- **Extras**: `jinja2` and `transform` became `templates` (`tplx[jinja]` 0.1.4 or
+- **Extras**: `jinja2` and `transform` became `templates` (`tplx[jinja]` 0.1.5 or
   later); `toml` adds `tomli-w`; `all` installs every extra. Another template engine
   needs its own tplx extra (`tplx[liquid]`).
 
@@ -90,15 +90,25 @@ replacement.
 - `yaconfiglib.sources`: `Source`, `Text`, `Data`, `Env`, `Command`, and the
   `yaconfiglib.sources` entry-point group for schemes.
 - `yaconfiglib.testing.FormatContract`, the suite every format passes.
-- `load_all`/`loads_all`, writers for TOML (`tomli-w`), INI and dotenv, `DELETE`,
+- `load_all`/`loads_all` (both with `into=`), writers for TOML (`tomli-w`), INI and
+  dotenv (the INI writer escapes for the interpolation the file will be read with and
+  raises `ConfigValueError` for anything that would not load back as written), `DELETE`,
   `register_merge`, `hydrate`, `Interpolator`, `TemplateInterpolator`, `LoadEvent`, `BudgetExceededError`,
   `MissingDependencyError`, `TemplateError`.
 - `Policy.max_includes`, `max_depth`, `max_bytes`: a load's budget.
 - **The target type steers the parse.** With `into=`, YAML keeps each plain scalar
   it read as a bool, number or date beside its text, and the type decides: a `str`
-  field gets `NO`, `1.10` or `0755` as written, other fields the read value or a
-  value parsed from the text. `TypedDict` targets and ordinary classes built from a
-  mapping are hydrated.
+  or `Decimal` field gets `NO`, `1.10` or `0755` as written, other fields the read
+  value, or a value built from the text when the read value does not convert. Only
+  the typed build sees the text: merging, includes, `transform` and duplicate keys
+  behave as without `into=`. `TypedDict` targets (with `extra=` and required keys)
+  and ordinary classes built from a mapping are hydrated.
+- `typed_merge`/`hydrate` coerce `Literal[...]`, `NewType`, `Set`/`FrozenSet` and a
+  `NamedTuple` written as a mapping. A bool no longer passes as a number, `Decimal`
+  takes a float's shortest text, and a failing constructor raises
+  `ConfigValueError`/`ConfigTypeError` instead of its own exception.
+- `load()` reads one location: a glob matching no file or several raises
+  `ConfigValueError`, and a list of sources is `TypeError`.
 - Type hooks: a classmethod `_load_(cls, value)` builds a type from configuration,
   and `_dump_(self)` turns it back into plain data. `dehydrate()` applies them, and
   `dump`/`dumps` call it, so a dataclass, enum, path or `Decimal` writes as plain
@@ -131,6 +141,13 @@ replacement.
   `RecursionError`, or exponentially with errors ignored.
 - `deep` list merging compares unhashable items by structure, once per node: a
   document of aliased lists could make it exponential.
+- `typed_merge`/`hydrate` (and `into=`) build a node reached twice once, so an
+  aliased document costs its distinct nodes instead of every path through it; data
+  that contains itself raises `ConfigValueError` instead of `RecursionError`.
+- An `encoding` must name a text codec; a document's include could name
+  `zlib_codec` and inflate past `max_bytes`.
+- A glob pattern is checked against `confine_to` before the loader asks whether a
+  file of that name exists.
 - Format selection is a linear suffix lookup; the dotenv name pattern backtracked
   quadratically on a long, document-controlled name.
 - A command's `#!` line can select only a document format; `#!env` returned the

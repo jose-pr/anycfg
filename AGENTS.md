@@ -29,6 +29,9 @@ py -3.9 -m venv .venv/3.9-nt-amd64          # the supported floor
 py -3.14 -m venv .venv/3.14-nt-amd64        # the newest supported
 ```
 
+On a Windows ARM64 machine, use its native interpreters
+(`py -V:3.9-arm64`, `py -V:3.14-arm64`) and name the venvs `-nt-arm64`.
+
 The `dev` extra installs the tooling **and every extra that has tests**:
 
 ```bash
@@ -39,9 +42,10 @@ Put the venv's `Scripts` (or `bin`) directory first on `PATH`, or activate it:
 the command-backend tests start `python` as a subprocess, and they fail if the
 wrong one is found.
 
-Windows on ARM64: build the 3.9 venv from the **x64** interpreter. PyYAML and
-MarkupSafe publish no cp39 `win_arm64` wheels, so a native 3.9 venv cannot
-install the extras. 3.14 ARM64 is fine, including the docs extra.
+Windows on ARM64: PyYAML and MarkupSafe publish no cp39 `win_arm64` wheels, so a
+native 3.9 venv builds them from their sdists (PyYAML without libyaml, which the
+library does not use); `pip install -e ".[dev]"` works there as is. 3.14 ARM64
+installs wheels throughout, including the docs extra.
 
 Build the docs from a 3.14 venv with the `docs` extra installed
 (`python -m mkdocs build --strict`); mkdocstrings imports the package.

@@ -10,7 +10,7 @@ yaconfiglib renders templates in two places, and they are separate features:
 
 Both run on [tplx](https://github.com/jose-pr/tplx), and both are governed by
 the load's [`Policy`](security.md). The `templates` extra
-(`pip install "yaconfiglib[templates]"`) installs tplx 0.1.4+ with Jinja, the
+(`pip install "yaconfiglib[templates]"`) installs tplx 0.1.5+ with Jinja, the
 default engine; another engine needs its own tplx extra (`pip install
 "tplx[liquid]"`). Without the engine's extra, using it raises
 `MissingDependencyError` naming what to install.

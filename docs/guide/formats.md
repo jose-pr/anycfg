@@ -173,8 +173,14 @@ print(config)    # {'DEFAULT': {'timeout': '30'}}
 ```
 
 `dumps` accepts exactly what `loads` returns — string values and lower-case
-option names — so the round trip is exact; with the default interpolation a
-`%` is written `%%`. Error messages never quote the offending line.
+option names. Its `interpolation` option names the interpolation the file will
+be read with, and values are escaped for it: `"basic"` (the default) writes `%`
+as `%%`, `"extended"` writes `$` as `$$`, `"none"` writes values as they are.
+The written text is checked to load back unchanged, so what INI cannot hold
+raises `ConfigValueError` naming the option instead of being lost: a name
+containing `=` or `:`, a value with leading or trailing blanks, a continuation
+line starting with `#` or `;`, a `[DEFAULT]` section. Error messages never
+quote the offending line or a value.
 
 ### dotenv
 

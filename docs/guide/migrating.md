@@ -396,6 +396,6 @@ pip install "yaconfiglib[yaml,jinja2]"
 pip install "yaconfiglib[yaml,templates]"
 ```
 
-`templates` installs tplx 0.1.4+ with Jinja; another template engine needs its
+`templates` installs tplx 0.1.5+ with Jinja; another template engine needs its
 own tplx extra (`tplx[liquid]`). `toml` now also installs `tomli-w`, to write
 TOML, and `all` installs every extra.

@@ -20,8 +20,9 @@ class Database:
 db = yaconfiglib.load("db.json", into=Database)
 ```
 
-`into=` is accepted by `load()`, `loads()`, `Loader.load()` and
-`Loader.load_all()` (where it applies to each document). The same engine is
+`into=` is accepted by `load()`, `loads()`, `load_all()`, `loads_all()`,
+`Loader.load()` and `Loader.load_all()` (the last three apply it to each
+document). The same engine is
 available on its own as `yaconfiglib.hydrate(cls, data)`:
 
 ```python
@@ -72,16 +73,23 @@ print(yaconfiglib.loads(document, format="yaml", into=Release))
 ```
 
 - A **`str` field gets the text as written**: `NO` stays `"NO"`, `1.10` stays
-  `"1.10"`, `0755` stays `"0755"`.
-- A field of the **type YAML read** gets the read value (`enabled: bool` gets
-  `True`).
-- **Any other type is built from the text** — through its
-  [`_load_` hook](#building-a-type-from-a-value) when it has one.
-- **Places without type information** — `Any`, an unannotated `dict` or
-  `list`, keys the class does not declare — get the value YAML read.
-- **Keys are never affected**, and a **union** picks its member by the value
-  YAML read.
-- A **Pydantic model** receives the texts and parses them itself.
+  `"1.10"`, `0755` stays `"0755"`. A `Decimal` field also starts from the text,
+  so `0.10` keeps its digits.
+- **Any other type is built from the value YAML read** (`enabled: bool` gets
+  `True`, `level: 1` an `IntEnum` member, `count: 1.0` the int `1`), and from the
+  text only when that value does not convert. A type with a
+  [`_load_` hook](#building-a-type-from-a-value) gets the text.
+- **Places without type information** — `Any`, `object`, an unannotated `dict`
+  or `list`, keys the class does not declare — get the value YAML read.
+- **Keys are never affected**. A **union** picks the member holding the read
+  value, then the one holding the text, so `Union[int, str]` keeps `yes` as
+  `"yes"`.
+- A **Pydantic model** gets the text for a field annotated `str` and the read
+  value everywhere else, then validates it.
+
+The text is for the type only. **Merging, includes, `transform`, `key=` and the
+duplicate-key check see the values YAML read**, exactly as without `into=`, so
+adding `into=` never changes which document wins or what an include does.
 
 **Without `into=`, nothing changes**: values are exactly what the format read.
 So `yaconfiglib.load("app.yaml")` still returns `{'country': False, ...}` —
@@ -93,8 +101,10 @@ Formats such as INI, dotenv and the environment have only strings, and a
 command or a JSON file may write a number as text. Hydration coerces each value
 to its field's annotation, and **never loses data** doing it: `"8080"` becomes
 `8080`, `"false"` becomes `False`, an ISO string becomes a `date`, but `1.9`
-for an `int` field raises rather than truncating, and `"maybe"` for a `bool`
-raises rather than becoming `True`. The full table is in
+for an `int` field raises rather than truncating, `True` for an `int` field
+raises rather than becoming `1`, and `"maybe"` for a `bool` raises rather than
+becoming `True`. A `Literal[...]` takes only its values, and a `NewType` coerces
+as its base type. The full table is in
 [Typed merge](merging.md#typed-merge).
 
 That makes the environment usable as typed configuration:
