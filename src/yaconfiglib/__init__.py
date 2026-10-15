@@ -25,7 +25,7 @@ from . import formats, policies, sources
 from ._api import dump, dumps, load, load_all, loads, loads_all
 from ._async import adump, aload, aload_all
 from ._context import LoadContext, Policy
-from ._dotaccess import DotAccessibleDict
+from ._dotaccess import DotAccessibleDict, dig
 from ._hydrate import (
     OpaqueMerge,
     TypedNamespace,
@@ -90,6 +90,7 @@ __all__ = [
     "opaque",
     "TypedNamespace",
     "DotAccessibleDict",
+    "dig",
     # interpolation
     "Interpolator",
     "TemplateInterpolator",

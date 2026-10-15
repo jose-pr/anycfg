@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import collections.abc
 import copy as _copy
 import typing
 
-__all__ = ["DotAccessibleDict", "to_dot_access"]
+__all__ = ["DotAccessibleDict", "to_dot_access", "dig"]
 
 #: Distinguishes "absent" from a stored ``None`` while digging a dotted path.
 _MISSING = object()
@@ -215,6 +216,10 @@ class DotAccessibleDict(dict):
         # unhashable one has already raised TypeError above.)
         return default
 
+    def dig(self, *keys: typing.Any) -> typing.Any:
+        """:func:`yaconfiglib.dig` on this mapping: keys as given, a miss is ``None``."""
+        return dig(self, *keys)
+
     def _dig(
         self, segments: typing.Sequence[typing.Hashable], default: object
     ) -> object:
@@ -247,6 +252,49 @@ class DotAccessibleDict(dict):
             if current is None and index != last:
                 return default
         return current
+
+
+def dig(data: typing.Any, *keys: typing.Any) -> typing.Any:
+    """The value at *keys* inside *data*, as Puppet's and Ruby's ``dig`` find it.
+
+    Each key is used exactly as given — no dotted strings, so a key holding a
+    ``.`` needs no quoting: a mapping is indexed by the key, a list or tuple by
+    an `int` (negative counts from the end). The first step that finds nothing
+    — a missing key, an index out of range, or ``None`` on the way — gives
+    ``None``. Digging into anything else (a string, a number) raises::
+
+        dig(config, "db", "hosts", 0, "port")
+
+    Works on plain results and on `DotAccessibleDict` alike.
+
+    Raises:
+        ConfigTypeError: When a step reaches a value that is neither a mapping
+            nor a list or tuple, or indexes a list with a non-`int`.
+    """
+    from .exceptions import ConfigTypeError
+
+    current = data
+    for depth, key in enumerate(keys):
+        if current is None:
+            return None
+        if isinstance(current, dict):
+            # dict.get: a defaultdict must not grow a key through a read.
+            current = dict.get(current, key)
+        elif isinstance(current, collections.abc.Mapping):
+            current = current[key] if key in current else None
+        elif isinstance(current, (list, tuple)):
+            if not isinstance(key, int) or isinstance(key, bool):
+                raise ConfigTypeError(
+                    f"dig: step {depth + 1} indexes a {type(current).__name__} with "
+                    f"a {type(key).__name__}, not an int"
+                )
+            current = current[key] if -len(current) <= key < len(current) else None
+        else:
+            raise ConfigTypeError(
+                f"dig: step {depth + 1} reaches a {type(current).__name__}, which "
+                "holds no keys"
+            )
+    return current
 
 
 def to_dot_access(value: object) -> object:

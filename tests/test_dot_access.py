@@ -366,3 +366,50 @@ class TestAttributeProtocol:
     def test_exported_from_the_package_root(self):
         assert yaconfiglib.DotAccessibleDict is DotAccessibleDict
         assert "DotAccessibleDict" in yaconfiglib.__all__
+
+
+class TestDig:
+    DATA = {
+        "db": {"hosts": [{"port": 1}, {"port": 2}], "a.b": 3},
+        "none": None,
+        "text": "x",
+    }
+
+    def test_keys_are_used_as_given(self):
+        from yaconfiglib import dig
+
+        assert dig(self.DATA, "db", "hosts", 1, "port") == 2
+        assert dig(self.DATA, "db", "hosts", -1, "port") == 2
+        assert dig(self.DATA, "db", "a.b") == 3
+        assert dig(self.DATA) is self.DATA
+
+    def test_a_miss_is_none(self):
+        from yaconfiglib import dig
+
+        assert dig(self.DATA, "nope", "x") is None
+        assert dig(self.DATA, "none", "x") is None
+        assert dig(self.DATA, "db", "hosts", 9) is None
+
+    def test_digging_into_a_value_raises(self):
+        from yaconfiglib import ConfigTypeError, dig
+
+        with pytest.raises(ConfigTypeError, match="step 2"):
+            dig(self.DATA, "text", "x")
+        with pytest.raises(ConfigTypeError, match="not an int"):
+            dig(self.DATA, "db", "hosts", "0")
+        with pytest.raises(ConfigTypeError):
+            dig(self.DATA, "db", "hosts", True)
+
+    def test_never_grows_a_defaultdict(self):
+        import collections
+
+        from yaconfiglib import dig
+
+        data = collections.defaultdict(dict)
+        assert dig(data, "x") is None and "x" not in data
+
+    def test_as_a_method_on_wrapped_results(self):
+        from yaconfiglib import Loader
+
+        wrapped = Loader(wrap=True).load(self.DATA)
+        assert wrapped.dig("db", "hosts", 0, "port") == 1

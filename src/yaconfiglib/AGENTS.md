@@ -520,7 +520,18 @@ the active loader — `ConfigValueError` without one (a direct `Format.loads` ca
   at construction; merged into without calling `__init__`, so each value is parsed
   once.
 
-## Dot access (`yaconfiglib.DotAccessibleDict`)
+## Nested values (`yaconfiglib.dig`, `yaconfiglib.DotAccessibleDict`)
+
+Results are plain `dict`/`list` by default; `wrap=True` gives dot access.
+
+- **`dig(data, *keys) -> Any`** — Puppet's and Ruby's `dig`: each key used exactly as
+  given (no dotted strings, so a key holding `.` needs no quoting); a mapping is
+  indexed by the key, a `list`/`tuple` by an `int` (negative from the end; `bool`
+  refused). The first step finding nothing — a missing key, an index out of range,
+  `None` on the way — gives `None`. Digging into any other value, or indexing a list
+  with a non-`int`, is `ConfigTypeError`. Never grows a `defaultdict`. Also
+  `DotAccessibleDict.dig(*keys)`.
+
 
 From `wrap=True`. Nested mappings are converted once, at construction (copied, never
 mutated; aliasing and cycles kept): `cfg["db"] is cfg.db`. `get(key, default=None,
