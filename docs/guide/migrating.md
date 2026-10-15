@@ -359,7 +359,12 @@ config = Loader(wrap=True).load("app.yaml")
 print(config.server.port)
 ```
 
-`wrap=` also takes a callable applied to the result.
+`wrap=` also takes a callable applied to the result. To reach a nested value
+without wrapping, `yaconfiglib.dig` follows Puppet's `dig`:
+
+```python
+yaconfiglib.dig(config, "server", "port")        # None when any step is missing
+```
 
 ### Errors
 

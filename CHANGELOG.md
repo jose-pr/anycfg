@@ -111,6 +111,8 @@ replacement.
   takes a list of mixin classes, applied to the default policy in order.
 - YAML `dialect="1.2"` (the YAML 1.2 core schema); `Env(coerce=)` and the dotenv
   `coerce=` option read values by the same rules or a callable.
+- `yaconfiglib.dig(data, *keys)` (and `DotAccessibleDict.dig`): Puppet's `dig`
+  over plain results — keys as given, a miss is `None`.
 - `INHERIT` (`!inherit`) and the merge option `nulls="replace"`, which makes `None`
   set a key while `INHERIT` keeps the earlier value.
 - Async loading: `aload`, `aload_all`, `adump`, `Loader.aload` and
