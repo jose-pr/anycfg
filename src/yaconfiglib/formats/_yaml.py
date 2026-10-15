@@ -4,18 +4,29 @@ from __future__ import annotations
 
 import datetime
 import enum
+import re
 import threading
 import typing as _ty
 
 from ..exceptions import (
     ConfigError,
     ConfigTypeError,
+    ConfigValueError,
     ErrorFrame,
     MissingDependencyError,
     ParseError,
     _add_error_context,
 )
-from .._scalar import ScalarText, resolved
+from .._scalar import (
+    CORE_BOOL,
+    CORE_FLOAT,
+    CORE_INT,
+    CORE_NULL,
+    ScalarText,
+    core_float,
+    core_int,
+    resolved,
+)
 from ._base import Format
 
 from .._context import LoadContext
@@ -23,6 +34,11 @@ from .._context import LoadContext
 __all__ = ["YAMLFormat"]
 
 _INCLUDE_TAGS = ("!include", "!load")
+_DIALECTS = ("1.1", "1.2")
+_CORE_TAGS = tuple(
+    f"tag:yaml.org,2002:{name}"
+    for name in ("bool", "int", "float", "null", "timestamp")
+)
 #: Plain-scalar types whose text is kept for a typed load.
 _TEXT_KEPT = (bool, int, float, datetime.date, datetime.datetime)
 _lock = threading.Lock()
@@ -200,7 +216,48 @@ def _classes_for() -> "_ty.Tuple[type, type]":
         )
         _classes["loader"] = _Loader
         _classes["dumper"] = _Dumper
+        _classes["loader-1.2"] = _core_schema_loader(yaml, _Loader)
         return _Loader, _Dumper
+
+
+def _core_schema_loader(yaml: _ty.Any, base: type) -> type:
+    """*base* reading plain scalars by the YAML 1.2 core schema.
+
+    Only ``true``/``false`` are booleans, ``0755`` is the decimal 755 and
+    ``0o755`` the octal, ``.inf``/``.nan`` are floats, and dates, ``yes``,
+    ``on`` and sexagesimal numbers stay strings.
+    """
+
+    class _Loader12(base):
+        pass
+
+    # A copy without YAML 1.1's typed resolvers; the merge key and the rest stay.
+    _Loader12.yaml_implicit_resolvers = {
+        first: [(tag, regexp) for tag, regexp in resolvers if tag not in _CORE_TAGS]
+        for first, resolvers in base.yaml_implicit_resolvers.items()
+    }
+    for tag, pattern, first in (
+        ("bool", CORE_BOOL, "tTfF"),
+        ("int", CORE_INT, "-+0123456789"),
+        ("float", CORE_FLOAT, "-+0123456789."),
+    ):
+        _Loader12.add_implicit_resolver(
+            f"tag:yaml.org,2002:{tag}", re.compile(pattern.pattern), list(first)
+        )
+    _Loader12.add_implicit_resolver(
+        "tag:yaml.org,2002:null",
+        re.compile(r"(?:~|null|Null|NULL|)\Z"),
+        ["~", "n", "N", ""],
+    )
+    _Loader12.add_constructor(
+        "tag:yaml.org,2002:int",
+        lambda loader, node: core_int(loader.construct_scalar(node)),
+    )
+    _Loader12.add_constructor(
+        "tag:yaml.org,2002:float",
+        lambda loader, node: core_float(loader.construct_scalar(node)),
+    )
+    return _Loader12
 
 
 def _parse_error(error: _ty.Any, path: "_ty.Optional[str]") -> ParseError:
@@ -224,9 +281,12 @@ def _parse_error(error: _ty.Any, path: "_ty.Optional[str]") -> ParseError:
 class YAMLFormat(Format):
     """YAML through PyYAML's safe loader (the ``yaml`` extra).
 
-    Dialect: YAML 1.1 as PyYAML implements it — ``yes``/``no``/``on``/``off``
-    are booleans, ``0755`` is an octal integer, ``1.10`` is the float ``1.1``.
-    Quote a value to keep it a string. Duplicate keys raise (a ``<<:`` merge key
+    Dialect: YAML 1.1 as PyYAML implements it by default — ``yes``/``no``/
+    ``on``/``off`` are booleans, ``0755`` is an octal integer, ``1.10`` is the
+    float ``1.1``, ``2024-01-02`` a date. The load option ``dialect="1.2"``
+    reads plain scalars by the YAML 1.2 core schema instead: only
+    ``true``/``false`` are booleans, ``0755`` is 755, ``0o755`` octal, and
+    dates stay strings. Quote a value to keep it a string in either. Duplicate keys raise (a ``<<:`` merge key
     may still be overridden). Only safe tags load; no Python object is ever
     constructed.
 
@@ -249,6 +309,7 @@ class YAMLFormat(Format):
     name = "yaml"
     aliases = ("yml",)
     suffixes = (".yaml", ".yml")
+    load_options = frozenset({"dialect"})
     dump_options = frozenset(
         {
             "indent",
@@ -261,9 +322,18 @@ class YAMLFormat(Format):
         }
     )
 
-    def _parser(self, data: _ty.Any, context: "_ty.Optional[LoadContext]") -> _ty.Any:
+    def _parser(
+        self, data: _ty.Any, context: "_ty.Optional[LoadContext]", dialect: str
+    ) -> _ty.Any:
         yaml = _yaml()
+        if dialect not in _DIALECTS:
+            raise ConfigValueError(
+                f"YAML dialect= takes {' or '.join(map(repr, _DIALECTS))}, not "
+                f"{dialect!r}"
+            )
         loader_cls, _dumper = _classes_for()
+        if dialect == "1.2":
+            loader_cls = _classes["loader-1.2"]
         path = (context.name if context is not None else None) or None
         try:
             parser = loader_cls(data)
@@ -293,9 +363,10 @@ class YAMLFormat(Format):
         /,
         *,
         context: "_ty.Optional[LoadContext]" = None,
+        dialect: str = "1.1",
         **options: _ty.Any,
     ) -> _ty.Any:
-        parser = self._parser(data, context)
+        parser = self._parser(data, context, dialect)
         try:
             return self._translate(
                 parser.get_single_data, (context and context.name) or None
@@ -309,9 +380,10 @@ class YAMLFormat(Format):
         /,
         *,
         context: "_ty.Optional[LoadContext]" = None,
+        dialect: str = "1.1",
         **options: _ty.Any,
     ) -> _ty.Iterator[_ty.Any]:
-        parser = self._parser(data, context)
+        parser = self._parser(data, context, dialect)
         path = (context and context.name) or None
         try:
             while self._translate(parser.check_data, path):

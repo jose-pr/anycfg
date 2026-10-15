@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import typing as _ty
 
+from .._scalar import Coerce, coercer
 from ..exceptions import ConfigValueError
 from ._base import Payload, Source
 
@@ -69,7 +70,10 @@ class Env(Source):
     Only variables starting with *prefix* are read, with the prefix removed.
     With *nested* (``"__"``), ``APP_DB__PORT`` becomes ``{"DB": {"PORT": ...}}``;
     a variable that is both a value and a parent of nested keys raises, naming
-    both. Values stay strings: types come from hydration (``load(into=...)``).
+    both. Values stay strings — types come from hydration (``load(into=...)``)
+    — unless *coerce* is set: `True` reads each value by the YAML 1.2 core
+    rules (``80`` an int, ``true`` a bool, ``null`` `None`; ``yes`` and ``0755``
+    stay text), a callable ``(text) -> value`` decides itself.
     Keys keep their case unless *lowercase* is set. On Windows the prefix is
     matched case-insensitively, as the environment is.
 
@@ -82,11 +86,14 @@ class Env(Source):
         *,
         nested: "_ty.Optional[str]" = None,
         lowercase: bool = False,
+        coerce: "Coerce" = False,
         environ: "_ty.Optional[_ty.Mapping[str, str]]" = None,
     ) -> None:
         self.prefix = prefix
         self.nested = nested
         self.lowercase = lowercase
+        self.coerce = coerce
+        self._coerce = coercer(coerce)
         self.environ = environ
 
     @property
@@ -102,6 +109,8 @@ class Env(Source):
             if prefix and not _has_prefix(key, prefix):
                 continue
             clean = key[len(prefix) :]
+            if self._coerce is not None:
+                value = self._coerce(value)
             if self.lowercase:
                 clean = clean.lower()
             if not clean:

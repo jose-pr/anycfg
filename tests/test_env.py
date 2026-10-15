@@ -318,3 +318,25 @@ class TestText:
         assert source.name == "inline"
         assert "json" in repr(source)
         assert source.executes is False
+
+
+class TestCoerce:
+    ENVIRON = {"A_PORT": "80", "A_X": "yes", "A_N": "null", "A_E": "", "A_R": "0.5"}
+
+    def test_strings_by_default(self):
+        result = Loader().load(sources.Env("A_", environ=self.ENVIRON))
+        assert result["PORT"] == "80"
+
+    def test_core_schema(self):
+        result = Loader().load(sources.Env("A_", coerce=True, environ=self.ENVIRON))
+        assert result == {"PORT": 80, "X": "yes", "N": None, "E": "", "R": 0.5}
+
+    def test_a_callable(self):
+        result = Loader().load(
+            sources.Env("A_", coerce=str.upper, environ={"A_K": "v"})
+        )
+        assert result == {"K": "V"}
+
+    def test_anything_else(self):
+        with pytest.raises(TypeError, match="coerce="):
+            sources.Env("A_", coerce="yes")

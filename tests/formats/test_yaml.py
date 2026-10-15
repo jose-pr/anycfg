@@ -497,3 +497,60 @@ class TestMissingPyYAML:
 
     def test_other_formats_unaffected(self, no_yaml):
         assert yaconfiglib.loads('{"a": 1}', format="json") == {"a": 1}
+
+
+@pytest.mark.usefixtures("needs_yaml")
+class TestDialect:
+    DOC = (
+        "a: yes\nb: 0755\nc: 0o755\nd: 2024-01-02\ne: TRUE\nf: ~\ng: .inf\n"
+        "h: 1.10\nj: on\nk: 1_000\nm: 0x1F\nn: 1:30\n"
+    )
+
+    def test_default_is_yaml_1_1(self):
+        doc = yaconfiglib.loads(self.DOC, format="yaml")
+        assert (doc["a"], doc["b"], doc["c"], doc["j"], doc["n"]) == (
+            True,
+            493,
+            "0o755",
+            True,
+            90,
+        )
+        assert doc["d"] == datetime.date(2024, 1, 2)
+
+    def test_1_2_core_schema(self):
+        doc = yaconfiglib.loads(self.DOC, format="yaml", dialect="1.2")
+        assert doc == {
+            "a": "yes",
+            "b": 755,
+            "c": 493,
+            "d": "2024-01-02",
+            "e": True,
+            "f": None,
+            "g": float("inf"),
+            "h": 1.1,
+            "j": "on",
+            "k": "1_000",
+            "m": 31,
+            "n": "1:30",
+        }
+
+    def test_merge_keys_still_work(self):
+        doc = yaconfiglib.loads(
+            "b: &b {x: 1}\nc:\n  <<: *b\n  y: 2\n", format="yaml", dialect="1.2"
+        )
+        assert doc["c"] == {"x": 1, "y": 2}
+
+    def test_unknown_dialect(self):
+        with pytest.raises(yaconfiglib.ConfigValueError, match="dialect"):
+            yaconfiglib.loads("a: 1", format="yaml", dialect="2")
+
+    def test_reaches_includes_and_the_loader_setting(self, tmp_path):
+        (tmp_path / "inc.yaml").write_text("v: no\n", encoding="utf-8")
+        (tmp_path / "app.yaml").write_text("x: !include inc.yaml\n", encoding="utf-8")
+        assert yaconfiglib.load(str(tmp_path / "app.yaml"), dialect="1.2") == {
+            "x": {"v": "no"}
+        }
+        loader = yaconfiglib.Loader(
+            base_dir=tmp_path, format_options={"yaml": {"dialect": "1.2"}}
+        )
+        assert loader.load("app.yaml") == {"x": {"v": "no"}}

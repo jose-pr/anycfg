@@ -6,7 +6,7 @@ reading its source. It ships inside the package and is self-contained. Developme
 documentation lives with the source at <https://github.com/jose-pr/yaconfiglib>.
 
 Everything public is importable from `yaconfiglib`, `yaconfiglib.formats`,
-`yaconfiglib.sources`, `yaconfiglib.exceptions` (also re-exported at the root) and
+`yaconfiglib.sources`, `yaconfiglib.policies`, `yaconfiglib.exceptions` (also re-exported at the root) and
 `yaconfiglib.testing`. Every other module starts with `_` and is private.
 
 `pip install yaconfiglib` brings pathapi, the path layer. Extras: `yaml` (PyYAML 6),
@@ -56,6 +56,10 @@ is always a path, never content. Each has an awaitable twin (see "Async").
   `text.encode(encoding)`). `obj` is serialized **before** the target is opened, so a
   failure leaves an existing file untouched. A trailing newline is ensured.
 
+Format options given to `load`/`loads` (or `Loader.load`'s documents) also reach
+every document of that format the load includes, so a document and its includes
+are read the same way.
+
 Decoding is strict UTF-8 by default, one leading BOM is dropped, and a decode failure
 is a `ParseError` naming the byte offset. An `encoding` must name a **text** codec:
 `zlib_codec`, `base64_codec` and other bytes-to-bytes codecs raise `ConfigValueError`
@@ -91,7 +95,6 @@ pointing here.
 
 `Loader(*, base_dir=None, policy=None, encoding="utf-8", merge="simple",
 merge_options=None, collect=None, key=None, recursive=False, bound_loops=True,
-path_filter=None,
 interpolate=False, inject_env=False, wrap=None, on_error=False,
 format_options=None, formats=None)`
 
@@ -101,7 +104,7 @@ format_options=None, formats=None)`
   — every document of every source, each finished on its own (interpolated, wrapped,
   hydrated); a `---` stream yields each of its documents.
 - `**overrides`: any of `policy`, `encoding`, `merge`, `merge_options`, `collect`,
-  `key`, `recursive`, `path_filter`, `interpolate`, `inject_env`, `wrap`,
+  `key`, `recursive`, `interpolate`, `inject_env`, `wrap`,
   `on_error`, `format_options` — for that call only (`policy=None` keeps the
   loader's). Anything else is `TypeError` (format options go in
   `format_options={"json": {...}}`). No sources is `TypeError`.
@@ -128,13 +131,6 @@ Settings:
 - `recursive` — `**` in a glob descends into directories. `bound_loops` — bound a `**`
   walk through a Windows junction loop (on by default; a POSIX directory symlink is
   never descended).
-- `path_filter` — `(path) -> bool`, asked about every path before it is read: a
-  top-level source, an include, a script, a glob pattern before it is expanded and
-  each match, as the pathapi `Path` that would be read. A falsy answer refuses it
-  with `ConfinementError` (offered to `on_error`; a refused match is named by its
-  pattern); an exception it raises propagates. A `str` source — top-level or from a
-  document — always becomes a `LocalPath`; any other `Path` (remote, in-memory)
-  only ever comes from the caller, so this is where a caller vets those.
 - `interpolate`, `inject_env` — see "Interpolation".
 - `wrap` — `None` returns plain data; `True` (or `DotAccessibleDict`) returns
   dot-accessible mappings; a callable is applied to the result. Ignored with `into=`.
@@ -217,7 +213,35 @@ their own: the merged top-level document is.
 sandbox=True, strict=False, confine_to=None, max_includes=1000, max_depth=64,
 max_bytes=64*1024*1024, command_timeout=60.0)` — frozen dataclass. **The default is
 the untrusted posture.** `Policy.trusted(**changes)` = commands and templates on,
-sandbox off. `Policy.untrusted(**changes)`, `.replace(**changes)`.
+sandbox off. `Policy.untrusted(**changes)`, `.replace(**changes)`; all three keep
+a subclass.
+
+**Subclass it for your own trust rules.** Three hooks, each asked only after the
+fields allowed the action, so a subclass can only narrow; a falsy answer refuses:
+
+- `check_path(path) -> bool` — every path before it is read (top-level source,
+  include, script file, glob pattern before expansion, each match), as the pathapi
+  `Path` that would be read; refusal `ConfinementError` (offered to `on_error`; a
+  refused match is named by its pattern). A `str` source — top-level or from a
+  document — is always a `LocalPath`; any other `Path` comes only from the caller.
+- `check_command(command) -> bool` — a command source's text or a script's path,
+  once `allow_commands` is on; refusal `CommandsDisabledError`.
+- `check_template(name, engine) -> bool` — a template file and its tplx engine
+  class, once `allow_templates` and the sandbox allow it; refusal
+  `TemplatesDisabledError`.
+
+**`yaconfiglib.policies`** holds mixins that stack by inheritance, each calling
+`super()`: `LocalPathsOnly` (only `LocalPath`/`MemPath`), `AllowedSuffixes`
+(`suffixes = {".yaml", ...}`, case-insensitive), `AllowedCommands`
+(`commands = {...}`, exact text), `AllowedEngines` (`engines = {"jinja"}` by
+default). Each overrides one hook and inherits the rest from `Policy`, so nothing
+has to implement every check. Settings are class attributes on the combined class;
+`Mixin.using(**settings)` returns the mixin carrying them, and
+`policies.compose(*mixins, name="ComposedPolicy", **settings)` combines several
+(`TypeError` for a non-`Policy` mixin or an unknown setting). **`policy=` also takes
+a list or tuple of mixin classes** (on `Loader`, per call, and on `load`/`loads`/
+`aload`): they are applied to the default policy in that order —
+`policy=[policies.LocalPathsOnly, policies.AllowedSuffixes.using(suffixes={".yaml"})]`.
 
 A document can never change the policy; includes and command output run under the
 policy of the load that reached them. Refusals are `PolicyError` subclasses (also
@@ -291,7 +315,12 @@ Built-in formats and their dialects:
   `parse_int`. Dump options: `indent` (2), `sort_keys`, `ensure_ascii` (False),
   `separators`, `default`.
 - **`yaml`** (`.yaml`, `.yml`; alias `yml`; extra `yaml`) — PyYAML's safe loader,
-  YAML 1.1 (`yes`/`no`/`on`/`off` are booleans, `0755` is octal, `1.10` is `1.1`).
+  YAML 1.1 by default (`yes`/`no`/`on`/`off` are booleans, `0755` is octal, `1.10`
+  is `1.1`, `2024-01-02` a date). Load option `dialect="1.2"` reads plain scalars by
+  the YAML 1.2 core schema: only `true`/`false` (three spellings) are booleans,
+  `0755` is 755, `0o755` octal, `0x1F` hex, `.inf`/`.nan` floats; dates, `yes`,
+  `1_000` and `1:30` stay strings; merge keys still work. Any other value is
+  `ConfigValueError`.
   **Duplicate keys raise** (a `<<:` merge key may still be overridden). Tags:
   `!include`, `!load`, `!delete`. Tags live on yaconfiglib's own `SafeLoader`
   subclass, so a plain `yaml.safe_load` never resolves them. `loads_all` reads `---`
@@ -321,8 +350,11 @@ Built-in formats and their dialects:
   decode `\n \r \t \" \\` and may span lines, single quotes are raw; an unquoted value
   ends at a `#` preceded by whitespace; only `\n` ends an entry (a form feed or U+2028
   in a value is data). A non-assignment line warns (naming the line number, never its
-  text) or raises with `strict=True`; an unterminated quote always raises. `dumps`
-  writes flat string values, double-quoted and escaped.
+  text) or raises with `strict=True`; an unterminated quote always raises. Values
+  are strings unless the load option `coerce` is set: `True` reads each **unquoted**
+  value by the YAML 1.2 core rules (`PORT=80` an int, `PORT="80"` still text), a
+  callable `(text) -> value` decides. `dumps` writes flat string values,
+  double-quoted and escaped.
 
 ## Sources (`yaconfiglib.sources`)
 
@@ -340,10 +372,13 @@ Built-in formats and their dialects:
   `max_bytes`. Format: `format`, else `name`'s suffix. An iterator loads once.
 - **`Data(data, name="")`** — Python data, deep-copied on read (any mapping,
   read-only ones included, becomes a `dict`).
-- **`Env(prefix="", *, nested=None, lowercase=False, environ=None)`** — environment
-  variables starting with `prefix`, prefix removed; `nested="__"` splits
-  `DB__PORT` into `{"DB": {"PORT": ...}}` and raises `ConfigValueError` naming both
-  variables when one is a value and another nests under it. Values stay strings.
+- **`Env(prefix="", *, nested=None, lowercase=False, coerce=False, environ=None)`**
+  — environment variables starting with `prefix`, prefix removed; `nested="__"`
+  splits `DB__PORT` into `{"DB": {"PORT": ...}}` and raises `ConfigValueError`
+  naming both variables when one is a value and another nests under it. Values stay
+  strings unless `coerce`: `True` reads each by the YAML 1.2 core rules (`80` an
+  int, `true` a bool, `null` `None`; `yes`, `0755` and the empty string stay text),
+  a callable `(text) -> value` decides itself; anything else is `TypeError`.
   Prefix matching is case-insensitive on Windows.
 - **`Command(command, *, format=None, timeout=<policy>, encoding=None)`** — runs
   `cmd://...`, `exec://...`, `sh://...` (or `cmd+json://...`) or a bare command line

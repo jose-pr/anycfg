@@ -6,6 +6,7 @@ import logging
 import re
 import typing as _ty
 
+from .._scalar import Coerce, coercer
 from ..exceptions import ConfigTypeError, ParseError
 from ._base import Format
 
@@ -100,13 +101,18 @@ class DotenvFormat(Format):
     text) and is skipped, or raises `ParseError` with ``strict=True``. An
     unterminated quote always raises.
 
+    Values are strings unless the load option ``coerce`` is set: `True` reads
+    each **unquoted** value by the YAML 1.2 core rules (``PORT=80`` an int,
+    ``DEBUG=true`` a bool, ``PORT="80"`` still text), a callable
+    ``(text) -> value`` decides itself.
+
     ``dumps`` writes a flat mapping of string values, double-quoted and
     escaped, so the round trip is exact.
     """
 
     name = "dotenv"
     suffixes = (".env",)
-    load_options = frozenset({"lowercase", "strict"})
+    load_options = frozenset({"lowercase", "strict", "coerce"})
 
     @staticmethod
     def claims_name(name: str) -> bool:
@@ -121,8 +127,10 @@ class DotenvFormat(Format):
         context: "_ty.Optional[LoadContext]" = None,
         lowercase: bool = False,
         strict: bool = False,
+        coerce: "Coerce" = False,
         **options: _ty.Any,
-    ) -> "_ty.Dict[str, str]":
+    ) -> "_ty.Dict[str, _ty.Any]":
+        convert = coercer(coerce)
         path = (context.name if context is not None else None) or None
         label = path or "<string>"
         text = data.replace("\r\n", "\n").replace("\r", "\n")
@@ -177,6 +185,8 @@ class DotenvFormat(Format):
                 position = tail_eol + 1
             else:
                 value = _scan_unquoted(raw[match.end() :])
+                if convert is not None:
+                    value = convert(value)
                 line += 1
                 position = eol + 1
 

@@ -309,3 +309,17 @@ class TestEncoding:
         source.write_bytes(b"A=caf\xe9\n")
         with pytest.raises(yaconfiglib.ParseError, match="byte 5"):
             yaconfiglib.load(str(source))
+
+
+class TestCoerce:
+    def test_unquoted_values_only(self):
+        text = 'PORT=80\nQUOTED="80"\nDEBUG=true\nWORD=yes\n'
+        assert yaconfiglib.loads(text, format="dotenv", coerce=True) == {
+            "PORT": 80,
+            "QUOTED": "80",
+            "DEBUG": True,
+            "WORD": "yes",
+        }
+
+    def test_strings_by_default(self):
+        assert yaconfiglib.loads("PORT=80\n", format="dotenv") == {"PORT": "80"}
