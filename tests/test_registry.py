@@ -464,8 +464,8 @@ class TestFormatClassesDirectly:
         with pytest.raises(TypeError):
             yaconfiglib.loads("{}", format=dict)
 
-    def test_format_is_required_for_loads_and_dumps(self):
-        with pytest.raises(TypeError):
+    def test_format_is_required_for_dumps_and_undeclared_loads(self):
+        with pytest.raises(yaconfiglib.UnsupportedFormatError):
             yaconfiglib.loads("{}")
         with pytest.raises(TypeError):
             yaconfiglib.dumps({})

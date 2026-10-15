@@ -119,6 +119,11 @@ replacement.
   `NamedTuple` written as a mapping. A bool no longer passes as a number, `Decimal`
   takes a float's shortest text, and a failing constructor raises
   `ConfigValueError`/`ConfigTypeError` instead of its own exception.
+- `loads()`/`loads_all()` without `format=` read a document that names its own
+  format — a `#!<format>` first line (removed before parsing) or a format's marker
+  (YAML's `%YAML`) — through the new `Format.claims_document` and
+  `formats.declared`; one that names none raises `UnsupportedFormatError`.
+  `sources.Text` takes the same route without `format=`.
 - `load()` reads one location: a glob matching no file or several raises
   `ConfigValueError`, and a list of sources is `TypeError`.
 - Type hooks: a classmethod `_load_(cls, value)` builds a type from configuration,

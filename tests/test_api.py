@@ -244,8 +244,8 @@ class TestLoadOptions:
 
 
 class TestLoads:
-    def test_format_is_required(self):
-        with pytest.raises(TypeError, match="format"):
+    def test_a_document_that_names_no_format_needs_format(self):
+        with pytest.raises(yaconfiglib.UnsupportedFormatError, match="format="):
             yaconfiglib.loads('{"a": 1}')
 
     def test_str(self):
@@ -351,8 +351,8 @@ class TestMultiDocument:
     def test_single_document_format_yields_one(self):
         assert list(yaconfiglib.loads_all('{"a": 1}', format="json")) == [{"a": 1}]
 
-    def test_loads_all_requires_format(self):
-        with pytest.raises(TypeError):
+    def test_loads_all_needs_a_format_or_a_declared_one(self):
+        with pytest.raises(yaconfiglib.UnsupportedFormatError):
             yaconfiglib.loads_all(self.STREAM)
 
 
@@ -731,3 +731,54 @@ class TestLoadAllInto:
             _Doc(1),
             _Doc(2),
         ]
+
+
+class TestDeclaredFormat:
+    """``loads`` without ``format=``: the document names its own, or it is an error."""
+
+    def test_shebang_names_the_format_and_is_dropped(self):
+        assert yaconfiglib.loads('#!json\n{"a": 1}') == {"a": 1}
+        assert yaconfiglib.loads('#!/usr/bin/env json\n{"a": 2}') == {"a": 2}
+
+    def test_bytes_and_a_byte_order_mark(self):
+        assert yaconfiglib.loads(b'\xef\xbb\xbf#!json\n{"a": 3}') == {"a": 3}
+
+    @needs_yaml
+    def test_an_alias_and_yaml_directive(self):
+        assert yaconfiglib.loads("#!yml\na: 1\n") == {"a": 1}
+        assert yaconfiglib.loads("%YAML 1.1\n---\na: 2\n") == {"a": 2}
+        assert list(yaconfiglib.loads_all("#!yaml\na: 1\n---\na: 2\n")) == [
+            {"a": 1},
+            {"a": 2},
+        ]
+
+    def test_nothing_is_guessed_from_content(self):
+        for text in ('{"a": 1}', "[s]\nk = v\n", "A=1\n", "#!nope\n{}"):
+            with pytest.raises(yaconfiglib.UnsupportedFormatError):
+                yaconfiglib.loads(text)
+
+    def test_an_explicit_format_wins_and_keeps_the_text(self):
+        # With format= nothing is claimed or removed: a #! line is document text.
+        assert yaconfiglib.loads("#!yaml\nA=1\n", format="dotenv") == {"A": "1"}
+
+    def test_text_source_without_format(self):
+        assert yaconfiglib.Loader().load(Text('#!json\n{"a": 4}')) == {"a": 4}
+
+    def test_a_format_can_claim_its_own_marker(self):
+        class Magic(Format):
+            name = "magicfmt"
+
+            @classmethod
+            def claims_document(cls, data):
+                text = data.decode() if isinstance(data, bytes) else data
+                return text.startswith("MAGIC1") or super().claims_document(data)
+
+            def loads(self, data, /, *, context=None, **options):
+                return {"body": data.split("\n", 1)[1]}
+
+        yaconfiglib.formats.register_format(Magic)
+        try:
+            assert yaconfiglib.loads("MAGIC1\nhello") == {"body": "hello"}
+            assert yaconfiglib.loads(b"#!magicfmt\nx\ny") == {"body": "y"}
+        finally:
+            yaconfiglib.formats.unregister_format("magicfmt")

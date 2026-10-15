@@ -35,11 +35,15 @@ is always a path, never content. Each has an awaitable twin (see "Async").
   `options` go to the format and are checked against its `load_options` (an unknown
   one is `TypeError`). `into=` hydrates the result (see `hydrate`). `load(None)` is
   `TypeError`, `load("")` is `ValueError`, `load(b"...")` is `TypeError`.
-- **`loads(data, /, *, format, encoding="utf-8", policy=None, into=None, **options) -> Any`**
-  — `data` is `str`, or `bytes`/`bytearray` decoded with `encoding`. `format=` is
-  required. Touches no file except through an `!include` (policy-governed, resolved
-  against the working directory).
-- **`load_all(source, /, ...)`** / **`loads_all(data, /, *, format, ...)`** `-> Iterator[Any]`
+- **`loads(data, /, *, format=None, encoding="utf-8", policy=None, into=None, **options) -> Any`**
+  — `data` is `str`, or `bytes`/`bytearray` decoded with `encoding`. Without
+  `format=` the document must name its own (`formats.declared`): a `#!<format>`
+  first line (`#!json`, `#!/usr/bin/env yaml`; removed before parsing) or a format's
+  own marker (YAML's `%YAML` directive); such a format is limited to the document
+  formats; a document naming none is `UnsupportedFormatError`, and nothing is guessed
+  from content. With `format=`, a `#!` line is document text. Touches no file except
+  through an `!include` (policy-governed, resolved against the working directory).
+- **`load_all(source, /, ...)`** / **`loads_all(data, /, *, format=None, ...)`** `-> Iterator[Any]`
   — every document of a multi-document source; one for a single-document format.
   Both take `into=`, which builds each document.
 - **`dumps(obj, /, *, format, **options) -> str`** — `format=` required. `obj` is
@@ -284,7 +288,11 @@ policy of the load that reached them. Refusals are `PolicyError` subclasses (als
   (optional). Never touches files. Raise `ParseError` for a malformed document,
   translated and raised **outside** the `except` block so neither `__cause__` nor
   `__context__` keeps the parser's error, and with no document text. An optional `claims_name(name) -> bool`
-  static method claims names a suffix cannot describe. A format's third-party
+  static method claims names a suffix cannot describe. Classmethod
+  **`claims_document(data) -> bool`** (`data` the whole document, `str` or `bytes`)
+  says whether a document names this format: by default a `#!` line naming it or an
+  alias; a format with its own marker overrides it and calls `super()` (YAML adds
+  `%YAML`). It decides from the document's start, never by trying to parse. A format's third-party
   dependency is imported inside its methods, so the class always imports and stays
   listed; a missing one raises `MissingDependencyError` naming the extra.
 - **`capabilities(fmt) -> frozenset`** — `{"load"}` plus `"load_all"`/`"dump"` when
@@ -298,7 +306,11 @@ policy of the load that reached them. Refusals are `PolicyError` subclasses (als
 - **`names()`**, **`get(name, *, allowed=None)`** (aliases, case-insensitive;
   `UnsupportedFormatError` listing the names), **`for_filename(name, *, allowed=None)`**
   / **`find_for_filename(...)`** (longest suffix wins, case-insensitive, then
-  `claims_name`; linear in the name), **`document_formats()`**.
+  `claims_name`; linear in the name), **`document_formats()`**,
+  **`declared(data) -> (name | None, data)`** — asks every format's
+  `claims_document`, highest priority first; the first claim names the format and a
+  leading `#!` line is removed; a `#!` line no format claims still gives its name
+  (the lookup then refuses it, listing the registered ones).
 - Entry-point group **`yaconfiglib.formats`**: `name = "pkg.module:FormatClass"`.
   Read lazily; an entry point cannot take a built-in name; a broken one is logged
   and skipped. Its formats are not reachable from documents unless named in
@@ -366,7 +378,8 @@ Built-in formats and their dialects:
   default for its includes — `identity` is the cycle/dedup key; `parsed` means `data`
   is already data; a `format` a source read from data (not `trusted_format`) is
   limited to the document formats.
-- **`Text(data, *, format, name="")`** — in-memory content.
+- **`Text(data, *, format=None, name="")`** — in-memory content; without `format`,
+  the content names its own (as `loads` does).
 - **`Chunks(chunks, *, format=None, name="")`** — content arriving in pieces: any
   iterable of `str` or `bytes` (not mixed), joined as read and stopped past
   `max_bytes`. Format: `format`, else `name`'s suffix. An iterator loads once.
@@ -387,7 +400,8 @@ Built-in formats and their dialects:
   path is refused), `.ps1` via `pwsh`/`powershell -NoProfile -NonInteractive -File`,
   `.sh` via `sh` on Windows and directly on POSIX when executable with `#!` (else
   `/bin/sh`); the path is made absolute first. Output format, in order: `format=`,
-  the `+fmt` of the scheme, a `#!<format>` first output line (dropped), a script's
+  the `+fmt` of the scheme, what the output names itself (`formats.declared`: a
+  `#!<format>` first line, dropped, or a marker such as `%YAML`), a script's
   inner suffix (`secrets.json.sh`), then the loader's or include's `format=`; none
   raises `ConfigValueError` — output is never sniffed. A command's output format,
   however given, is limited to the formats documents may select (the output is

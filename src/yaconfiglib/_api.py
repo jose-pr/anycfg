@@ -151,11 +151,24 @@ def load_all(
     )
 
 
+def _text(data: _ty.Any, cls: "_ty.Optional[_ty.Type[_formats.Format]]") -> Text:
+    """*data* as a source: in *cls*, or in the format it names itself."""
+    if cls is not None:
+        return Text(data, format=cls.name)
+    name, _rest = _formats.declared(data)
+    if name is None:
+        raise UnsupportedFormatError(
+            "loads() needs format=, or a document that names its own: a "
+            "#!<format> first line (#!json) or a %YAML directive"
+        )
+    return Text(data)
+
+
 def loads(
     data: _ty.Union[str, bytes, bytearray],
     /,
     *,
-    format: FormatLike,
+    format: FormatLike = None,
     encoding: str = "utf-8",
     policy: "_ty.Optional[Policy]" = None,
     into: _ty.Any = None,
@@ -163,19 +176,23 @@ def loads(
 ) -> _ty.Any:
     """Parse one document from *data* in *format*.
 
-    *data* is `str`, or `bytes` decoded with *encoding*. Touches no file —
-    except through an include, which *policy* governs and which resolves
-    against the working directory.
+    *data* is `str`, or `bytes` decoded with *encoding*. Without *format*, the
+    document must name its own: a ``#!<format>`` first line (``#!json``,
+    ``#!/usr/bin/env yaml``; removed before parsing) or a format's marker such
+    as YAML's ``%YAML`` directive. Nothing is guessed from content that merely
+    parses. Touches no file — except through an include, which *policy*
+    governs and which resolves against the working directory.
 
     Raises:
+        UnsupportedFormatError: Without *format*, when the document names none.
         ParseError: When *data* is not valid *format*.
         TypeError: When *data* is not text or bytes, or for an unknown option.
     """
-    cls = _format_class(format)
+    cls = None if format is None else _format_class(format)
     if not isinstance(data, (str, bytes, bytearray)):
         raise TypeError(f"loads() takes str or bytes, not {type(data).__name__}")
     return load(
-        Text(data, format=cls.name),
+        _text(data, cls),
         format=cls,
         encoding=encoding,
         policy=policy,
@@ -188,18 +205,18 @@ def loads_all(
     data: _ty.Union[str, bytes, bytearray],
     /,
     *,
-    format: FormatLike,
+    format: FormatLike = None,
     encoding: str = "utf-8",
     policy: "_ty.Optional[Policy]" = None,
     into: _ty.Any = None,
     **options: _ty.Any,
 ) -> _ty.Iterator[_ty.Any]:
     """Yield every document in *data*; otherwise as :func:`loads`."""
-    cls = _format_class(format)
+    cls = None if format is None else _format_class(format)
     if not isinstance(data, (str, bytes, bytearray)):
         raise TypeError(f"loads_all() takes str or bytes, not {type(data).__name__}")
     return load_all(
-        Text(data, format=cls.name),
+        _text(data, cls),
         format=cls,
         encoding=encoding,
         policy=policy,

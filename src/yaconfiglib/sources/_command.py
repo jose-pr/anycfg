@@ -166,14 +166,6 @@ def _run(
     return stdout
 
 
-def _shebang_format(line: str) -> "_ty.Optional[str]":
-    """The format a ``#!`` first line of output names: ``#!json``, ``#!/usr/bin/env yaml``."""
-    words = line[2:].split()
-    if not words:
-        return None
-    return words[-1].replace("\\", "/").rsplit("/", 1)[-1].lower().lstrip(".") or None
-
-
 class Command(Source):
     """Run a command and parse its standard output.
 
@@ -275,16 +267,11 @@ class Command(Source):
         while text.startswith("\n"):
             text = text[1:]
 
-        found = self.format
-        if text.startswith("#!"):
-            first, _, rest = text.partition("\n")
-            shebang = _shebang_format(first)
-            if found is None:
-                found = shebang
-            text = rest
-        if found is None and self._script is not None:
-            from .. import formats
+        from .. import formats
 
+        named, text = formats.declared(text)
+        found = self.format if self.format is not None else named
+        if found is None and self._script is not None:
             stem = os.path.splitext(os.path.basename(self._script))[0]
             claimed = formats.find_for_filename(stem)
             found = claimed.name if claimed is not None else None

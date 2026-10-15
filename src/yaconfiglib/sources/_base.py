@@ -121,13 +121,20 @@ class Data(Source):
 class Text(Source):
     """In-memory content in a named format: ``Text("a: 1", format="yaml")``.
 
-    *data* is `str` or `bytes` (decoded with the load's encoding). Relative
-    includes inside it resolve against the loader's ``base_dir``. *name* appears
-    in messages and is the merge key for ``collect="hash"``.
+    *data* is `str` or `bytes` (decoded with the load's encoding). Without
+    *format*, the content must name its own: a ``#!<format>`` first line (which
+    is removed) or a format's marker such as YAML's ``%YAML`` directive; such a
+    format is limited to the ones documents may select. Relative includes
+    inside it resolve against the loader's ``base_dir``. *name* appears in
+    messages and is the merge key for ``collect="hash"``.
     """
 
     def __init__(
-        self, data: "_ty.Union[str, bytes]", *, format: str, name: str = ""
+        self,
+        data: "_ty.Union[str, bytes]",
+        *,
+        format: "_ty.Optional[str]" = None,
+        name: str = "",
     ) -> None:
         if not isinstance(data, (str, bytes, bytearray)):
             raise TypeError(f"Text takes str or bytes, not {type(data).__name__}")
@@ -140,13 +147,18 @@ class Text(Source):
         return self._name
 
     def read(self, context: "LoadContext") -> Payload:
-        return Payload(
-            self.data,
-            name=self._name,
-            identity=f"text:{id(self)}",
-            format=self.format,
-            trusted_format=True,
-        )
+        if self.format is not None:
+            return Payload(
+                self.data,
+                name=self._name,
+                identity=f"text:{id(self)}",
+                format=self.format,
+                trusted_format=True,
+            )
+        from .. import formats
+
+        named, data = formats.declared(self.data)
+        return Payload(data, name=self._name, identity=f"text:{id(self)}", format=named)
 
     def __repr__(self) -> str:
         return f"Text(format={self.format!r}, name={self._name!r})"

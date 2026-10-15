@@ -27,7 +27,7 @@ from .._scalar import (
     core_int,
     resolved,
 )
-from ._base import Format
+from ._base import Format, head_text
 
 from .._context import LoadContext
 
@@ -322,6 +322,12 @@ class YAMLFormat(Format):
     aliases = ("yml",)
     suffixes = (".yaml", ".yml")
     load_options = frozenset({"dialect"})
+
+    @classmethod
+    def claims_document(cls, data: _ty.Union[str, bytes]) -> bool:
+        """A ``#!yaml`` line, or a document that starts with a ``%YAML`` directive."""
+        return super().claims_document(data) or head_text(data).startswith("%YAML")
+
     dump_options = frozenset(
         {
             "indent",

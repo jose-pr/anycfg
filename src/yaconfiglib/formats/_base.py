@@ -51,6 +51,20 @@ class Format:
     load_options: _ty.ClassVar[_ty.FrozenSet[str]] = frozenset()
     dump_options: _ty.ClassVar[_ty.FrozenSet[str]] = frozenset()
     binary: _ty.ClassVar[bool] = False
+    # Optional static method, looked up with getattr (claims_document, below, is always there):
+    #   claims_name(name) -> bool  a file name no suffix describes (dotenv's .env.<stage>)
+
+    @classmethod
+    def claims_document(cls, data: _ty.Union[str, bytes]) -> bool:
+        """Whether *data*, a whole document as `str` or `bytes`, names this format.
+
+        By default: a ``#!`` first line naming it or one of its aliases
+        (``#!json``, ``#!/usr/bin/env yaml``). A format whose documents carry
+        their own marker (YAML's ``%YAML``) overrides this, calling ``super()``.
+        It must decide from the document's start and never by trying to parse.
+        """
+        name = shebang_name(data)
+        return name is not None and (name == cls.name or name in cls.aliases)
 
     def loads(
         self,
@@ -92,6 +106,44 @@ class Format:
 
 def _overrides(cls: type, method: str) -> bool:
     return getattr(cls, method) is not getattr(Format, method)
+
+
+#: How much of a document a marker test looks at.
+HEAD = 256
+
+
+def head_text(data: _ty.Union[str, bytes]) -> str:
+    """The start of *data* as text, one BOM dropped; bytes are read as ASCII."""
+    if isinstance(data, (bytes, bytearray)):
+        return bytes(data[:HEAD]).lstrip(b"\xef\xbb\xbf").decode("ascii", "replace")
+    return data[:HEAD].lstrip("\ufeff")
+
+
+def shebang_name(data: _ty.Union[str, bytes]) -> "_ty.Optional[str]":
+    """The format a ``#!`` first line names (``#!json``, ``#!/usr/bin/env yaml``)."""
+    head = head_text(data)
+    if not head.startswith("#!"):
+        return None
+    words = head.partition("\n")[0][2:].split()
+    if not words:
+        return None
+    return words[-1].replace("\\", "/").rsplit("/", 1)[-1].lower().lstrip(".") or None
+
+
+def without_shebang(data: _ty.Any) -> _ty.Any:
+    """*data* without a leading ``#!`` line, which no parser should see."""
+    if isinstance(data, (bytes, bytearray)):
+        data = bytes(data)
+        start = 3 if data.startswith(b"\xef\xbb\xbf") else 0
+        if not data.startswith(b"#!", start):
+            return data
+        newline = data.find(b"\n")
+        return b"" if newline < 0 else data[newline + 1 :]
+    start = 1 if data.startswith("\ufeff") else 0
+    if not data.startswith("#!", start):
+        return data
+    newline = data.find("\n")
+    return "" if newline < 0 else data[newline + 1 :]
 
 
 def capabilities(fmt: "_ty.Union[Format, _ty.Type[Format]]") -> _ty.FrozenSet[str]:

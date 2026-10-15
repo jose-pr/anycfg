@@ -20,7 +20,7 @@ import threading
 import typing as _ty
 
 from ..exceptions import UnsupportedFormatError
-from ._base import Format, capabilities
+from ._base import Format, capabilities, shebang_name, without_shebang
 
 __all__ = [
     "Format",
@@ -32,6 +32,7 @@ __all__ = [
     "for_filename",
     "find_for_filename",
     "document_formats",
+    "declared",
     "ENTRY_POINT_GROUP",
 ]
 
@@ -335,6 +336,29 @@ def _first_reachable(
             return entry.cls
     _refuse_unreachable(claims[0], allowed, asked)
     return claims[0].cls
+
+
+def declared(data: _ty.Any) -> "_ty.Tuple[_ty.Optional[str], _ty.Any]":
+    """``(format name or None, data)``: the format a document names for itself.
+
+    Every registered format is asked, highest priority first, through its
+    ``claims_document(data)``: a ``#!<format>`` first line, or a marker of the
+    format's own such as YAML's ``%YAML`` directive. The first that claims the
+    document names it. A leading ``#!`` line is removed, so no parser sees it.
+    Nothing is guessed from content that merely parses. A ``#!`` line naming no
+    registered format still gives that name, for the lookup to refuse; `None`
+    when the document names nothing.
+    """
+    _ensure_loaded()
+    entries = sorted(_tables.entries.values(), key=lambda entry: -entry.cls.priority)
+    for entry in entries:
+        if entry.cls.claims_document(data):
+            return entry.cls.name, without_shebang(data)
+    named = shebang_name(data)
+    if named is not None:
+        # Named, but by no registered format: get() then says so, listing them.
+        return named, without_shebang(data)
+    return None, data
 
 
 def for_filename(

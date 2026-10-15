@@ -32,9 +32,21 @@ except yaconfiglib.UnsupportedFormatError as error:
 config = yaconfiglib.load("settings.conf", format="ini")
 ```
 
-`loads()` and `dumps()` take content, which has no name, so `format=` is
-required there. An open file is chosen for by its `name`; a stream without a
-real one (`sys.stdin`, `io.StringIO`) needs `format=`.
+`loads()` and `dumps()` take content, which has no name. `dumps()` needs
+`format=`; `loads()` takes it, or reads a document that **names its own
+format**:
+
+```python
+yaconfiglib.loads('#!json\n{"port": 80}')          # a #! first line, removed before parsing
+yaconfiglib.loads("%YAML 1.1\n---\nport: 80\n")    # YAML's own directive
+```
+
+Every registered format is asked, through its `claims_document(data)`; a
+format with a marker of its own (as YAML has `%YAML`) recognises it there.
+Nothing is guessed from content that merely parses: a document that names no
+format raises `UnsupportedFormatError`. An open file is chosen for by its
+`name`; a stream without a real one (`sys.stdin`, `io.StringIO`) needs
+`format=`.
 
 ## Decoding and errors
 
