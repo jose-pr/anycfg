@@ -271,7 +271,10 @@ policy of the load that reached them. Refusals are `PolicyError` subclasses (als
   Read lazily; an entry point cannot take a built-in name; a broken one is logged
   and skipped. Its formats are not reachable from documents unless named in
   `Loader(formats=...)` (names or `Format` classes). A format registered in code
-  after a `Loader` was built is reachable from its documents.
+  after a `Loader` was built is reachable from its documents. An entry point may
+  claim a built-in suffix at a higher `priority`: it then reads the caller's own
+  files of that name (`load("app.json")`), while a document's include of the same
+  name still gets the highest-priority format documents may select.
 
 Built-in formats and their dialects:
 
