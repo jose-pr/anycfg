@@ -24,6 +24,7 @@ import uuid
 from argparse import Namespace
 
 from . import exceptions as _errors
+from ._merge import INHERIT
 from ._scalar import ScalarText, resolved
 from .exceptions import ConfigTypeError, ConfigValueError
 
@@ -294,7 +295,10 @@ class _Run:
         self.memo: dict = {}
 
     def merge(self, cls: typing.Any, objects: tuple) -> typing.Any:
-        objects = tuple(obj for obj in objects if obj is not None)
+        # INHERIT, like None, is no opinion: the earlier layer stands.
+        objects = tuple(
+            obj for obj in objects if obj is not None and obj is not INHERIT
+        )
         if not objects:
             return None
         if not any(isinstance(obj, _CONTAINERS) for obj in objects):

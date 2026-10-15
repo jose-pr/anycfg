@@ -120,6 +120,17 @@ def _construct_delete(loader: _ty.Any, node: _ty.Any) -> object:
     return DELETE
 
 
+def _construct_inherit(loader: _ty.Any, node: _ty.Any) -> object:
+    """``!inherit``: keep this key's earlier value when merged over another."""
+    from .._merge import INHERIT
+
+    context = getattr(loader, "_yaconfiglib_context", None)
+    state = getattr(context, "_state", None)
+    if state is not None:
+        state.deletes = True  # a marker to prune if nothing replaces it
+    return INHERIT
+
+
 def _classes_for() -> "_ty.Tuple[type, type]":
     """yaconfiglib's own SafeLoader and SafeDumper subclasses, built on first use.
 
@@ -199,6 +210,7 @@ def _classes_for() -> "_ty.Tuple[type, type]":
         for tag in _INCLUDE_TAGS:
             _Loader.add_constructor(tag, _construct_include)
         _Loader.add_constructor("!delete", _construct_delete)
+        _Loader.add_constructor("!inherit", _construct_inherit)
 
         class _Dumper(yaml.SafeDumper):
             pass

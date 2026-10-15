@@ -775,3 +775,59 @@ class TestNamedTuples:
         proxy = types.MappingProxyType({1: "a"})
         rebuilt = _merge._mapping_with(proxy, {1: "b", 2: "c"})
         assert dict(rebuilt) == {1: "b", 2: "c"}
+
+
+class TestNullsAndInherit:
+    BASE = {"a": 1, "b": 2, "c": 3}
+    OVER = {"a": None, "b": yaconfiglib.INHERIT, "d": yaconfiglib.INHERIT}
+
+    @pytest.mark.parametrize("strategy", ["simple", "substitute", "deep"])
+    def test_null_keeps_by_default(self, strategy):
+        assert Loader(merge=strategy).load(self.BASE, self.OVER) == self.BASE
+
+    @pytest.mark.parametrize("strategy", ["simple", "substitute", "deep"])
+    def test_nulls_replace_and_inherit_keeps(self, strategy):
+        loader = Loader(merge=strategy, merge_options={"nulls": "replace"})
+        assert loader.load(self.BASE, self.OVER) == {"a": None, "b": 2, "c": 3}
+
+    def test_nested_and_in_lists(self):
+        base = {"db": {"host": "h", "port": 1}, "xs": [1]}
+        over = {
+            "db": {"host": None, "port": yaconfiglib.INHERIT},
+            "xs": [2, yaconfiglib.INHERIT],
+        }
+        loader = Loader(merge="deep", merge_options={"nulls": "replace"})
+        assert loader.load(base, over) == {
+            "db": {"host": None, "port": 1},
+            "xs": [1, 2],
+        }
+
+    def test_a_whole_document_of_inherit_keeps_the_earlier_one(self):
+        assert deep({"a": 1}, yaconfiglib.INHERIT) == {"a": 1}
+
+    def test_alone_it_is_pruned(self):
+        assert Loader().load({"a": 1, "b": yaconfiglib.INHERIT}) == {"a": 1}
+
+    def test_unknown_nulls_choice(self):
+        with pytest.raises(yaconfiglib.ConfigValueError, match="nulls="):
+            Loader(merge_options={"nulls": "x"}).load({"a": 1}, {"a": 2})
+
+    def test_survives_copy_and_pickle(self):
+        import pickle
+
+        assert copy.deepcopy(yaconfiglib.INHERIT) is yaconfiglib.INHERIT
+        assert pickle.loads(pickle.dumps(yaconfiglib.INHERIT)) is yaconfiglib.INHERIT
+
+    @pytest.mark.usefixtures("needs_yaml")
+    def test_yaml_tag(self):
+        from yaconfiglib.sources import Text
+
+        loader = Loader(merge_options={"nulls": "replace"})
+        result = loader.load(
+            Text("a: 1\nb: 2\n", format="yaml"),
+            Text("a: ~\nb: !inherit\nn: !inherit\n", format="yaml"),
+        )
+        assert result == {"a": None, "b": 2}
+
+    def test_typed_merge_treats_it_as_no_opinion(self):
+        assert yaconfiglib.typed_merge(int, 1, yaconfiglib.INHERIT) == 1

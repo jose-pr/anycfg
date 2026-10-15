@@ -35,7 +35,7 @@ from ._hydrate import (
     typed_merge,
 )
 from ._loader import LoadEvent, Loader
-from ._merge import DELETE, Merge, merge_strategies, register_merge
+from ._merge import DELETE, INHERIT, Merge, merge_strategies, register_merge
 from ._templating import Interpolator, TemplateInterpolator, VarsInterpolator
 from .exceptions import (
     BudgetExceededError,
@@ -79,6 +79,7 @@ __all__ = [
     "LoadContext",
     # merging and typed results
     "DELETE",
+    "INHERIT",
     "Merge",
     "register_merge",
     "merge_strategies",

@@ -414,6 +414,10 @@ the active loader — `ConfigValueError` without one (a direct `Format.loads` ca
 
 - **`DELETE`** — set a key to it in an overriding document to remove the key
   (YAML: `key: !delete`); markers left in a result are pruned.
+- **`INHERIT`** — set a key to it to keep the earlier value (YAML: `key: !inherit`);
+  a key no earlier document set is left out. It is what `None` means by default, said
+  explicitly, and the only "no opinion" once `nulls="replace"`. As a whole document,
+  or a layer of `typed_merge`, it is no opinion too; markers left are pruned.
 - Built-in strategies (by name): `simple` (top-level keys update; everything else
   replaces), `substitute` (mappings recurse; lists replace), `deep` (mappings
   recurse; lists extend with items not already present — the same **type** and value,
@@ -421,7 +425,10 @@ the active loader — `ConfigValueError` without one (a direct `Format.loads` ca
   in distinct nodes; `mergelists=True` merges mappings at the same index that share a
   key; mappings in a list are never de-duplicated).
 - Rules for all: a leaf (not a mapping or list) replaces; a shape change replaces;
-  **`None` means "no opinion"** (the earlier value is kept; a new key gets `None`); a
+  **`None` means "no opinion"** (the earlier value is kept; a new key gets `None`) —
+  unless the merge option **`nulls="replace"`** (`merge_options={"nulls":
+  "replace"}`, also in an include's `merge_options`) makes it set the key to `None`;
+  any other `nulls` value is `ConfigValueError`; a
   mapping overridden by a non-empty list of mappings folds them in (`substitute`,
   `deep`). **Copy-on-write**: inputs are never modified; the result may share
   unchanged parts with them. `memo` is internal (aliasing and cycles); a custom
@@ -643,9 +650,11 @@ rendered text carries a `render` frame.
   `loads` or `sources.Text`.
 - A pathapi `Path` source is used as given and never joined to `base_dir`; a
   relative `LocalPath` object therefore resolves against the working directory.
-- `None` in an overriding document keeps the earlier value. Use `DELETE`
-  (`!delete`) to remove a key.
-- YAML is 1.1: quote `yes`, `no`, `on`, `off`, `0755` and `1.10` to keep them strings.
+- `None` in an overriding document keeps the earlier value (`nulls="replace"` to make
+  it set `None`; `INHERIT`/`!inherit` always keeps). Use `DELETE` (`!delete`) to
+  remove a key.
+- YAML is 1.1 by default: quote `yes`, `no`, `on`, `off`, `0755` and `1.10` to keep
+  them strings, or load with `dialect="1.2"`.
 - Includes are on by default but not confined. For a document you did not write,
   set `Policy(confine_to=...)` and keep the default sandbox.
 - `Loader.load` merges every document of a multi-document YAML file in order;
