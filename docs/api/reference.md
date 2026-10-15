@@ -1,14 +1,25 @@
 # API Reference
 
-Generated from docstrings, organized by area:
+Generated from the docstrings. Everything public is importable from
+`yaconfiglib`, `yaconfiglib.formats`, `yaconfiglib.sources`,
+`yaconfiglib.exceptions` (also re-exported at the root) and
+`yaconfiglib.testing`; every other module starts with `_` and is private.
 
-- **[Loader](loader.md)** — `ConfigLoader`, `DotAccessibleDict`,
-  `ConfigLoaderMergeMethod`, and the module-level `load`/`loads`/`dump`/`dumps`.
-- **[Backends](backends.md)** — the `ConfigBackend` base contract and every
-  built-in format backend (YAML, TOML, JSON, INI, dotenv, env, command,
-  python, jinja2).
-- **[Errors](errors.md)** — the `ConfigError` family (each class also the
-  builtin exception it raised before) and `load_error_types()` for a single
-  `except` clause.
-- **[Utilities](utils.md)** — merge strategies, Jinja2 interpolation
-  helpers, and source discovery.
+- **[Loading](loading.md)** — `load`, `loads`, `load_all`, `loads_all`,
+  `dump`, `dumps`, the layered `Loader` and the `LoadEvent` its `on_error`
+  receives.
+- **[Policy and context](policy.md)** — `Policy`, the trust settings of a
+  load, and `LoadContext`, what a format or source sees of it.
+- **[Formats](formats.md)** — the `Format` base class and the registry.
+- **[Sources](sources.md)** — `Source`, `Payload`, `Text`, `Data`, `Env`,
+  `Command` and the scheme registry.
+- **[Merging and typed results](merging.md)** — `DELETE`, `register_merge`,
+  `hydrate`, `dehydrate`, `typed_merge` and its hooks, `DotAccessibleDict`.
+- **[Interpolation](templating.md)** — the `Interpolator` protocol and
+  `TemplateInterpolator`.
+- **[Exceptions](exceptions.md)** — the `ConfigError` family.
+- **[Testing](testing.md)** — `FormatContract`, the suite every format
+  passes.
+
+The installed package also carries `yaconfiglib/AGENTS.md`, a one-file header
+of every public name with its signature, defaults and gotchas.

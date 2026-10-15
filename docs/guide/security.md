@@ -1,301 +1,260 @@
-# Security & the trust model
+# Security
 
-yaconfiglib is powerful because a configuration document can *do* things:
-pull in other files, run commands, and interpolate expressions. That power
-means **loading a configuration file is equivalent to trusting whoever wrote
-it**. This page explains the trust model and the two controls that harden it
-for untrusted input.
+A configuration document can do more than hold values: it can include other
+files, and — when you allow it — run commands and render templates. What a load
+may do beyond parsing what you named is its **policy**, a
+`yaconfiglib.Policy`, and **the default policy is the untrusted posture**.
 
-## Configs are code (by default)
+## The trust model
 
-With the default `allow_commands=True`, that includes **every** `.sh`, `.bat`,
-`.ps1` or `.cmd` file a glob matches — a directory of configs with one script
-in it runs that script. The script's own *path* is handled by the interpreter
-rather than parsed by a shell, so a name containing `&`, `;` or a space cannot
-inject a second command; that narrows the blast radius but does not change the
-rule. Set `allow_commands=False` for untrusted trees.
+With the default policy, a load:
 
-These features execute code, or let a document decide what gets read, as a
-side effect of loading:
+- reads the sources you named and parses them;
+- follows `!include`, so a document can read other files the process can read
+  — unless you [confine](#confining-reads) it;
+- interpolates values, when you ask for interpolation, in tplx's sandbox;
+- refuses to run a command or render a template file.
 
-- **Command sources.** A source matching `cmd://`, `exec://`, `sh://`, a
-  `*+fmt://` variant, or a `.sh`/`.bat`/`.ps1`/`.cmd` file runs through the
-  shell (see [Backends → Commands](backends.md#commands-and-scripts)). Crucially
-  this composes with [`!include`](includes.md): any YAML you load may contain
-  `key: !include 'cmd://<anything>'`.
-- **Interpolation.** With `interpolate=True`, every string value is rendered as
-  a Jinja2 template. In a normal Jinja environment a hostile string can reach
-  Python internals via attribute traversal (server-side template injection).
-- **Templated sources.** A `.j2`/`.jinja2` source is rendered as a Jinja2
-  template before it is parsed, regardless of `interpolate`.
-- **Backend selection by name.** An `!include` target is always auto-detected
-  from its name, and an in-memory `#!<name>` document picks its backend from
-  that name, so a document can choose which backend reads what it includes.
-
-For **trusted, local configuration** — the common case — the defaults are fine.
-For **configuration from an untrusted source**, use the controls below.
-
-## `allow_commands=False` — block command execution
+Configuration you wrote yourself can do more, and says so explicitly:
 
 ```python
-import yaconfiglib
+from yaconfiglib import Loader, Policy
 
-# Parse the file, but never run a command (even one hidden behind !include).
-config = yaconfiglib.load("untrusted.yaml", allow_commands=False)
+loader = Loader(policy=Policy.trusted())      # commands and templates on, sandbox off
 ```
 
-A command source loaded while `allow_commands=False` raises
-`yaconfiglib.CommandsDisabledError` naming the offending source, instead of
-executing it. Also settable on `ConfigLoader(...)` and overridable per
-`load()` call; a per-call value applies to everything that call loads,
-including nested `!include` targets.
+## The policy
 
-Scope: `allow_commands` gates the **command** backend on every route (scheme,
-file extension, `loader="command"`, and `!include`). It does **not** restrict a
-`CommandBackend` you construct and call yourself outside a load (that is
-explicit use, not config-driven).
+`Policy` is a frozen dataclass. Every field and its default:
 
-Code runs only through command sources, non-sandboxed interpolation,
-`transform`/`%`-form `key_factory` expressions and `.j2` rendering. The
-`python` backend runs no code: `PythonBackend` passes a Python object you
-supply through unchanged.
-
-Command sources run with stdin closed, and accept an opt-in `timeout=` (in
-seconds) after which the command and its child processes are killed:
+| Field | Default | Allows |
+| --- | --- | --- |
+| `allow_commands` | `False` | command sources and script files; template engines that run a program |
+| `allow_templates` | `False` | template files (`app.yaml.j2`) |
+| `allow_includes` | `True` | `!include` / `!load` |
+| `sandbox` | `True` | interpolation and template files run in tplx's sandbox; engines that cannot be sandboxed refused |
+| `strict` | `False` | an undefined template name raises; an interpolation reference cycle raises |
+| `confine_to` | `None` | every local file read inside these roots |
+| `max_includes` | `1000` | includes one load may resolve |
+| `max_depth` | `64` | how deep includes may nest |
+| `max_bytes` | 64 MiB | bytes one load may read, all sources together |
+| `command_timeout` | `60.0` | seconds before a command and its children are killed (`None`: no limit) |
 
 ```python
-config = loader.load("cmd+json://vault read -format=json secret/app", timeout=30)
+Policy()                                    # the untrusted default
+Policy.untrusted(confine_to=True)           # the same, with changes
+Policy.trusted(command_timeout=10)          # commands and templates on, sandbox off, with changes
+Policy().replace(max_bytes=1_000_000)       # a copy with changes
 ```
 
-## A document can only tighten trust
+A policy is given to a `Loader` (`policy=`, also per call) or to a
+one-document function (`yaconfiglib.load(path, policy=...)`).
 
-`allow_commands` and `sandbox` cannot be relaxed from inside a document. The
-`!include` mapping form accepts only `pathname`, `encoding`, `transform`,
-`key_factory` (in its `"%<expr>"` form), `default`, `flatten`, `merge`,
-`merge_options` and `recursive`; any other key (for example `allow_commands`,
-`sandbox`, `interpolate` or `loader`) is ignored with a warning. Nested loads
-inherit the enclosing call's settings and can only make them stricter.
+**A document can never change the policy.** An include mapping cannot carry a
+policy field — any key outside the [include options](includes.md#forms) is
+dropped with a WARNING — and every nested load, an include or a command's
+output, runs under the policy of the load that reached it.
 
-`transform` and `%`-form `key_factory` expressions are evaluated in the
-sandboxed environment whenever `sandbox=True` or `allow_commands=False` is in
-effect, because an included document can supply them.
+Every refusal is a `PolicyError` subclass — `CommandsDisabledError`,
+`TemplatesDisabledError`, `ConfinementError`, `BudgetExceededError` — raised
+**before** anything is read or run. `PolicyError` is also a `PermissionError`,
+and so an `OSError`.
 
-## `sandbox=True` — sandbox interpolation
+## Commands
 
-```python
-config = yaconfiglib.load(
-    "untrusted.yaml",
-    interpolate=True,
-    sandbox=True,      # Jinja2 SandboxedEnvironment
-)
-```
+A command source — `cmd://`, `exec://` and `sh://` strings, `sources.Command`,
+and any file ending in `.sh`, `.bat`, `.cmd` or `.ps1` — runs a program as a
+side effect of loading. With `allow_commands` off, every one of them raises
+`CommandsDisabledError` naming it, on every route: a top-level source, a glob
+match, an `!include 'cmd://...'`, a script file in a directory you load with a
+glob.
 
-Interpolation then runs in Jinja2's `SandboxedEnvironment`, which blocks the
-attribute traversal used for template-injection attacks. This is Jinja's
-sandbox — it is not an OS-level sandbox and does not limit CPU/time.
+Allowed commands run with stdin closed and the policy's `command_timeout`;
+a script's own path is passed to its interpreter, never parsed by a shell, so a
+name containing `&`, `;` or a space cannot inject a second command. See
+[Sources](sources.md#commands-and-scripts).
 
-`.j2`/`.jinja2` sources render in the sandbox whenever `sandbox=True` **or**
-`allow_commands=False` is in effect, including ones reached through
-`!include`. A rendered document that turns out to be a command source is
-refused while `allow_commands=False`. Passing a non-sandboxed
-`environment=` for a `.j2` source under those settings raises `ValueError`.
+## Templates and the sandbox
 
-With `inject_env=True`, templates see `env` as a read-only snapshot of
-`os.environ`: they can read environment variables (including secrets you may
-not want a third-party template to see) but cannot change them.
+- **Template files** render only with `allow_templates`, and a refused template
+  is not even read. Under the sandbox, only engines tplx can sandbox render —
+  Jinja, Liquid, Mustache, Handlebars, Go templates, shell and envsubst — in
+  tplx's sandbox, where a template cannot reach Python internals and sees only
+  plain data; Mako, Cheetah, ERB and EPP are refused. Without the sandbox any
+  tplx engine renders, and one that runs a program (ERB, EPP) also needs
+  `allow_commands`.
+- **A template file's own includes** search only the confinement roots. Without
+  roots, a sandboxed template includes nothing at all; a trusted one looks
+  next to itself.
+- **Interpolation** renders in tplx's sandbox while `sandbox` is on, which
+  blocks the attribute traversal used for template injection and shows a value
+  template only plain data. A value template can include no file, sandboxed or
+  not.
 
-## Reading local files
+The sandbox is the template engine's, not the operating system's: it does not
+limit CPU time or memory. With `inject_env=True`, templates can read every
+environment variable — including secrets you may not want a third-party
+document to see — though not change one.
 
-`allow_commands=False` and `sandbox=True` stop **code execution** and
-**template injection**. Neither stops a document from **reading files**.
+## Includes
 
-**By default a document can read any file the process can.** `!include` and
-`!load` are not confined to `base_dir`: an absolute path or `..` traversal
-reaches anywhere, and a hostile document can pull in any local file whose
-name matches a backend (`.yaml`, `.yml`, `.json`, `.toml`, `.ini`, `.env`,
-...):
+`!include` is allowed by default because composing files is the common case,
+and **by default it is not confined**: an absolute path or a `..` traversal
+reaches any file the process can read, and a document can pull in any file
+whose name a format claims:
 
 ```yaml
-stolen: !include '/home/app/.config/service/credentials.yaml'
+stolen: !include /home/app/.config/service/credentials.yaml
 ```
 
-### Confining reads to allowed roots
+For a document you did not write, set `confine_to` — or, if it has no reason
+to include anything, `Policy(allow_includes=False)`, which refuses every
+include with `PolicyError`.
 
-`confine_to=` closes the `!include` route. With it set, a local file read
-that resolves outside every allowed root raises `ConfinementError` **before
-the file is opened**:
+## Confining reads
+
+With `confine_to` set, **every local file read** — top-level sources, includes
+at any depth, glob matches, an open file's underlying file, an include inside
+a command's output — must fall inside one of the roots, or `ConfinementError`
+is raised **before the file is opened**:
 
 ```python
-config = yaconfiglib.load(
-    source,
-    base_dir="conf",
-    confine_to=True,
-    allow_commands=False,   # or a command reads the file for the document
-    sandbox=True,           # or a template expression does
-)
+from pathlib import Path
+
+from yaconfiglib import Loader, Policy
+
+conf = Path("conf").resolve()
+loader = Loader(base_dir=conf, policy=Policy(confine_to=[conf]))
 ```
 
-**It is not a file-disclosure control on its own.** It confines the reads
-yaconfiglib performs *for* a document; it does not contain code the document
-gets to run. A non-sandboxed Jinja2 expression — in an interpolated value, a
-`transform`, or a `%`-form `key_factory` — reaches `open()` by attribute
-traversal with no path for the check to see, and a command source runs a
-program that can read anything. So `confine_to=` means something only
-alongside `sandbox=True` and `allow_commands=False`; note that interpolation
-is hardened by `sandbox=True` **only**, not by `allow_commands=False`. Use all
-three together, as the checklist below does.
+`confine_to` takes:
 
-It accepts, in one option:
-
-- a sequence of roots — a target inside **any** of them is allowed;
-- one string split on `os.pathsep`, the `PATH` spelling, so the value can come
-  from an environment variable (a string without a separator is one root);
+- a sequence of roots — a file inside **any** of them is allowed;
+- one string split on `os.pathsep`, like `PATH` (a string without a separator
+  is one root);
 - a single path object;
-- `True`, meaning *base_dir*;
-- `False` or `None`, meaning off, which is the default.
+- `True` — the loader's `base_dir`, or the working directory when `base_dir`
+  is `None`;
+- `False` or `None` — off.
 
-**Every root must be an absolute path**, and anything else raises
-`ConfigTypeError`. A relative root would be resolved against the process
-working directory, which is not what an allowlist should do — and that is how a
-typo, an empty list entry or a stray space after a separator in
-`YACONFIGLIB_CONFINE_TO` would otherwise have become a root under the working
-directory. Use `confine_to=True` for "wherever `base_dir` points". A whole UNC
-share (`\\server\share`) is a valid root.
+**Every root must be absolute**, or `ConfigTypeError` is raised when the load
+runs: a relative root would silently mean "under whatever the working directory
+is". Use `confine_to=True` for "wherever `base_dir` points". A whole UNC share
+(`\\server\share`) is a valid root. Empty entries are dropped, so `[""]` is an
+**empty allowlist**, which refuses every read rather than meaning "off".
 
-Note what `confine_to=True` means when `base_dir` is not set: the working
-directory, since that is where relative sources resolve. For a service whose
-working directory you do not control, name the roots explicitly.
+When `confine_to` is `None`, the `YACONFIGLIB_CONFINE_TO` environment variable
+is read by the same rules: unset means no confinement, and set but empty
+refuses every local read. An explicit `confine_to` ignores the variable, so the
+environment can never widen an allowlist your code set.
 
-When — and only when — the argument is `None`, the `YACONFIGLIB_CONFINE_TO`
-environment variable is read the same way. An explicit argument ignores it, so
-a variable cannot widen an allowlist your code set. An **unset** variable
-means no confinement, while an **empty** one, like `confine_to=[]`, is an
-empty allowlist and refuses every local file read: "nothing is allowed" is
-taken literally rather than treated as "off".
+How the check works:
 
-Every file source is checked, a top-level one included — so
-`confine_to=True` also refuses a path *you* pass from outside `base_dir`,
-which is what confining to `base_dir` means. That covers an open file object
-you hand to `load()`, by the file its `name` points at, and an `!include`
-inside a command's output. Exempt, because neither has a location to confine:
-a command source itself (`allow_commands` governs those), an in-memory `#!`
-document, and a stream with no real name such as `sys.stdin`.
-
-`confine_to=` is a loader setting with no per-call form. Passing it to an
-existing loader's `.load()` raises `ConfigTypeError`, rather than being taken
-for a backend option and ignored — every other unknown keyword is ignored by
-design, and this one is deliberately not.
-
-**Symlinks are deliberately not resolved.** The check is on the logical path,
-so a symlink inside a root may point at a file outside it — that link was put
-there by whoever administers the root, precisely so a configuration could
-reach the target. **The trust boundary is therefore write access to a
-configuration root, not the filesystem:** anyone who can create entries in a
-root can point a configuration outside it, but they could equally drop the
-configuration itself there. What `confine_to=` closes is a hostile
-*document*.
+- **It is lexical.** The path is made absolute, `..` removed, case folded where
+  the platform folds it, a `\\?\` prefix stripped, and containment tested with
+  `os.path.commonpath` — never a string prefix, which would accept
+  `/srv/confidential` under the root `/srv/conf`.
+- **Symlinks are not resolved.** A link inside a root may point outside it:
+  whoever can write into a root could equally put the configuration itself
+  there. The trust boundary is write access to the roots; what confinement
+  closes is a hostile **document**.
+- **What has no location is exempt**: in-memory text, Python data, a
+  `MemPath`, a stream without a real file name. A command source is governed
+  by `allow_commands`, not by the roots.
+- **A non-local path object** (a remote pathapi `Path`) is inside no local root
+  and is refused while confinement is on.
+- **It confines reads only.** `dump()` writes wherever it is told.
 
 ### Glob patterns
 
-A pattern is checked twice, and neither check waits for the file to be read:
-the directory it names before its first wildcard must be inside a root, so a
-pattern aimed outside them is refused **without listing anything**, and each
-match is checked as well, because a wildcard can still leave a root after a
-legal prefix (`*/../../elsewhere/*`).
+A pattern is checked twice, and neither check waits for a file to be read: the
+directory before its first wildcard must be inside a root, so a pattern aimed
+elsewhere is refused **without listing anything**; and each match is checked
+before it is read, because a wildcard can leave a root after a legal prefix
+(`*/../../elsewhere/*`).
 
-A refusal for a match names the **pattern**, never the file expansion found:
-that file is a name the document did not write, and reporting it back turned a
-pattern plus a refusal into a way to discover filenames. The resolved path is
-logged at DEBUG instead, where this library already treats its records as
-sensitive.
+A refused match is reported by its **pattern**, never by the file the
+expansion found — that is a name the document did not write, and reporting it
+would turn a pattern into a way to discover file names. The path is logged at
+DEBUG only. One residual: for a pattern whose wildcards leave a root after a
+legal prefix, whether anything matched is observable (a refusal versus an
+empty result), though no name is disclosed and nothing outside the roots is
+read.
 
-One residual, worth knowing if you accept untrusted documents: for a pattern
-whose wildcards escape a root *after* a legal prefix, **whether anything
-matched is still observable** — a match is refused, and no match loads
-nothing. No filename and no directory listing is disclosed either way, and
-nothing outside the roots is ever read.
+### Confinement needs the sandbox
 
-### Either way
+`confine_to` confines the reads yaconfiglib performs **for** a document. It
+cannot contain code the document gets to run: a non-sandboxed template
+expression can open files with no path for the check to see, and a command can
+read anything. Keep `sandbox` on and commands off for any document you confine
+— which the default policy does.
 
-`confine_to=` is a **read** control. `dump()` writes wherever it is told, and
-is not checked against the roots.
+## The budget
 
-Do not return, echo or log a loaded result verbatim, and run the process with
-only the file permissions it needs.
-
-## Resource use
-
-Interpolation time grows with the number of distinct nodes in the document:
-YAML anchors and aliases are interpolated once per shared node, not once per
-reference. A deliberately huge document still costs time and memory, and the
-Jinja sandbox does not limit CPU or time. An include cycle
-(`a.yaml` → `b.yaml` → `a.yaml`) raises `ValueError` instead of recursing.
+`max_includes`, `max_depth` and `max_bytes` bound one load, all sources and
+includes together; going past one raises `BudgetExceededError`, which
+`on_error` is never offered. Include cycles are detected separately, by the
+canonical path, and raise `ConfigValueError`. Interpolation visits each
+distinct node once, so a document of aliased YAML anchors costs time in its
+distinct nodes, not in its expanded size; `deep` list merging likewise
+compares items once per node.
 
 ## Logging and secrets
 
-A template such as `{{ env.DB_PASSWORD }}` exists to fetch a secret, so the
-**rendered value** is the secret and the template text is not. yaconfiglib
-never logs a rendered value: its DEBUG records name the key and the template
-(`interpolated database.password from template '{{ env.DB_PASSWORD }}'`).
+- **Errors never carry document values.** A `ParseError` holds a position and
+  a message that may name structure (a key, a section, a tag, an alias) but
+  never a value, a line or a snippet; the parser's own exception is not kept in
+  its chain.
+- **Rendered values are never logged.** Interpolation's DEBUG records name the
+  key and the template (`{{ env.DB_PASSWORD }}`), not what it produced.
+- **`on_error=True`'s WARNING** names the source, the phase and the error's
+  type — never its message — so it is safe in a shipped log.
+- **A failing command's stderr tail is in its exception message**, so it
+  reaches tracebacks and error reports; a tool that prints credentials to
+  stderr when it fails exposes them there. Its stdout is only on `.output`.
+- DEBUG records may contain source paths, template text and full error
+  messages: treat DEBUG logs from this library as sensitive as the
+  configuration.
 
-What DEBUG records *can* contain, if you enable them: source paths, template
-text, and full error messages — and a parser's error message often quotes the
-line that failed, which may be a configuration value. Treat DEBUG logs from
-this library as sensitive as the configuration itself.
-
-The WARNING line that `ignore_error=True` emits for a skipped source carries
-only the source, the phase and the error's type — never the message text — so
-it is safe in a shipped log.
-
-**A failing command's stderr tail is part of its exception message**, so it
-reaches any traceback or error report. A tool that prints credentials to
-stderr when it fails will expose them there. Its stdout — the payload — is
-never in the message, only in the exception's `output` attribute.
-
-## Loading third-party configuration — checklist
+## Untrusted configuration checklist
 
 ```python
-config = yaconfiglib.load(
-    source,
-    base_dir="conf",
-    allow_commands=False,   # no shell execution
-    interpolate=True,
-    sandbox=True,           # SSTI-hardened templating
-    confine_to=True,        # no reads outside base_dir
+from pathlib import Path
+
+from yaconfiglib import Loader, Policy
+
+conf = Path("conf").resolve()                 # roots must be absolute
+
+loader = Loader(
+    base_dir=conf,
+    policy=Policy(confine_to=[conf]),         # the untrusted defaults, plus confinement
+    interpolate=True,                         # sandboxed, by the default policy
 )
+config = loader.load("tenant.yaml", format="yaml")
 ```
 
-With those controls set, the following are covered, including through nested
-`!include` targets and per-call overrides:
+That covers, including through nested includes and per-call overrides:
 
-- command sources, including a command produced by rendering a `.j2` source;
-- template injection in interpolated values, in `transform`/`%`-form
-  `key_factory` expressions, and in `.j2` sources;
-- `!include` mapping keys, which can no longer re-enable commands or disable
-  the sandbox;
-- **file reads**, which must resolve inside `conf` — an absolute path or `..`
-  traversal raises `ConfinementError` before anything is opened.
-
-What confinement does **not** cover, by design:
-
-- a symlink inside `conf` pointing outside it is followed, so anyone who can
-  write into `conf` can still point a configuration elsewhere — see
-  [reading local files](#reading-local-files);
-- in-memory `#!` documents and command sources are exempt (a command is
-  governed by `allow_commands`), as is a stream with no file behind it;
-- a `scheme://…` **string** is not a remote path with the default
-  `path_factory` — the URI paths belong to a separate distribution
-  (`pathapi-uri`), which this package does not require — so such a source is treated as an ordinary
-  relative filename and checked like any other local path. Only a genuinely
-  non-local path object, which takes a `path_factory` of your own, is refused
-  outright.
+- **commands** — refused on every route, including an include and a script
+  file a glob matches;
+- **template files** — refused;
+- **template injection** in interpolated values — sandboxed;
+- **include options** — a document cannot re-enable commands, turn off the
+  sandbox or change the roots;
+- **file reads** — an absolute path, a `..` traversal or a glob that leaves
+  `conf` raises `ConfinementError` before anything is opened;
+- **size** — includes, nesting depth and bytes read are bounded;
+- **format selection** — `format="yaml"` stops a top-level file name from
+  choosing another parser, and documents can select only built-in and
+  code-registered formats.
 
 Still up to you:
-- Prefer a fixed `loader="yaml"` (or the specific format) over auto-detection so
-  a filename can't select an unexpected backend. This applies to the top-level
-  sources only: `!include` targets are still auto-detected from their names.
-- Only pass objects you built yourself to the `python` backend.
-- Set `timeout=` on command sources you allow, so a slow command cannot stall
-  the load indefinitely.
-- Both controls default to the permissive setting so existing trusted-config
-  workflows are unchanged; opt in for untrusted input.
+
+- a symlink inside `conf` pointing outside it is followed, so anyone who can
+  write into `conf` can still point a configuration elsewhere;
+- `env` is only available to templates with `inject_env=True` — leave it off
+  for documents that should not see the environment;
+- `Policy(allow_includes=False)` if the documents have no reason to include
+  anything, and a lower `max_bytes` if they are small;
+- do not return, echo or log a loaded result verbatim, and run the process with
+  only the file permissions it needs.

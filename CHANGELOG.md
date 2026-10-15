@@ -7,6 +7,139 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+This release replaces the public API. Every entry point, keyword and backend class
+changed; the migration guide in the documentation maps each old name to its
+replacement.
+
+### Changed
+- **`load`/`dump` choose the format from the file extension; `loads`/`dumps` need
+  `format=`.** `dump(obj, "a.json")` writes JSON (it always wrote YAML), so `dump`
+  then `load` round-trips. A name no format claims raises `UnsupportedFormatError`
+  before the file is opened, where it used to fall back to YAML for streams and
+  `loads`. What to do: pass `format="yaml"` to `loads`/`dumps`, and name files by
+  their format.
+- **A `str` is always a location.** `loads()` takes content; the `"#!name\n..."`
+  in-memory form is gone — use `yaconfiglib.sources.Text(data, format=...)` in a
+  layered load.
+- **`ConfigLoader` is now `Loader`**, keyword-only, and no longer a backend.
+  `.load(*sources)` merges; `.load_all(*sources)` yields every document of every
+  source, including each document of a `---` YAML stream. Settings are the same
+  set for the constructor and per call, and an unknown keyword raises `TypeError`
+  instead of being forwarded to a backend and ignored. Format options go in
+  `format_options={"json": {...}}`, or as keywords to the one-document functions,
+  where they are checked against what the format accepts.
+- **The trust policy is a `Policy` object, untrusted by default.** Commands and
+  template files are refused unless `Policy(allow_commands=True)` /
+  `Policy(allow_templates=True)` (or `Policy.trusted()`); interpolation is
+  sandboxed by default. `allow_commands=`, `sandbox=`, `strict=` and `confine_to=`
+  move into `Policy`. What to do: configuration you wrote yourself loads with
+  `Loader(policy=Policy.trusted())`.
+- **Results are plain `dict`/`list`.** Pass `wrap=True` for `DotAccessibleDict`.
+- **Merge strategies are names** (`"simple"`, `"substitute"`, `"deep"`, or one added
+  with `register_merge`), or any callable. `MergeMethod`, `ConfigLoaderMergeMethod`
+  and integer values are gone; `Last`/`List`/`Hash` became `collect="last"`,
+  `"list"`, `"hash"` with `key=`.
+- **`None` in an overriding document means "no opinion"** in every strategy;
+  `simple` used to replace with it. Remove a key with `DELETE` (`!delete` in YAML).
+- **`load_as` is `load(..., into=Model)`** and `hydrate(Model, data)`, on the same
+  engine as `typed_merge`: `"false"` becomes `False`, `"8080"` becomes `8080`,
+  `Model | None` is hydrated on Python 3.10-3.13, and unknown keys are dropped
+  (`extra="forbid"` raises). `int` coercion no longer truncates (`1.9` raises), and
+  ISO strings become `date`/`datetime`/`time`.
+- **Errors.** Every parse failure is `ParseError` (`path`, `lineno`, `colno`),
+  translated from the parser; it may name a key, section, tag or alias but never a
+  value or a line, and never chains the parser's own error; `except yaml.YAMLError`
+  and the like no longer match. `load_error_types()` is gone: catch
+  `(ConfigError, OSError)`. Policy refusals are `PolicyError` subclasses (also
+  `PermissionError`); `CommandsDisabledError` was a `ValueError`.
+  `UnsupportedFormatError` is a `ValueError`, no longer a `NotImplementedError`;
+  `UnknownLoaderError` is merged into it. Template and interpolation failures are
+  `TemplateError`. `yaconfiglib.errors` is now `yaconfiglib.exceptions`.
+- **Command sources need a format** (`cmd+json://`, `format=`, a `#!json` first
+  line, or a script's inner suffix like `secrets.json.sh`); output is never sniffed.
+  The scheme must be written `cmd://`, not `cmd:`. A command now has a 60-second
+  default timeout (`Policy.command_timeout`). Leading indentation of the output is
+  kept.
+- **Environment and dotenv keys keep their case** (`lowercase=True` folds them), and
+  environment values stay strings; `Env(..., coerce=True)` is gone — types come from
+  `into=`.
+- **Globs use `native=False`**, so `**` matches the same files on every Python; a
+  bare `**` pattern loaded nothing on 3.9-3.12.
+- **YAML duplicate keys raise `ParseError`.** `dumps` writes plain data only:
+  mapping and sequence subclasses as plain ones, `Enum` members as their values,
+  and anything else raises `ConfigTypeError` instead of writing a
+  `!!python/object` tag that `loads` refused.
+- **Templates go through tplx**, for files and for values. A template file renders
+  with any engine tplx knows (`app.yaml.j2`, `app.yaml.liquid`, `app.yaml.mako`) when
+  the policy allows templates; under the default sandbox only the engines tplx can
+  sandbox render (Jinja, Liquid, Mustache, Handlebars, Go, shell, envsubst), and a
+  sandboxed template sees plain data (a path or a date as its text) and includes
+  files only under the confinement roots. Value interpolation uses
+  `TemplateInterpolator` (Jinja by default, any tplx engine with expressions).
+  `JinjaInterpolator`, `utils.jinja2` and its caches are gone. `transform=` and
+  `key=` take callables; their Jinja-string forms are gone.
+- **Extras**: `jinja2` and `transform` became `templates` (`tplx[jinja]` 0.1.4 or
+  later); `toml` adds `tomli-w`; `all` installs every extra. Another template engine
+  needs its own tplx extra (`tplx[liquid]`).
+
+### Added
+- `yaconfiglib.formats`: the `Format` base class and a registry
+  (`register_format`, `get`, `for_filename`, `names`), with the
+  `yaconfiglib.formats` entry-point group. A plugin's formats are reachable from
+  documents only when named in `Loader(formats=...)`.
+- `yaconfiglib.sources`: `Source`, `Text`, `Data`, `Env`, `Command`, and the
+  `yaconfiglib.sources` entry-point group for schemes.
+- `yaconfiglib.testing.FormatContract`, the suite every format passes.
+- `load_all`/`loads_all`, writers for TOML (`tomli-w`), INI and dotenv, `DELETE`,
+  `register_merge`, `hydrate`, `Interpolator`, `TemplateInterpolator`, `LoadEvent`, `BudgetExceededError`,
+  `MissingDependencyError`, `TemplateError`.
+- `Policy.max_includes`, `max_depth`, `max_bytes`: a load's budget.
+- **The target type steers the parse.** With `into=`, YAML keeps each plain scalar
+  it read as a bool, number or date beside its text, and the type decides: a `str`
+  field gets `NO`, `1.10` or `0755` as written, other fields the read value or a
+  value parsed from the text. `TypedDict` targets and ordinary classes built from a
+  mapping are hydrated.
+- Type hooks: a classmethod `_load_(cls, value)` builds a type from configuration,
+  and `_dump_(self)` turns it back into plain data. `dehydrate()` applies them, and
+  `dump`/`dumps` call it, so a dataclass, enum, path or `Decimal` writes as plain
+  data and `dump(load(path, into=Model), path)` round-trips.
+
+### Removed
+- `ConfigLoader`, `ConfigBackend` and every backend class, `loader=`,
+  `loader_factory=`, `path_factory=`, `DEFAULT_LOADER`, `load_as`, `MergeMethod`,
+  `ConfigLoaderMergeMethod`, `parse_sources`, `has_glob_pattern`, the
+  `yaconfiglib.utils` package, `load_error_types`, and backend instances used as
+  PyYAML tag constructors.
+- Scheme strings no longer reach a URI path layer: a `str` is a local path. Pass a
+  pathapi `Path` object (an `HTTPPath`, an `SFTPPath`) to read a remote source.
+
+### Fixed
+- `import yaconfiglib` no longer imports PyYAML, Jinja2 or tomllib, and no longer
+  fails when `YACONFIGLIB_CONFINE_TO` holds a relative path (the load raises
+  instead).
+- A pathapi `Path` source is no longer joined to `base_dir`, which broke every
+  remote path object.
+- Interpolation no longer rewrites the caller's data in place, keeps `tuple` and
+  `set` values, renders documents with a non-string top-level key, and raises when
+  a templated key collides with an existing one.
+- Dotenv drops the spaces after `=`, so `K= "v"` is the quoted value `v`.
+- `typed_merge` replaces on a shape change instead of failing with a bare
+  `vars()` `TypeError`.
+
+### Security
+- An include cycle spelled through `../` is detected; it recursed until
+  `RecursionError`, or exponentially with errors ignored.
+- `deep` list merging compares unhashable items by structure, once per node: a
+  document of aliased lists could make it exponential.
+- Format selection is a linear suffix lookup; the dotenv name pattern backtracked
+  quadratically on a long, document-controlled name.
+- A command's `#!` line can select only a document format; `#!env` returned the
+  process environment.
+- Any imported backend subclass was reachable from a document under the hardened
+  settings; registration is now explicit, and plugin formats need the caller's
+  opt-in.
+
+
 ## [0.13.1] - 2026-10-15
 
 ### Changed

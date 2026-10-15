@@ -9,7 +9,7 @@ installed package.
 
 | Path | Holds |
 | --- | --- |
-| `src/yaconfiglib/` | the package. `loader.py` is the entry point; `backends/` are the per-format parsers; `utils/` holds merging, templating, source resolution and trust policy |
+| `src/yaconfiglib/` | the package. `_api.py` holds `load`/`loads`/`dump`/`dumps`; `_loader.py` the layered `Loader`; `formats/` the `Format` contract, its registry and one private module per built-in format; `sources/` the `Source` contract, `Command`/`Env`/`Data`/`Text` and the scheme registry; `_context.py` the `Policy`; `_paths.py` source resolution and globs; `_confine.py` confinement; `_merge.py`, `_hydrate.py`, `_templating.py`, `_dotaccess.py`; `exceptions.py`; `testing.py` the shipped `FormatContract` |
 | `src/yaconfiglib/AGENTS.md` | the shipped API header: every public name with its signature, defaults and gotchas. Keep it current in the same commit as an API change |
 | `tests/` | pytest suite. `conftest.py` has the shared fixtures, `_extras.py` the skip marks for optional dependencies |
 | `docs/` | MkDocs sources for the published site |
@@ -29,10 +29,10 @@ py -3.9 -m venv .venv/3.9-nt-amd64          # the supported floor
 py -3.14 -m venv .venv/3.14-nt-amd64        # the newest supported
 ```
 
-Install the tooling **and every extra that has tests**, or those tests skip:
+The `dev` extra installs the tooling **and every extra that has tests**:
 
 ```bash
-.venv/3.9-nt-amd64/Scripts/pip install -e ".[dev,yaml,toml,jinja2]"
+.venv/3.9-nt-amd64/Scripts/pip install -e ".[dev]"
 ```
 
 Put the venv's `Scripts` (or `bin`) directory first on `PATH`, or activate it:
@@ -43,16 +43,22 @@ Windows on ARM64: build the 3.9 venv from the **x64** interpreter. PyYAML and
 MarkupSafe publish no cp39 `win_arm64` wheels, so a native 3.9 venv cannot
 install the extras. 3.14 ARM64 is fine, including the docs extra.
 
+Build the docs from a 3.14 venv with the `docs` extra installed
+(`python -m mkdocs build --strict`); mkdocstrings imports the package.
+
 ## Tests
 
 ```bash
 python -m pytest -q -rs
 ```
 
-With every extra installed that is 0 skipped. `-rs` lists what skipped, which is
-how you tell a missing extra from a real skip. Installing only `.[dev]` is
-supported and useful as a check that the guards are right — the yaml, jinja2 and
-toml tests then skip and nothing fails.
+With every extra installed only platform-specific tests skip. `-rs` lists what
+skipped, which is how you tell a missing extra from a real skip. A test that needs
+an extra uses a `needs_*` fixture from `tests/conftest.py` or a mark from
+`tests/_extras.py`, so an install without it skips rather than fails.
+
+A new format runs `yaconfiglib.testing.FormatContract` unmodified
+(`tests/formats/`).
 
 ## Formatting
 
@@ -97,7 +103,9 @@ Local benchmark numbers are a smoke test, never evidence for a claim — see
 Three workflows:
 
 - **`test.yml`** — the matrix: Linux on 3.9 through 3.14, Windows and macOS on
-  3.9 and 3.14. Triggered by `workflow_dispatch` or by pushing a throwaway
+  3.9 and 3.14; a **bare-wheel** job that builds the wheel, installs it with no
+  extra and runs `.github/scripts/bare_install_check.py`; and a job with real
+  `pydantic`. Triggered by `workflow_dispatch` or by pushing a throwaway
   `ci-*` tag. The tag form exists so a run can be started and polled without
   dashboard access: push `ci-<something-unique>`, watch the run, then delete the
   tag locally and on the remote. A `ci-*` tag uploads every commit it reaches,

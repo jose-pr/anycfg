@@ -1,34 +1,48 @@
 # yaconfiglib
 
-**yaconfiglib** is a modern, extensible configuration parser library for Python.
-It loads, merges, and interpolates configuration from YAML, TOML, JSON, INI,
-`.env` files, environment variables, and even command/script output — then
-hands you back a single object you can traverse with dot-notation or hydrate
-straight into a Pydantic model or dataclass.
+**yaconfiglib** loads, layers and writes configuration in any registered
+format with one `json`-style API — `load`, `loads`, `dump`, `dumps` — plus a
+`Loader` that merges many sources in order, YAML `!include`, typed hydration,
+and a trust policy that is **untrusted by default**.
 
-It has one runtime dependency, `pathapi`, which provides the path layer —
-recursive `**` expansion, a glob's error hook and directory-loop bounding. Every format-specific integration (PyYAML, `tomllib`/`tomli`, Jinja2,
-Pydantic) is strictly optional and only imported when you actually use it.
+It has one required dependency, [pathapi](https://github.com/jose-pr/pathapi),
+the path layer: glob expansion with a portable `**`, directory-loop bounding,
+and path objects for in-memory and remote files. Everything format- or
+feature-specific (PyYAML, `tomli`, `tomli-w`, tplx and Jinja2, Pydantic) is
+optional and imported only when it is used.
 
 ## Why yaconfiglib
 
-- **One API, many formats.** `yaconfiglib.load()` reads YAML, TOML, JSON,
-  INI, and `.env` files interchangeably — the backend is picked from the
-  file extension (for an open file, its file name) or an explicit `loader=`
-  argument. A string passed to `yaconfiglib.loads()` is YAML unless `loader=`
-  or a `#!name.ext` first line says otherwise.
-- **Hiera-style layering.** Pass multiple sources and yaconfiglib merges
-  them in order — deep-merge dicts, extend lists, or replace outright,
-  your choice per call.
-- **Recursive includes.** `!include`/`!load` YAML tags and a `cmd://` URI
-  scheme let one config pull in others, or the output of a shell command,
-  without any extra glue code.
-- **Templating built in.** Optional Jinja2 interpolation lets a config
-  reference its own already-parsed values, environment variables, or
-  arbitrary Python expressions.
-- **Typed results.** `load_as()` hydrates a Pydantic model or dataclass
-  directly from a loaded document, when you want validation instead of a
-  loose dict.
+- **One vocabulary.** `load(path)` and `dump(obj, path)` pick the format from
+  the file name, so `dump(x, "a.json")` then `load("a.json")` round-trips;
+  `loads(text, format=...)` and `dumps(obj, format=...)` take content. A name no
+  format claims is an error, never a guess.
+- **Formats as plugins.** JSON, YAML, TOML, INI and dotenv are built in. A
+  [`Format`](guide/formats.md#writing-a-format) subclass registers in code or
+  through an entry point, and every format passes the same shipped contract
+  suite.
+- **Layering.** `Loader(merge="deep").load("base.yaml", "conf.d/*.yaml",
+  "local.toml")` merges in order, with deterministic glob ordering, three
+  [merge strategies](guide/merging.md) or your own, `DELETE` to remove a key,
+  and `collect=` to gather documents instead of merging them.
+- **Sources beyond files.** Any pathapi `Path`, open files, Python mappings,
+  the environment, in-memory text and command output — see
+  [Sources](guide/sources.md).
+- **Includes.** [`!include`](guide/includes.md) in YAML, relative to the
+  including file at every depth, with cycle detection and a load budget.
+- **Typed results, and the type steers the parse.** `load(..., into=Model)`
+  builds a dataclass, a `TypedDict`, a Pydantic model or any class, coercing
+  every field without losing data. YAML's `NO`, `1.10` and `0755` reach a `str`
+  field exactly as written, while a `bool` or `int` field gets the value YAML
+  read. `dump()` writes typed results back, so loading into a type and dumping
+  round-trips — see [Typed results](guide/models.md).
+- **Templates.** `Loader(interpolate=True)` renders `{{ ... }}` in values, and
+  `app.yaml.j2` — or any engine [tplx](https://github.com/jose-pr/tplx) knows,
+  `app.toml.liquid` included — renders a whole file first, sandboxed by
+  default — see [Templating](guide/templating.md).
+- **Safe by default.** Commands and template files are off, interpolation is
+  sandboxed, reads can be confined to directories, and errors never carry
+  document text — see [Security](guide/security.md).
 
 ## Installation
 
@@ -36,48 +50,101 @@ Pydantic) is strictly optional and only imported when you actually use it.
 pip install yaconfiglib
 ```
 
-That brings `pathapi` with it. Add extras for the backends you need:
+That brings pathapi with it. Add the extras for the features you use:
 
 ```bash
-pip install "yaconfiglib[yaml,toml,jinja2]"
+pip install "yaconfiglib[yaml,toml,templates]"
 ```
 
 | Extra | Adds | Needed for |
 | --- | --- | --- |
-| `yaconfiglib[yaml]` | `pyyaml` 6.x | YAML parsing and `!include`/`!load` tags |
-| `yaconfiglib[toml]` | `tomli` (Python < 3.11 only) | TOML parsing; 3.11+ uses stdlib `tomllib` |
-| `yaconfiglib[jinja2]` | `jinja2` 3.x | Interpolation, `.j2` templated sources, `env.VAR` injection |
-| `yaconfiglib[transform]` | `jinja2` 3.x | Alias of `[jinja2]`, for the `transform:` option of `!include`/`!load` |
+| `yaml` | PyYAML 6 | the YAML format and `!include` |
+| `toml` | `tomli` (Python < 3.11), `tomli-w` | reading TOML below 3.11; writing TOML |
+| `templates` | `tplx[jinja]` 0.1.4+ | interpolation and template files, with Jinja |
+| `all` | every extra above | |
+
+A template engine other than Jinja needs its own tplx extra
+(`pip install "tplx[liquid]"`). JSON, INI and dotenv need nothing beyond the
+standard library. `import
+yaconfiglib` imports none of the extras; a feature whose extra is missing
+raises `MissingDependencyError` naming the extra to install.
 
 ## Quick start
+
+One document:
 
 ```python
 import yaconfiglib
 
-# Load a single YAML file, with Jinja2 interpolation enabled.
-config = yaconfiglib.load("config.yaml", interpolate=True)
-
-# Traverse the result like nested attributes.
-print(f"Server starting on: {config.server.host}:{config.server.port}")
+config = yaconfiglib.load("settings.yaml")          # format from the extension
+data = yaconfiglib.loads('{"a": 1}', format="json")
+yaconfiglib.dump(config, "settings.json")           # written as JSON
 ```
 
-Layer multiple sources — later sources override earlier ones:
+Layers, with dot access:
 
 ```python
-from yaconfiglib import ConfigLoader, ConfigLoaderMergeMethod
+from yaconfiglib import Loader
 
-loader = ConfigLoader(base_dir="config/", merge=ConfigLoaderMergeMethod.Deep)
-settings = loader.load("base.yaml", "production.yaml", "secrets.env")
+loader = Loader(base_dir="conf", merge="deep", wrap=True)
+config = loader.load("base.yaml", "conf.d/*.yaml", "local.toml", None)
+print(config.database.host)
+```
+
+Later sources override earlier ones, a glob's matches load in a fixed order,
+and `None` stands for an optional layer that is absent.
+
+Typed:
+
+```python
+import dataclasses
+import yaconfiglib
+
+@dataclasses.dataclass
+class Database:
+    host: str
+    port: int
+
+db = yaconfiglib.load("db.json", into=Database)     # "5432" becomes 5432
+yaconfiglib.dump(db, "db.yaml")                     # typed data writes back
+```
+
+Includes and interpolation, in `app.yaml`:
+
+```yaml
+base: /srv/app
+logs: "{{ base }}/logs"
+database: !include db.yaml
+```
+
+```python
+config = Loader(interpolate=True).load("app.yaml")
+```
+
+The environment and commands, which you opt into:
+
+```python
+from yaconfiglib import Loader, Policy
+from yaconfiglib.sources import Env
+
+config = Loader(policy=Policy.trusted()).load(
+    "base.yaml",
+    "cmd+json://vault kv get -format=json secret/app",
+    Env("APP_", nested="__"),                       # APP_DB__PORT -> {"DB": {"PORT": ...}}
+)
 ```
 
 ## Where to go next
 
-- **[Guide](guide/backends.md)** — task-oriented walkthroughs: backends,
-  merging strategies, templating, includes, and model hydration, each with
-  runnable examples.
-- **[API Reference](api/reference.md)** — generated reference for every
-  public class and function, organized by module.
+- **Guide** — task-oriented pages: [formats](guide/formats.md),
+  [sources](guide/sources.md), [merging](guide/merging.md),
+  [includes](guide/includes.md), [templating](guide/templating.md),
+  [typed results](guide/models.md) and [security](guide/security.md).
+- **[Migrating](guide/migrating.md)** — every name and keyword of the previous
+  API, mapped to its replacement.
+- **[API Reference](api/reference.md)** — generated from the docstrings,
+  organized by module.
 - **[Changelog](changelog.md)** — release history.
 
-The [project README](https://github.com/jose-pr/yaconfiglib#readme) has a
-condensed version of this content for browsing on GitHub/PyPI.
+The installed package also carries its API header, `yaconfiglib/AGENTS.md`:
+every public name with its signature, defaults and gotchas, in one file.

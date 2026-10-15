@@ -1,129 +1,152 @@
 # yaconfiglib
 
-[![PyPI version](https://img.shields.io/pypi/v/yaconfiglib.svg)](https://pypi.org/project/yaconfiglib/)
+[![Version](https://img.shields.io/pypi/v/yaconfiglib.svg)](https://pypi.org/project/yaconfiglib/)
 [![Python versions](https://img.shields.io/pypi/pyversions/yaconfiglib.svg)](https://pypi.org/project/yaconfiglib/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/jose-pr/yaconfiglib/blob/main/LICENSE)
 [![Docs](https://img.shields.io/badge/docs-latest-blue.svg)](https://jose-pr.github.io/yaconfiglib/)
 [![CI](https://img.shields.io/github/actions/workflow/status/jose-pr/yaconfiglib/test.yml)](https://github.com/jose-pr/yaconfiglib/actions/workflows/test.yml)
 
-**yaconfiglib** is a modern, extensible configuration parser library for Python. It allows you to seamlessly load, merge, and interpolate multiple configurations in a variety of formats (YAML, TOML, JSON, INI, `.env`), or execute scripts/commands directly to retrieve configuration objects dynamically.
-
-One runtime dependency — [pathapi](https://github.com/jose-pr/pathapi),
-which provides the path layer: recursive `**` glob expansion, the error hook a
-glob needs to report an unreadable directory, and loop bounding.
-Every *format* integration is optional: PyYAML, `tomli`, Jinja2 and Pydantic are
-extras, imported only when you use them.
-
----
+**yaconfiglib loads, layers and writes configuration in any registered format
+with one `json`-style API** — `load`, `loads`, `dump`, `dumps` — plus a `Loader`
+that merges many sources in order, YAML `!include`, typed hydration, and a
+trust policy that is **untrusted by default**. Documentation:
+<https://jose-pr.github.io/yaconfiglib/>.
 
 ## Features
 
-- **Standard-library-style API**: `yaconfiglib.load()`, `loads()`, `dump()` and `dumps()`. `loads()` reads YAML unless `loader=` or a `#!name.ext` first line picks another format.
-- **Backend Registry & Plugins**: Core loaders for TOML, YAML, JSON, INI, and `.env`. Easily extend the library by registering custom configuration loader classes.
-- **Model Validation (`load_as`)**: Automatic hydration and verification of Pydantic models or standard Python `dataclasses` directly from loaded configuration files.
-- **Dot-Notation Access**: Configuration results are wrapped in a `DotAccessibleDict` supporting deep traversal like `config.database.credentials.user` and toggleable `dig` options. Paths also index lists (`config.get("servers.0.host")`), and a tuple path (`config.get(("labels", "app.kubernetes.io/name"))`) reaches keys that themselves contain dots. Nested mappings are converted once when the result is built, so item and attribute access always return the same object, and reads never modify the configuration.
-- **Shell & Command Execution**: Execute arbitrary commands or shell scripts dynamically (e.g. `cmd://aws...` or `./generate.sh`) and auto-parse their outputs, with support for shebang-based format routing (e.g. `#!json` header).
-- **YAML Includes**: Out-of-the-box support for `!include` and `!load` YAML constructors to seamlessly and recursively import child configurations or commands.
-- **Advanced Templating**: Interleave configurations with Jinja2. Generate configuration blocks dynamically, auto-inject `os.environ` via `env.VAR_NAME`, or reference other configuration values by name in any order.
-- **Environment Overlays**: Load prefixed environment variables as flat or nested configuration, with optional scalar coercion for booleans, numbers, nulls, arrays, and objects.
-- **Path Agnostic**: Sources may be a `str`, a standard `pathlib.Path`, or any
-  `os.PathLike`. Paths are handled by [pathapi](https://github.com/jose-pr/pathapi)
-  (a required dependency), so a URI path — HTTP, SFTP — loads exactly like a local file
-  once you install the distribution that provides it (`pathapi-uri`, `sftppath`).
-
----
+- **One vocabulary.** `load(path)` and `dump(obj, path)` pick the format from
+  the file extension, so `dump(x, "a.json")` then `load("a.json")` round-trips;
+  `loads(text, format=...)` and `dumps(obj, format=...)` take content. An
+  extension no format claims is an error, never a guess.
+- **Formats as plugins.** JSON, YAML, TOML, INI and dotenv are built in; a
+  `Format` subclass registers in code or through the `yaconfiglib.formats`
+  entry-point group. Every format passes the shipped contract suite
+  (`yaconfiglib.testing.FormatContract`).
+- **Layering.** `Loader(merge="deep").load("base.yaml", "conf.d/*.yaml",
+  "local.toml")` merges in order, with deterministic glob ordering, `simple`,
+  `substitute` or `deep` strategies (or your own), `DELETE` to remove a key,
+  and `collect=` to gather documents instead.
+- **Sources beyond files.** Any pathapi `Path`, open files, Python mappings, the
+  environment (`sources.Env`), in-memory text (`sources.Text`) and commands
+  (`cmd+json://...`, script files).
+- **Includes.** `!include` in YAML, file-relative at every depth, with cycle
+  detection and a load budget.
+- **Typed results.** `load(..., into=Model)` builds a dataclass, a Pydantic
+  model or any class, coercing every field without losing data.
+- **Templates.** `Loader(interpolate=True)` renders `{{ ... }}` in values;
+  `app.yaml.j2` (or any engine [tplx](https://github.com/jose-pr/tplx) knows)
+  renders whole files.
+- **Safe by default.** Commands and templates are off, interpolation is
+  sandboxed, includes can be confined to directories, and errors never carry
+  document text.
 
 ## Installation
-
-Install using `pip`:
 
 ```bash
 pip install yaconfiglib
 ```
 
-`pathapi` is installed with it. Optional extras, per format:
+[pathapi](https://github.com/jose-pr/pathapi) is installed with it. Extras:
 
 | Extra | Adds | Needed for |
 | --- | --- | --- |
-| `yaconfiglib[yaml]` | `pyyaml` 6.x | Parsing YAML configuration files and `!include` tags |
-| `yaconfiglib[toml]` | `tomli` (Python < 3.11 only) | Parsing TOML configuration files; 3.11+ uses the standard library `tomllib` |
-| `yaconfiglib[jinja2]` | `jinja2` 3.x | Jinja2 templating, environment variables injection, and transformations |
-| `yaconfiglib[transform]` | `jinja2` 3.x | Alias of `[jinja2]`, named after the `transform:` option of `!include`/`!load` and `ConfigLoader.load()` |
+| `yaml` | PyYAML 6 | the YAML format and `!include` |
+| `toml` | `tomli` (Python < 3.11), `tomli-w` | reading TOML below 3.11; writing TOML |
+| `templates` | `tplx[jinja]` | interpolation and template files |
+| `all` | every extra above | |
 
----
+`import yaconfiglib` imports none of them; a feature whose extra is missing
+raises `MissingDependencyError` naming it.
 
-## Quick Start
+## Quick start
 
-### 1. Simple Parsing and Dot-Notation Access
+One document:
 
 ```python
 import yaconfiglib
 
-# Load a YAML file
-config = yaconfiglib.load("config.yaml", interpolate=True)
-
-# Traverse configuration like attributes
-print(f"Server starting on: {config.server.host}:{config.server.port}")
+config = yaconfiglib.load("settings.yaml")          # format from the extension
+data = yaconfiglib.loads('{"a": 1}', format="json")
+yaconfiglib.dump(config, "settings.json")           # written as JSON
 ```
 
-### 2. Hydrate Model (Pydantic / Dataclasses)
+Layers, with dot access:
 
 ```python
-from pydantic import BaseModel
+from yaconfiglib import Loader
+
+loader = Loader(base_dir="conf", merge="deep", wrap=True)
+config = loader.load("base.yaml", "conf.d/*.yaml", "local.toml", None)
+print(config.database.host)
+```
+
+Typed:
+
+```python
+import dataclasses
 import yaconfiglib
 
-class DBConfig(BaseModel):
+@dataclasses.dataclass
+class Database:
     host: str
     port: int
 
-# Hydrate the Pydantic model directly
-db_settings = yaconfiglib.load_as(DBConfig, "config.yaml", loader="yaml")
-print(db_settings.host)
+db = yaconfiglib.load("db.json", into=Database)     # "5432" becomes 5432
 ```
 
-### 3. Dynamic Includes & Shell Commands
+Includes and interpolation, in `app.yaml`:
 
-In your `config.yaml`:
 ```yaml
-# Recursively include other files (paths resolve next to this file)
-database: !include "db_settings.toml"
-
-# Dynamically execute commands to retrieve parameters (e.g. secrets)
-secrets: !include 'cmd+json://python -c "import json; print(json.dumps({\"token\": \"super-secret\"}))"'
+base: /srv/app
+logs: "{{ base }}/logs"
+database: !include db.yaml
 ```
-
-### 4. Environment Variable Overlays
 
 ```python
-from yaconfiglib import ConfigLoader
-from yaconfiglib.backends.env import EnvVarBackend
+config = Loader(interpolate=True).load("app.yaml")
+```
 
-# APP_DB__PORT=5432 -> {"db": {"port": 5432}}
-config = ConfigLoader().load(
-    loader=EnvVarBackend(prefix="APP_", nested_delimiter="__", coerce=True)
+The environment and commands, which you opt into:
+
+```python
+from yaconfiglib import Loader, Policy
+from yaconfiglib.sources import Env
+
+config = Loader(policy=Policy.trusted()).load(
+    "base.yaml",
+    "cmd+json://vault kv get -format=json secret/app",
+    Env("APP_", nested="__"),                       # APP_DB__PORT -> {"DB": {"PORT": ...}}
 )
 ```
 
----
-
-## API Overview
+## API overview
 
 | Module | Purpose |
 | --- | --- |
-| `yaconfiglib.loader` | Core `ConfigLoader` orchestrator, `load()`, `loads()`, `load_as()`, `dump()`, `dumps()`, and `DotAccessibleDict` |
-| `yaconfiglib.backends` | `ConfigBackend` base class & registry |
-| `yaconfiglib.backends.yaml` | `YamlConfig` parsing and include tag construction |
-| `yaconfiglib.backends.toml` | `TomlConfig` parsing (stdlib `tomllib`, or its `tomli` backport below 3.11) |
-| `yaconfiglib.backends.json` | `JsonConfig` parsing |
-| `yaconfiglib.backends.ini` | `IniConfig` parsing |
-| `yaconfiglib.backends.dotenv` | `DotenvBackend` for parsing `.env` files |
-| `yaconfiglib.backends.env` | `EnvVarBackend` for loading `os.environ` variables with prefix matching |
-| `yaconfiglib.backends.command` | `CommandBackend` for running processes and auto-routing outputs |
-| `yaconfiglib.backends.python_backend` | `PythonBackend` for in-memory python dict injection |
-| `yaconfiglib.utils.merge` | Deep dict/list merge algorithms and custom merge methods |
-| `yaconfiglib.utils.jinja2` | Custom Jinja2 interpolation environments and render utilities |
+| `yaconfiglib` | `load`, `loads`, `load_all`, `loads_all`, `dump`, `dumps`; `Loader`, `Policy`; merging (`DELETE`, `register_merge`); `hydrate`, `typed_merge`; `DotAccessibleDict`; interpolation; every exception |
+| `yaconfiglib.formats` | the `Format` contract and the registry: `register_format`, `get`, `for_filename`, `names` |
+| `yaconfiglib.sources` | `Source`, `Text`, `Data`, `Env`, `Command`, and the scheme registry |
+| `yaconfiglib.testing` | `FormatContract`, the suite every format passes |
 
----
+The installed package carries its API header, `yaconfiglib/AGENTS.md`.
+
+## Trust policy
+
+A load reads only what you named, parses it, and follows `!include`. Anything
+else must be allowed by its `Policy`:
+
+| Setting | Default | Allows |
+| --- | --- | --- |
+| `allow_commands` | off | command sources and script files |
+| `allow_templates` | off | template files |
+| `allow_includes` | on | `!include` / `!load` |
+| `sandbox` | on | sandboxed interpolation and Jinja templates only |
+| `confine_to` | none | every file read inside these directories |
+| `max_includes`, `max_depth`, `max_bytes` | 1000, 64, 64 MiB | the load's budget |
+
+`Policy.trusted()` turns commands and templates on and the sandbox off, for
+configuration you wrote yourself. For configuration you did not write, keep the
+default and set `confine_to`.
 
 ## Development
 
@@ -131,52 +154,27 @@ config = ConfigLoader().load(
 # One venv per interpreter, named <version>-<os>-<arch>:
 py -3.9 -m venv .venv/3.9-nt-amd64
 
-# Install the tooling AND every extra that has tests, or those tests skip:
-.venv/3.9-nt-amd64/Scripts/pip install -e ".[dev,yaml,toml,jinja2]"
+# The dev extra installs the tooling and every extra that has tests:
+.venv/3.9-nt-amd64/Scripts/pip install -e ".[dev]"
 
-# Put the venv's Scripts (bin on POSIX) directory first on PATH, or activate
-# it: the command-backend tests start `python` as a subprocess.
+# Put the venv's Scripts (bin on POSIX) first on PATH: command tests start `python`.
 export PATH="$PWD/.venv/3.9-nt-amd64/Scripts:$PATH"
 
 python -m pytest -q -rs
 ```
 
-[`AGENTS.md`](AGENTS.md) is the orientation file for a checkout: layout,
-environments, CI and the release procedure.
-
-Micro-benchmarks live in `benchmarks/`; see
-[`benchmarks/README.md`](benchmarks/README.md) for how to run them, save a
-result file and compare two runs.
-
-Installing only `.[dev]` is supported — the tests that need PyYAML, Jinja2 or a
-TOML parser skip, and `-rs` lists them — but then the suite covers much less.
+[`AGENTS.md`](https://github.com/jose-pr/yaconfiglib/blob/main/AGENTS.md) is the
+orientation file for a checkout: layout, environments, CI and the release
+procedure. Micro-benchmarks live in
+[`benchmarks/`](https://github.com/jose-pr/yaconfiglib/tree/main/benchmarks).
 
 ### Releasing
 
-This project follows [Semantic Versioning](https://semver.org/) and keeps a
-[`CHANGELOG.md`](CHANGELOG.md). Pushing a tag matching `v*` triggers the release
-workflow: test gate → build → GitHub release → PyPI publish. A strict docs
-build runs alongside as a gate — it can fail the run, but it never blocks the
-publish, and it does not deploy. The Docs workflow owns the site and is
-dispatched once the release exists.
-
-### Documentation site
-
-MkDocs builds the API reference from `docs/`. The site is deployed by the
-Docs workflow: on pushes to `main` that touch `docs/`, `mkdocs.yml`, `src/` or
-the changelog, for each published release, and on manual dispatch. Between
-releases it therefore describes `main`, which may be ahead of PyPI.
-
-To preview locally, from a latest-Python venv (`bin/` instead of `Scripts/` on
-Unix):
-
-```bash
-.venv/3.14-nt-arm64/Scripts/pip install -e ".[docs,yaml,toml,jinja2]"
-.venv/3.14-nt-arm64/Scripts/mkdocs serve
-```
-
----
+The project follows [Semantic Versioning](https://semver.org/) and keeps a
+[changelog](https://github.com/jose-pr/yaconfiglib/blob/main/CHANGELOG.md).
+Pushing a `v*` tag runs the release workflow: test gate, build, GitHub release,
+PyPI publish; the docs site is deployed after it.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](https://github.com/jose-pr/yaconfiglib/blob/main/LICENSE).

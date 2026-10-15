@@ -1,155 +1,280 @@
 # Templating
 
-Interpolation, `transform=` and a `%`-prefixed `key_factory` all need Jinja2
-(`pip install "yaconfiglib[jinja2]"`). If it is missing — or installed but
-unimportable, which a Jinja2 2.x beside MarkupSafe 2.1+ is — those options
-raise `ImportError` naming the extra and the underlying import error. That
-happens before `ignore_error` is consulted, so an ignoring load fails loudly
-rather than returning an unrendered or empty result.
+yaconfiglib renders templates in two places, and they are separate features:
 
-yaconfiglib integrates Jinja2 in two distinct ways: **interpolating**
-already-loaded configuration values, and **rendering whole files** as
-templates before parsing them. Both require `yaconfiglib[jinja2]`.
+- **Interpolation** renders `{{ ... }}` inside the *values* of the loaded,
+  merged document, so one value can refer to another.
+- **Template files** — `app.yaml.j2`, `app.toml.liquid` — are rendered as a
+  whole *before* they are parsed, so a template can produce the structure
+  itself.
 
-## Interpolating loaded values
+Both run on [tplx](https://github.com/jose-pr/tplx), and both are governed by
+the load's [`Policy`](security.md). The `templates` extra
+(`pip install "yaconfiglib[templates]"`) installs tplx 0.1.4+ with Jinja, the
+default engine; another engine needs its own tplx extra (`pip install
+"tplx[liquid]"`). Without the engine's extra, using it raises
+`MissingDependencyError` naming what to install.
 
-Pass `interpolate=True` to render every string value in the loaded result
-as a Jinja2 template, with the rest of the loaded document available as
-template globals. Rendering happens **once, after every source has been
-merged**, so values pulled in with `!include` see the including document's
-keys too — and nothing is rendered twice:
+## Interpolation
+
+`Loader(interpolate=True)` renders the templates in the merged document's
+strings, with the document's own top-level keys as the template's names:
 
 ```yaml
-# config.yaml
-host: "localhost"
+# app.yaml
+host: localhost
 url: "http://{{ host }}:{{ port }}"
 port: 8080
 ```
 
 ```python
-import yaconfiglib
+from yaconfiglib import Loader
 
-config = yaconfiglib.load("config.yaml", interpolate=True)
-print(config.url)  # "http://localhost:8080"
+config = Loader(interpolate=True).load("app.yaml")
+print(config["url"])      # http://localhost:8080
 ```
 
-A bare `{{ expr }}` (nothing else but an optional trailing newline) is
-evaluated as a Python expression rather than rendered to a string, so the
-result keeps its original type:
+Rendering happens **once, after every source has been merged**, so a value
+from one layer can refer to a key from another, and a value pulled in with
+`!include` sees the whole document. Nothing is rendered twice: a rendered value
+that happens to contain `{{` stays as it is.
+
+Interpolation is a `Loader` setting, off by default. The one-document
+functions (`yaconfiglib.load()`, `loads()`) never interpolate.
+
+### References between values
+
+A value may refer to any top-level key, in any order. Each top-level key is
+rendered after the keys it refers to, so chains resolve completely:
 
 ```yaml
-port: "{{ 8000 + 80 }}"   # -> 8080 (int), not "8080" (str)
-enabled: "{{ true }}"      # -> True (bool)
+base_path: /srv/app
+error_log: "{{ log_path }}/error.log"     # -> /srv/app/logs/error.log
+log_path: "{{ base_path }}/logs"
 ```
 
-## Injecting environment variables
+Nested values are reached through their parent: `{{ database.host }}`. A value
+may refer into its own top-level key — `database.url: "{{ database.host }}"` —
+and then sees that key's values as loaded, so a sibling that is itself a
+template is not rendered yet:
 
 ```python
-config = yaconfiglib.load("config.yaml", interpolate=True, inject_env=True)
+db = {"host": "h", "url": "pg://{{ db.host }}/app", "name": "{{ 'app' }}", "dsn": "{{ db.name }}"}
+print(Loader(interpolate=True).load({"db": db})["db"])
+# {'host': 'h', 'url': 'pg://h/app', 'name': 'app', 'dsn': "{{ 'app' }}"}
 ```
+
+Two keys that refer to each other cannot both resolve. By default each then
+renders against what the other holds at that moment; with
+`Policy(strict=True)` the cycle raises `ConfigValueError`.
+
+### Keeping types
+
+A string that is nothing but one `{{ expression }}` — an optional trailing
+newline aside — evaluates to the expression's own value, so it keeps its type:
+
+```yaml
+port: "{{ 8000 + 80 }}"       # 8080, an int
+debug: "{{ false }}"          # False, a bool
+hosts: "{{ ['a', 'b'] }}"     # a list
+label: "port {{ 8000 + 80 }}" # "port 8080", a string
+```
+
+### The environment
+
+With `inject_env=True`, templates also see `env`, a read-only snapshot of
+`os.environ`:
 
 ```yaml
 database_url: "{{ env.DATABASE_URL }}"
 ```
 
-`env` is `os.environ` — any environment variable is reachable as
-`env.VAR_NAME`.
-
-## Referencing other values
-
-A value may refer to any other top-level key, in any order. Keys are
-rendered after the keys they refer to, so chains resolve completely:
-
-```yaml
-base_path: "/srv/app"
-log_path: "{{ base_path }}/logs"
-error_log: "{{ log_path }}/error.log"   # -> "/srv/app/logs/error.log"
+```python
+config = Loader(interpolate=True, inject_env=True).load("app.yaml")
 ```
 
-Inside a mapping, a reference to that same mapping (`db.url` using
-`{{ db.host }}`) sees the values written before it, in document order.
+`env` wins over a top-level key of the same name.
 
-A cycle between two keys (`a` referring to `b` and `b` to `a`) cannot
-resolve. With `strict=True` it raises `ValueError`; otherwise each value is
-rendered once against what the other holds at that moment.
+### Strict mode
 
-An included file's templates are rendered in the **merged** document, so a
-reference to the included file's own key goes through the key it was
-included under — `{{ svc.name }}`, not `{{ name }}`.
-
-## Strict mode
+By default an undefined name renders as an empty string. With
+`Policy(strict=True)` it raises instead, which catches a misspelled key early:
 
 ```python
-config = yaconfiglib.load("config.yaml", interpolate=True, strict=True)
+from yaconfiglib import Loader, Policy
+
+loader = Loader(interpolate=True, policy=Policy(strict=True))
 ```
 
-With `strict=True`, referencing an undefined variable raises instead of
-silently rendering as an empty string — useful for catching typos in
-config keys early. The error names the key it happened at
-(`... [at database.url]`), and list indexes appear as `servers[0].host`.
+### Failures
 
-## Errors during interpolation
+Every interpolation failure — a syntax error, an undefined name under strict
+mode, an exception inside an expression such as `{{ 1 / 0 }}` — raises
+`yaconfiglib.TemplateError`, with the engine's own exception as `__cause__`
+when there is one (tplx's wrapper around it is removed), and the failing
+value's key path in the message and on `error.config_key`:
 
-A template that cannot render — a syntax error, an undefined name under
-`strict`, or a Python error inside an expression such as `{{ 1/0 }}` — raises
-the parser's or Python's own exception type, with the key path attached (also
-readable as `error.config_key`).
+```text
+ZeroDivisionError: division by zero [at database.timeout]
+```
 
-With `ignore_error`, the failure costs **only that value**: it keeps its
-template text as written and the rest of the document still renders.
+Under `on_error`, a failure costs only that value: it keeps its template text
+as written and the rest of the document still renders. The predicate form is
+offered each failure with `phase="interpolate"` and `key` the key path:
 
 ```python
-# database.password fails to render; host, port and log_path are unaffected.
-config = yaconfiglib.load("app.yaml", interpolate=True, ignore_error=True)
+def skip_banner(event):
+    return event.phase == "interpolate" and event.key == ("ui", "banner")
+
+config = Loader(interpolate=True, on_error=skip_banner).load("app.yaml")
 ```
 
-The predicate form is offered each failure once, where it happens, with
-`phase="interpolate"` and `key=` the path — so you can skip a known-bad value
-and still fail on everything else:
+Messages and DEBUG logs name the **template**, never the rendered value, since
+a template such as `{{ env.DB_PASSWORD }}` exists to produce a secret.
+
+### What interpolation guarantees
+
+- **Copy-on-write.** The loaded data is never modified; containers keep their
+  types (a `tuple` stays a `tuple`), and a document with no template marker is
+  returned untouched.
+- **Templated keys.** A key may be a template too. Keys render after values; a
+  key that renders to one that already exists raises `ConfigValueError` naming
+  both, and a skip under `on_error` keeps that entry under its template text.
+- **Only strings holding a template marker** — `{{`, `{%` or `{#` — are
+  rendered; every other value is returned as it is.
+- **Aliases are rendered once.** A YAML anchor used in many places is one
+  object, rendered once, and still one object afterwards.
+
+### The sandbox
+
+Interpolation runs in tplx's sandbox unless the policy turns the sandbox off
+(`Policy(sandbox=False)`, or `Policy.trusted()`). Sandboxed, a value template
+cannot reach Python internals — what a value written by someone else needs —
+and sees **plain data only**: a mapping or a list as itself, and any other
+value that is not a plain scalar (a date, say) as its text:
 
 ```python
-def only_skip_optional_banner(error, *, phase, key=None, **context):
-    return phase == "interpolate" and key == ("ui", "banner")
+import datetime
+
+doc = {"released": datetime.date(2024, 1, 2), "label": "v1 ({{ released }})", "db": {"port": 5432}, "port": "{{ db.port }}"}
+print(Loader(interpolate=True).load(doc)["label"])    # v1 (2024-01-02)
 ```
 
-## Templated source files (`.j2`)
+Sandboxed or not, a value template can include no file. The sandbox is the
+template engine's, not the operating system's: it does not limit time or
+memory.
 
-Append `.j2` or `.jinja2` to any filename to render the *entire file* as a
-Jinja2 template before it's parsed by its underlying format. Keep the format
-extension in front of the suffix — `config.yaml.j2`, not `config.j2` — since
-that is what selects the backend the rendered text is parsed with; a template
-without one raises `NotImplementedError` naming the file:
+### Your own interpolator
 
+`interpolator=` takes any object with the `yaconfiglib.Interpolator` shape:
+`references(text) -> frozenset[str]` (the top-level names a template reads,
+used to order rendering) and `render(text, scope) -> value`.
+
+The default is `yaconfiglib.TemplateInterpolator(engine="jinja", *,
+sandbox=True, strict=False)`, built from the policy's `sandbox` and `strict`.
+Another tplx engine with expressions renders values in another template
+language, given its tplx extra:
+
+```python
+from yaconfiglib import Loader, TemplateInterpolator
+
+loader = Loader(interpolate=True, interpolator=TemplateInterpolator("liquid"))   # needs tplx[liquid]
 ```
-config.yaml.j2  ->  rendered as Jinja2  ->  parsed as YAML
+
+Compiled templates are cached per instance. An interpolator of your own runs
+instead of tplx, so it needs no extra:
+
+```python
+import re
+
+from yaconfiglib import Loader
+
+
+class NameInterpolator:
+    """`{{ name }}` substitution only: no expressions."""
+
+    pattern = re.compile(r"\{\{\s*([A-Za-z_]\w*)\s*\}\}")
+
+    def references(self, text):
+        return frozenset(self.pattern.findall(text))
+
+    def render(self, text, scope):
+        return self.pattern.sub(lambda match: str(scope[match.group(1)]), text)
+
+
+loader = Loader(interpolate=True, interpolator=NameInterpolator())
+print(loader.load({"host": "db", "url": "pg://{{ host }}/app"}))   # {'host': 'db', 'url': 'pg://db/app'}
 ```
 
-This is a separate mechanism from `interpolate=True`: it runs before
-parsing (so you can template YAML/TOML/JSON structure itself, not just
-string values after the fact), and it's driven by the `.j2` extension
-rather than a loader option.
+Only strings containing `{{`, `{%` or `{#` are offered to it. An exception it
+raises becomes a `TemplateError`, like an engine's.
 
-```yaml
-# settings.yaml.j2
-replicas: {{ 2 if env.ENVIRONMENT == "production" else 1 }}
+## Template files
+
+A source named `<name>.<format>.<engine suffix>` is rendered by the tplx
+engine that claims the suffix, then the result is parsed as `<format>`:
+
+```text
+settings.yaml.j2      ->  rendered by Jinja   ->  parsed as YAML
+settings.toml.liquid  ->  rendered by Liquid  ->  parsed as TOML
+```
+
+Keep the format suffix in front of the engine's: `settings.yaml.j2`, not
+`settings.j2` — or name the rendered format with `format=` on the load, which
+for a template file means "parse what it renders as this"; the template still
+renders. **Template files are refused unless the policy allows them** —
+`Policy(allow_templates=True)`, or `Policy.trusted()` — with
+`TemplatesDisabledError`, before the file is even read.
+
+```jinja
+{# settings.yaml.j2 #}
+replicas: {{ 3 if env.get("STAGE") == "production" else 1 }}
+source: {{ filename }}
 ```
 
 ```python
-config = yaconfiglib.load("settings.yaml.j2", inject_env=True)
+from yaconfiglib import Loader, Policy
+
+loader = Loader(policy=Policy(allow_templates=True), inject_env=True)
+config = loader.load("settings.yaml.j2")
 ```
 
-The template sees `pathname` (the source path) and, with `inject_env=True`,
-`env` (a read-only snapshot of `os.environ`).
+The template sees:
 
-`.j2` rendering follows the load's trust settings: it runs in Jinja2's
-`SandboxedEnvironment` when `sandbox=True` or `allow_commands=False` is in
-effect, and undefined variables raise when `strict=True`.
+| Name | Value |
+| --- | --- |
+| `filename` | the template's file name (`settings.yaml.j2`) |
+| `pathname` | its path: a `PurePosixPath` when trusted; its text under the sandbox, which shows a template only plain data |
+| `env` | with `inject_env=True`, a read-only snapshot of the environment |
 
-```python
-config = yaconfiglib.load("settings.yaml.j2", environment=my_env)
-```
+Under the sandbox, write `{{ filename }}` rather than `{{ pathname.name }}`:
+`pathname` is text there, and an attribute of it is undefined.
 
-Pass a custom `jinja2.Environment` with `environment=` if you need custom
-filters, extensions, or undefined-handling beyond the default. Under
-`sandbox=True` or `allow_commands=False` it must be a
-`jinja2.sandbox.SandboxedEnvironment`, otherwise loading raises `ValueError`.
+Template files work wherever a source does, including as an `!include` target,
+and a YAML template's own `!include`s resolve next to the template.
+
+What renders depends on the sandbox, and every refusal happens before the file
+is read:
+
+- **Sandbox on** (the default): every engine tplx can sandbox renders, in
+  tplx's sandbox — Jinja, Liquid, Mustache, Handlebars, Go templates, shell
+  and envsubst. Mako, Cheetah, ERB and EPP cannot be sandboxed and are refused
+  with `TemplatesDisabledError`.
+- **Sandbox off** (`Policy.trusted()`): every engine tplx knows renders. One
+  that runs a program (ERB, EPP) also needs `allow_commands`, or
+  `CommandsDisabledError` is raised.
+
+Either way an engine needs its tplx extra, or `MissingDependencyError` names
+it.
+
+A template's own includes (`{% include %}` and the like) search the
+[confinement roots](security.md#confining-reads). Without roots, a sandboxed
+template includes nothing and a trusted one looks next to itself.
+
+`Policy(strict=True)` makes an undefined name in a template file raise, as it
+does for interpolation.
+
+A failure while rendering is a `TemplateError`, whose `__cause__` is the
+engine's own exception when there is one. A parse error in the
+**rendered** text is the format's `ParseError`, with a `render` frame naming
+the template — the line number then refers to the rendered output.

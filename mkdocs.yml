@@ -1,5 +1,5 @@
 site_name: yaconfiglib
-site_description: Another Config lib for python, basically load config/yaml/toml/... files and add some features like relative import and templating.
+site_description: Load, layer and write configuration in any registered format, with includes, typed hydration and a trust policy that is untrusted by default.
 site_url: https://jose-pr.github.io/yaconfiglib/
 repo_url: https://github.com/jose-pr/yaconfiglib
 repo_name: jose-pr/yaconfiglib
@@ -26,18 +26,24 @@ theme:
 nav:
   - Home: index.md
   - Guide:
-      - Backends: guide/backends.md
+      - Formats: guide/formats.md
+      - Sources: guide/sources.md
       - Merging: guide/merging.md
-      - Templating: guide/templating.md
       - Includes: guide/includes.md
-      - Model hydration: guide/models.md
+      - Templating: guide/templating.md
+      - Typed results: guide/models.md
       - Security: guide/security.md
+      - Migrating: guide/migrating.md
   - API Reference:
       - Overview: api/reference.md
-      - Loader: api/loader.md
-      - Backends: api/backends.md
-      - Errors: api/errors.md
-      - Utilities: api/utils.md
+      - Loading: api/loading.md
+      - Policy and context: api/policy.md
+      - Formats: api/formats.md
+      - Sources: api/sources.md
+      - Merging and typed results: api/merging.md
+      - Interpolation: api/templating.md
+      - Exceptions: api/exceptions.md
+      - Testing: api/testing.md
   - Changelog: changelog.md
 
 plugins:

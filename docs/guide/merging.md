@@ -1,139 +1,77 @@
 # Merging
 
-When `ConfigLoader.load()` receives multiple sources, it loads them in
-order and merges each new result into the running total using a
-**merge strategy**. This is what makes hiera-style layered configuration
-(base config → environment overrides → local overrides) work.
+When `Loader.load()` receives several sources, it loads them in order and
+merges each document into the running result with a **merge strategy**. That
+is what makes layered configuration work: defaults, then an environment, then
+local overrides.
 
 ```python
-from yaconfiglib import ConfigLoader, ConfigLoaderMergeMethod
+from yaconfiglib import Loader
 
-loader = ConfigLoader(merge=ConfigLoaderMergeMethod.Deep)
-# or, equivalently, the strategy name (case-insensitive):
-loader = ConfigLoader(merge="deep")
+loader = Loader(merge="deep")
 config = loader.load("base.yaml", "production.yaml", "local.yaml")
 ```
 
-Later sources take precedence. With `base.yaml` containing
-`{"server": {"host": "0.0.0.0", "port": 8080}}` and `production.yaml`
-containing `{"server": {"port": 443}}`, a `Deep` merge produces
+Later sources take precedence. With `base.yaml` holding
+`{"server": {"host": "0.0.0.0", "port": 8080}}` and `production.yaml` holding
+`{"server": {"port": 443}}`, a `deep` merge gives
 `{"server": {"host": "0.0.0.0", "port": 443}}`.
-
-## Glob sources
-
-A source containing `*`, `?` or `[` is expanded, and the matches are merged in
-a **fixed order**: path components compared by code point, so the same tree
-layers the same way on every machine and filesystem. Sources keep the order you
-passed them.
-
-```python
-# 00-base.yaml, then 10-env/prod.yaml, then 99-local.yaml — whatever the
-# directory listing happens to return.
-ConfigLoader(base_dir="conf", recursive=True).load("**/*.yaml")
-```
-
-- **`recursive=True`** enables `**`. Write `**/*` (or `**/*.yaml`) to select
-  every file at every depth: a bare `**` follows the running interpreter, as
-  `pathlib` does — it selects files too from Python 3.13, and directories only
-  before, which means it loads nothing on 3.9-3.12 once directories are
-  skipped.
-- **Directory matches are skipped**, so `envs/*` loads the files directly under
-  `envs/` and ignores its subdirectories. A source that *names* a directory
-  outright still fails, as it should.
-- **Dotfiles are matched** by wildcards, as `pathlib` does.
-- **A missing directory matches nothing** rather than raising, and a pattern
-  that matches nothing contributes nothing.
-- **`base_dir` is never pattern text.** A base directory called `proj [v2]`
-  works without escaping, because expansion runs relative to it.
-- **A path that exists is loaded literally.** If a file really is named
-  `z[1].yaml`, that is what loads. For an *absolute* pattern under a directory
-  whose name contains `[`, `*` or `?`, pass that directory as `base_dir` (or
-  `glob.escape` it), since there is no literal base to expand from.
-- **A directory that cannot be listed raises.** If a directory under a glob is
-  unreadable (permission denied, say), the `OSError` is raised rather than the
-  files quietly vanishing. `ignore_error` can skip it — the predicate is called
-  with `phase="glob"` and `path=` that directory, once per directory — and the
-  rest of the pattern still loads, so one locked subdirectory does not drop a
-  whole layer. A parent that does not exist, or is not a directory, still just
-  matches nothing.
-- **The same file loads once**, however it was named: `conf/app.yaml`,
-  `./conf/app.yaml`, `conf/../conf/app.yaml` and (on Windows) `conf/App.yaml`
-  are one file. The key is lexical — no symlink resolution — so two symlinked
-  names stay distinct on purpose.
-- **An explicitly named file beats a glob match for it**, wherever the two
-  appear, and keeps its own position. That is what makes both layering idioms
-  work: `load("base.yaml", "*.yaml")` and `load("*.yaml", "local.yaml")`.
-- **A `**` bounds a directory loop**, so a Windows junction pointing at one of
-  its own ancestors is descended once rather than walked until the filesystem
-  refuses the path. That is `bound_loops=True`, the default. Without it the
-  loop's files merge once per lap and the load eventually fails with `OSError`;
-  pass `bound_loops=False` for that unbounded walk, which is what `pathlib`
-  itself does:
-
-    ```python
-    yaconfiglib.load("**/*.yaml", base_dir="conf", recursive=True,
-                     bound_loops=False)   # pathlib's walk; a loop will raise
-    ```
-
-    Bounding costs nothing else: a directory deliberately reachable under two
-    names is still read under both, because the bound is the **current descent
-    path** — a loop is a directory reachable below itself — and not every
-    directory the walk has seen. That is the rule `find -L` uses, and it
-    is what `pathapi` implements.
-
-    Only junctions are affected. A **POSIX symlink** to a directory is never
-    descended by `**` at all — `pathlib` does not follow one, and neither does
-    pathapi — so a symlinked loop cannot arise, and a symlinked layer is
-    invisible to a recursive glob (name it as its own source instead). A
-    junction is the reverse case: Windows reports it as *not* a symlink, so
-    `**` walks straight into it.
 
 ## Strategies
 
-| Strategy | Dicts | Lists | Scalars |
+A strategy is chosen by name, or is any callable (see
+[Custom strategies](#custom-strategies)):
+
+| Strategy | Mappings | Lists | Leaves |
 | --- | --- | --- | --- |
-| `Simple` (default) | shallow update (top-level keys only) | replaced wholesale | replaced |
-| `Substitute` | merged recursively | replaced wholesale | replaced |
-| `Deep` | merged recursively | extended (see below) | replaced |
-| `Last` | replaced wholesale | replaced wholesale | replaced |
-| `List` | collected into a list, one entry per source | — | — |
-| `Hash` | collected into a dict keyed by each source's merge key | — | — |
+| `simple` (default) | top-level keys update; nested mappings replace | replaced | replaced |
+| `substitute` | merged recursively | replaced | replaced |
+| `deep` | merged recursively | extended with new items | replaced |
 
-- **`Simple`** — the default. Good when configs override entire
-  sub-sections rather than individual nested keys.
-- **`Substitute`** — like `Simple`, but nested dicts are merged
-  recursively instead of only at the top level; lists still replace.
-- **`Deep`** — fully recursive dict merging. Lists are extended with
-  unique non-mapping items from the new source, appended in that source's
-  order. An item counts as already present only when an existing item has
-  the **same type** and compares equal, so `True` is not a duplicate of
-  `1`. Mapping items are always appended; pass `mergelists=True` via
-  `merge_options` to instead merge them positionally with the mapping at
-  the same index, when the two share a key.
-- **`Last`** — each new source simply replaces the previous result
-  outright, ignoring its structure.
-- **`List`** — instead of merging, collect every source's result into a
-  list, one entry per source, in load order.
-- **`Hash`** — collect every source's result into a dict, keyed by each
-  source's merge key (see `key_factory` below). Useful for "load a
-  directory of files, keyed by filename" patterns. Two sources with the same
-  key do not both survive — the later one replaces the earlier, and a warning
-  says so.
+- **`simple`** — for configurations that override whole sections at a time.
+- **`substitute`** — nested mappings merge key by key; a list in a later
+  document replaces the earlier one.
+- **`deep`** — nested mappings merge, and a list is extended with the items of
+  the later list that are not already present, in that list's order. An item
+  counts as present only when an existing item has the **same type** and is
+  equal, so `True` is not a duplicate of `1`; unhashable items (lists inside
+  lists) are compared by structure. Mappings in a list are never
+  de-duplicated: they are always appended, unless `mergelists` says otherwise.
 
-"Scalar" above means any **leaf**: a value that is neither a mapping nor a
-list. Strings, numbers, dates, datetimes, `Decimal`s, sets and objects a
-backend produced are all leaves, and a leaf replaces. When the two sides have
-different shapes — a mapping overridden by a number, a string by a list — the
-later value replaces the earlier one rather than raising.
+```python
+base = {"server": {"host": "0.0.0.0", "port": 8080}, "features": ["a", "b"]}
+prod = {"server": {"port": 443}, "features": ["b", "c"]}
 
-The one special case is a mapping overridden by a **non-empty list of
-mappings**: `Substitute` and `Deep` fold those into the mapping, in order.
-Any other list replaces it, so `section: []` clears a section.
+for name in ("simple", "substitute", "deep"):
+    print(name, Loader(merge=name).load(base, prod))
+# simple {'server': {'port': 443}, 'features': ['b', 'c']}
+# substitute {'server': {'host': '0.0.0.0', 'port': 443}, 'features': ['b', 'c']}
+# deep {'server': {'host': '0.0.0.0', 'port': 443}, 'features': ['a', 'b', 'c']}
+```
 
-The strategies **never modify their inputs** — each returns a new result and
-leaves both sides as they were. That is what makes YAML anchors and `<<:`
-merge keys safe to override: several keys can share one mapping, and
-overriding it for one environment leaves the others alone.
+With `deep`, `merge_options={"mergelists": True}` also merges two mappings at
+the **same index** of two lists when they share a key, instead of appending the
+later one:
+
+```python
+loader = Loader(merge="deep", merge_options={"mergelists": True})
+print(loader.load({"hosts": [{"name": "a", "port": 80}]}, {"hosts": [{"name": "a", "port": 8080}]}))
+# {'hosts': [{'name': 'a', 'port': 8080}]}
+```
+
+### Rules every strategy follows
+
+- **A leaf replaces.** A leaf is anything that is not a mapping or a list:
+  strings, numbers, dates, `Decimal`s, sets, objects a format produced.
+- **A shape change replaces.** A mapping overridden by a number, or a string by
+  a list, takes the later value. No combination of types raises.
+- **A mapping overridden by a non-empty list of mappings folds them in**, in
+  order (`substitute` and `deep`). Any other list replaces it, so
+  `section: []` clears a section.
+- **Copy-on-write.** A strategy never modifies its inputs. That is what makes
+  YAML anchors and `<<:` merge keys safe to override: several keys can share one
+  mapping, and overriding it for one of them leaves the others alone. A
+  self-referencing document merges without recursing forever.
 
 ```yaml
 defaults: &defaults
@@ -146,188 +84,313 @@ production:
   <<: *defaults
 ```
 
-An override layer setting `production.db.host` leaves `development.db.host`
-as `shared`. A self-referencing document merges too, instead of recursing
-forever.
+An override layer setting `production.db.host` leaves `development.db.host` as
+`shared`.
 
-The result may still *share* unchanged sub-objects with the sources, so
-deep-copy it first if you plan to mutate it and need the sources intact.
+The result may still **share** unchanged parts with the sources, so deep-copy
+it before mutating it if you need the sources intact. Python data passed as a
+source is deep-copied when read, so your own objects are never reached.
 
-## Controlling list merges
+## `None` and `DELETE`
 
-```python
-loader = ConfigLoader(
-    merge=ConfigLoaderMergeMethod.Deep,
-    merge_options={"mergelists": True},
-)
+**`None` in an overriding document means "no opinion"**: the earlier value is
+kept, in every strategy. A key the earlier documents did not have gets `None`.
+
+To **remove** a key, set it to `yaconfiglib.DELETE` — in YAML, the `!delete`
+tag:
+
+```yaml
+# local.yaml
+cache: !delete       # removes `cache`, whatever base.yaml set
+debug: ~             # keeps base.yaml's `debug`
 ```
 
-With `mergelists=True`, dict elements at the same position in two lists
-are merged into each other (when they share at least one key) instead of
-both being kept as separate entries.
-
-## Per-source merge keys
-
-`Hash` merging (and any custom `key_factory` use) needs a key per source.
-By default it's the source's filename stem, but you can override it:
-
 ```python
-loader = ConfigLoader(
-    merge=ConfigLoaderMergeMethod.Hash,
-    key_factory="%pathname.name",  # a Jinja2 expression, evaluated per source
-)
+from yaconfiglib import DELETE, Loader
+
+print(Loader().load({"cache": {"size": 10}, "debug": True}, {"cache": DELETE, "debug": None}))
+# {'debug': True}
 ```
 
-`key_factory` accepts a callable `(path, value) -> str`, a string
-attribute name looked up on the path object, or a `"%<jinja-expr>"`
-string evaluated with `pathname` and `value` in scope.
+`DELETE` markers left in the result — a key deleted that no earlier document
+had — are pruned, so they never reach your code.
 
-For a command source, `pathname` — and therefore the default key — is the
-**whole source text**, `cmd+json://...` included, since a command has no
-filename to key on.
+## Collecting instead of merging
 
-The default key is the **filename stem**, which a directory glob repeats: every
-match of `services/*/config.yaml` is keyed `config`, so all but the last are
-dropped (with a warning). Key on the directory instead:
+`collect=` gathers the documents rather than merging them:
+
+| `collect=` | Result |
+| --- | --- |
+| `"last"` | the last document, unmerged |
+| `"list"` | every document, in load order |
+| `"hash"` | `{key(name, document): document}` |
 
 ```python
-loader = ConfigLoader(
-    merge=ConfigLoaderMergeMethod.Hash,
-    key_factory=lambda path, value: path.parent.name,   # api, billing, web
-)
-# or, as a Jinja2 expression:
-#   key_factory="%pathname.parent.name"
+loader = Loader(base_dir="services", collect="hash")
+services = loader.load("*.yaml")          # {'api': {...}, 'billing': {...}, 'web': {...}}
 ```
 
-## Overriding merge strategy per call
-
-Every option accepted by `ConfigLoader.__init__` can also be passed to an
-individual `load()` call, overriding the instance default for just that
-call:
+The default key is the source's file stem. Two sources with the same key do not
+both survive — the later replaces the earlier, with a WARNING — and that is
+exactly what happens to `services/*/config.yaml`, where every stem is
+`config`. Key on something else with `key=`, a callable `(name, document) ->
+key`, where `name` is the source's name (a file path, as a string):
 
 ```python
-loader = ConfigLoader(merge=ConfigLoaderMergeMethod.Simple)
+from pathlib import PurePath
 
-# Uses Deep merging just this once.
-result = loader.load("a.yaml", "b.yaml", merge=ConfigLoaderMergeMethod.Deep)
+loader = Loader(collect="hash", key=lambda name, document: PurePath(name).parent.name)
+services = loader.load("services/*/config.yaml")   # {'api': ..., 'billing': ..., 'web': ...}
 ```
 
-## Typed merge and custom merge behavior
+With the default key, a source with no name — a mapping passed as data, or
+`Text`/`Data` with an empty `name` — cannot be keyed and raises
+`ConfigValueError`; give it a `name`, or pass your own `key=`.
 
-`typed_merge` merges several objects into one instance of a target type,
-guided by its type hints: mappings and dataclasses/namespaces merge field by
-field, sequences take the last object's value with each element coerced
-through the element type, and scalars last-object-wins.
+## Per-call settings
+
+Every `Loader` setting except `base_dir`, `bound_loops` and `formats` can be
+overridden for one call by passing it to `load()` or `load_all()`:
 
 ```python
+loader = Loader(merge="simple")
+result = loader.load("a.yaml", "b.yaml", merge="deep")    # deep, this call only
+```
+
+An unknown keyword raises `TypeError` rather than being ignored.
+`load()` also takes:
+
+- **`default=`** — returned when **no** source loads: nothing matched, or every
+  source failed under `on_error`. It is never merged with a document.
+- **`flatten=True`** — flattens the result by one level: a mapping of mappings
+  becomes one mapping, a list of lists one list; `None` members are skipped,
+  anything else raises `ConfigTypeError`. Useful with `collect="list"`.
+- **`transform=`** — `(document, name) -> document`, applied to each document
+  before it is combined.
+
+```python
+def tag(document, name):
+    return {**document, "loaded_from": name}
+
+Loader().load("base.yaml", transform=tag)
+```
+
+## When a source fails
+
+By default the first failure raises. `on_error=` decides otherwise:
+
+- `on_error=True` skips every failing source and logs a WARNING naming the
+  source, the phase and the error's **type** — never its message, which can
+  quote configuration.
+- A callable `(LoadEvent) -> bool` decides per failure; returning `True` skips
+  it.
+
+```python
+from yaconfiglib import LoadEvent, Loader
+
+def skip_missing(event: LoadEvent) -> bool:
+    return isinstance(event.error, FileNotFoundError)
+
+config = Loader(on_error=skip_missing).load("base.yaml", "optional.yaml")
+```
+
+A `LoadEvent` has `error` (the exception, unchanged), `phase`, `path` and
+`key`. `phase` is:
+
+| Phase | What failed | Skipping it |
+| --- | --- | --- |
+| `"load"` | reading or parsing `path` | drops that source |
+| `"include"` | a file `path` includes | see [Includes](includes.md#when-an-include-fails) |
+| `"merge"` | merging the document named by `path` | drops that document |
+| `"interpolate"` | rendering the value at `key` | keeps that value's template text |
+| `"glob"` | listing the directory `path` while expanding a pattern | keeps the rest of the pattern |
+
+`BudgetExceededError` is never offered: a load that went over its budget stops.
+
+## Custom strategies
+
+A strategy is any callable `(a, b, *, memo=None, **options) -> merged`, where
+`b` is the later document. Pass it as `merge=`, or register it under a name —
+which is also what lets a document select it from an include's `merge:` key:
+
+```python
+from collections.abc import Mapping
+
+from yaconfiglib import Loader, register_merge
+
+
+def concat(a, b, *, memo=None, **options):
+    """Like deep, but lists concatenate and keep duplicates."""
+    if b is None:
+        return a
+    if isinstance(a, Mapping) and isinstance(b, Mapping):
+        merged = dict(a)
+        for key, value in b.items():
+            merged[key] = concat(a[key], value, memo=memo, **options) if key in a else value
+        return merged
+    if isinstance(a, list) and isinstance(b, list):
+        return a + b
+    return b
+
+
+register_merge("concat", concat)
+print(Loader(merge="concat").load({"tags": ["a"]}, {"tags": ["a", "b"]}))   # {'tags': ['a', 'a', 'b']}
+```
+
+Keep the built-in rules where they apply: never modify `a` or `b`, treat a
+`None` in `b` as "keep `a`", and leave `DELETE` markers in place (the loader
+prunes them). `memo` is internal to the built-in strategies — it keeps aliased
+nodes aliased and stops self-referencing documents from recursing — and a
+strategy must pass it into every nested call it makes. `merge_options` are
+passed as `**options`.
+
+`register_merge` raises `ValueError` for a name that is taken, unless
+`replace=True`; `merge_strategies()` lists the names. The built-in strategies'
+protocol is `yaconfiglib.Merge`.
+
+## Typed merge
+
+`typed_merge(cls, *layers)` merges layers into one instance of `cls`, field by
+field, each field through its own annotation. It is what
+[`load(..., into=cls)`](models.md) runs on, with one layer.
+
+```python
+import dataclasses
+from typing import List
+
 from yaconfiglib import typed_merge
 
-merged = typed_merge(MyConfig, base_cfg, override_cfg)
+
+@dataclasses.dataclass
+class Server:
+    host: str = "localhost"
+    port: int = 80
+    tags: List[str] = dataclasses.field(default_factory=list)
+
+
+base = {"host": "example.org", "port": "8080", "tags": ["a"]}
+override = {"port": 443, "tags": ["b"], "host": None}
+print(typed_merge(Server, base, override))
+# Server(host='example.org', port=443, tags=['b'])
 ```
 
-`None` objects are skipped at every level, so a later `None` never overrides
-an earlier value; a field whose every value is `None` stays `None`, and if
-nothing but `None` is given the result is `None`. To clear a field, pass an
-explicit empty value (`""`, `[]`, `{}`) rather than `None`.
+- **`None` layers and `None` values are skipped** at every level, so a later
+  `None` never overrides an earlier value. No layers, or only `None`, give
+  `None`.
+- **Mappings, dataclasses and namespaces merge field by field.** A layer may be
+  a mapping or an object of the target type; a dataclass instance used as a
+  layer contributes every field, defaults included.
+- **Sequences take the last layer's value**, every item coerced through the
+  item type. `Tuple[A, B]` coerces by position and raises `ConfigTypeError` on a
+  length mismatch; a `NamedTuple` is rebuilt with its constructor; `Dict[K, V]`
+  coerces keys as it collects them, so `"80"` and `80` are one key.
+- **A layer of another shape replaces** everything before it. When the **last**
+  layer cannot be built into `cls`, `ConfigTypeError` is raised.
+- **`extra=`** decides what a key the class does not accept does: `"ignore"`
+  (the default) drops it, `"forbid"` raises `ConfigTypeError` naming it. A
+  constructor taking `**kwargs` accepts every key.
+- **`init=False`** builds instances without calling `__init__`.
 
-An `Optional[X]` or `Union[...]` hint drops its `None` member and then coerces
-through the **first member the value is already an instance of** — so a hint
-that already accepts the value leaves it alone (`Union[int, str]` keeps
-`"8080"` as a string). A value no member accepts is coerced through the first
-member. To force a coercion, narrow the hint to the one type you want (`int`,
-not `Union[int, str]`); reordering the union does not change the result.
-`Annotated[X, ...]` is stripped and coerces through `X`, and an `Any` member
-anywhere in the union makes the whole hint `Any` — last object wins, uncoerced.
+Coercion **never loses data**:
 
-A sequence hint needs a sequence value: a string or a mapping raises
-`TypeError` rather than being split into characters or keys, so pass a list.
-Abstract hints (`Sequence[str]`, `MutableSequence[int]`) keep the value's own
-concrete type, a `NamedTuple` is rebuilt through its field hints,
-`Tuple[int, str]` coerces by position and raises on a length mismatch, and a
-type that cannot be rebuilt from its items — `range`, or a `tuple` subclass with
-a fixed `__new__` — is returned as it is.
+| Target | Accepts |
+| --- | --- |
+| `int` | an `int`, a whole-number float, an integer string — never `1.9` |
+| `bool` | a `bool`; the strings `true/yes/on/1` and `false/no/off/0`, case- and space-insensitive — anything else is `ConfigValueError` |
+| `float`, `str`, ... | what the type's constructor accepts |
+| `date`, `datetime`, `time` | the object, or an ISO 8601 string |
+| an `Enum` | a member's value, then a member's name |
+| a union | a value one member already accepts, unchanged; otherwise coerced through the first non-`None` member |
+| `Any` | the last value, uncoerced |
 
-A `bool` hint parses strings, since INI, dotenv and command output have no
-booleans: `true/yes/on/1` and `false/no/off/0`, case- and space-insensitive.
-Any other string raises `ValueError` instead of silently becoming `True`.
+`Optional[X]`, `X | None` and `Annotated[X, ...]` are unwrapped. When
+`typing.get_type_hints` cannot resolve every annotation of a class, each
+annotation is resolved on its own, and the ones that resolve are used.
 
-Two per-type hooks let a class customize how it is merged.
+A value that does not fit raises with its location attached — readable as
+`error.config_key` and `error.config_model`, and in the message:
 
-### `__merge__` — take over merging for a type
+```text
+cannot interpret 'abc' as an int [at db.port (Settings)]
+```
 
-Define a `__merge__(cls, *objects, init=True)` classmethod to fully override
-how instances of that type are merged. The most common need — "this is a
-fully-built object, just take the last one" — is packaged as `OpaqueMerge`
-(a mixin) and `opaque` (a class decorator):
+List items appear by index (`hosts[1].port`), and the model named is the
+outermost one, the one the key path is relative to.
+
+### Hooks
+
+A type can take part in its own building. Every hook is looked up on the
+unwrapped type, so an `Optional[T]` or `Annotated[T, ...]` field finds it; a
+type without one gets the coercions above.
+
+| Hook | Does |
+| --- | --- |
+| classmethod `_load_(cls, value)` | builds the type from one value — see [Building a type from a value](models.md#building-a-type-from-a-value) |
+| `_dump_(self)` | returns the instance as plain data, for `dehydrate` and `dump` |
+| classmethod `__merge__(cls, *objects, init=True)` | takes over merging the layers entirely |
+| `_parse_<field>(value)` | coerces one field — see [below](#coercing-one-field) |
+
+With `_load_`, several mapping layers are deep-merged first and the hook
+receives the result as plain data:
 
 ```python
+class Pair:
+    def __init__(self, a, b):
+        self.a, self.b = a, b
+
+    @classmethod
+    def _load_(cls, value):
+        return cls(**value)
+
+
+pair = typed_merge(Pair, {"a": 1, "b": 2}, {"b": 3})
+print(pair.a, pair.b)    # 1 3
+```
+
+### Taking over a type's merge
+
+A classmethod `__merge__(cls, *objects, init=True)` replaces `typed_merge`'s
+handling of a type entirely. The common case — "this is a fully built object, take the last one" — is
+packaged as the `OpaqueMerge` mixin and the `opaque` decorator:
+
+```python
+import argparse
+import ipaddress
+
 from yaconfiglib import OpaqueMerge, opaque
 
+
 class Zone(OpaqueMerge, argparse.Namespace):
-    network: IPNetwork          # a factory function, not a class
+    """Normalized in its own __init__; never re-merged field by field."""
 
-# ...or, without changing the base classes:
+
 @opaque
-class Zone(argparse.Namespace):
-    ...
+class Network:                     # the same, without changing the bases
+    def __init__(self, cidr):
+        self.cidr = ipaddress.ip_network(cidr)
 ```
 
-Use it when a config object's `__init__` already normalized its fields:
-`typed_merge` then returns the last object unchanged instead of introspecting
-its fields and coercing them. A field annotated by a factory function rather
-than a class needs no mixin — it is coerced through that callable per field —
-so reach for `OpaqueMerge` to skip the introspection, not to survive it. The
-hook is found through `Optional[Zone]` and other unions, not only on a direct
-class hint.
+### Coercing one field
 
-### When a field does not fit
-
-A value the target type cannot accept keeps its own exception type — `int("abc")`
-is still a `ValueError` — and the message now says **which field of which
-model**:
-
-```
-invalid literal for int() with base 10: 'abc' [at db.port (Outer)]
-```
-
-List and tuple items appear by index (`ports[1]`), the path is relative to the
-model you asked for, and it is also readable as `error.config_key` with
-`error.config_model`. `typed_merge`'s own refusals — a scalar where a sequence
-is declared, a tuple-length mismatch, a string that is not a boolean — are
-`yaconfiglib.ConfigError` subclasses as well as the `TypeError`/`ValueError`
-they always were.
-
-### `_parse_<field>` — coerce a field as it is merged
-
-If a source object defines a `_parse_<name>(value)` method, `typed_merge`
-applies it to that field's value while collecting it. `TypedNamespace`
-applies the same convention at construction time, so a built object is
-already normalized:
+A `_parse_<field>(value)` method on a layer object coerces that field's value
+as it is collected. `TypedNamespace`, an `argparse.Namespace`, applies the same
+hooks at construction, so a built instance is already normalized:
 
 ```python
-from yaconfiglib import TypedNamespace
+from yaconfiglib import TypedNamespace, typed_merge
+
 
 class ServerConfig(TypedNamespace):
-    def _parse_port(self, value):
-        return int(value)
+    def _parse_ports(self, value):
+        return [int(port) for port in value.split(",")]
 
-ServerConfig(port="8080").port      # -> 8080 (int)
+
+print(ServerConfig(ports="80,443").ports)                                     # [80, 443]
+print(typed_merge(ServerConfig, {"ports": "80"}, {"ports": "8080,8443"}).ports)   # [8080, 8443]
 ```
 
-Every value is parsed **exactly once**, so a parser need not be idempotent
-(the `split` above would fail on a second pass). Merging into a
-`TypedNamespace` target skips the hooks of any source that is already a
-`TypedNamespace`, applies the target's own hooks to raw sources such as a
-plain dict, and assembles the result without calling `__init__`. Put anything
-else a subclass's `__init__` does into a `_parse_<field>` hook or `__merge__`.
-
-Compose `TypedNamespace` with `OpaqueMerge` for a config object that both
-coerces its fields at build time and is opaque to re-merging.
-
-A mapping target is built positionally (`origin(merged)`), so keys stay data:
-non-string keys work, and `Dict[int, str]` coerces each key through the key
-type — useful because JSON, TOML, INI and env sources can only produce string
-keys. Abstract hints (`Mapping[str, int]`) build a plain `dict`, a
-`defaultdict` origin keeps the last source's `default_factory`, and a
-dataclass's `field(init=False)` names are left out of the constructor call so
-`__post_init__` recomputes them.
+Every value is parsed **exactly once**, so a parser need not be idempotent:
+merging into a `TypedNamespace` target applies the target's hooks to raw layers
+such as a mapping, skips them for a layer that is already a `TypedNamespace`,
+and assembles the result without calling `__init__`. Put anything else a
+subclass's `__init__` does into a hook or `__merge__`.
