@@ -30,8 +30,9 @@ dependencies = [
 [project.optional-dependencies]
 yaml = ["pyyaml>=6.0,<7"]
 toml = ["tomli>=2.0,<3; python_version < '3.11'", "tomli-w>=1.0,<2"]
-# 0.1.4: Loader(sandbox=), evaluate, compile and Template.references.
-templates = ["tplx[jinja]>=0.1.4,<0.2"]
+# 0.1.5: the sandbox converts a shared list once and bounds every render;
+# 0.1.4 expands an aliased document exponentially.
+templates = ["tplx[jinja]>=0.1.5,<0.2"]
 all = ["yaconfiglib[yaml,toml,templates]"]
 dev = ["yaconfiglib[all]", "pytest", "build", "hatchling", "twine", "black"]
 docs = ["mkdocs", "mkdocs-material", "mkdocstrings[python]"]
