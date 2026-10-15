@@ -20,8 +20,9 @@ imports none of them; a feature whose extra is missing raises
 
 ## One document (`import yaconfiglib`)
 
-The `json` module's vocabulary: `loads` takes **content**, `load` takes a
-**location**. A `str` given to `load` is always a path, never content.
+The standard Python serialization API, as `json`, `tomllib` and `pickle` spell
+it: `loads` takes **content**, `load` takes a **location**. A `str` given to `load`
+is always a path, never content. Each has an awaitable twin (see "Async").
 
 - **`load(source, /, *, format=None, encoding="utf-8", policy=None, into=None, **options) -> Any`**
   — one document from a path (`str`, `os.PathLike`), a pathapi `Path`, an open file
@@ -60,6 +61,31 @@ is a `ParseError` naming the byte offset. An `encoding` must name a **text** cod
 `zlib_codec`, `base64_codec` and other bytes-to-bytes codecs raise `ConfigValueError`
 (from a document's include as well), since they would inflate what `max_bytes`
 counted.
+
+## Async (`aload`, `aload_all`, `adump`, `Loader.aload`)
+
+Gather first, parse second, no new dependency. An **async source** is an async
+iterable of `str`/`bytes` chunks (`response.aiter_bytes()`) or an object with
+`async def read()` (aiofiles, `asyncio.StreamReader`; asked for 64 KiB at a time,
+or once when `read` takes no size). It is read on the event loop and stops as soon
+as it passes `max_bytes` (`BudgetExceededError`); a named one is checked against
+`confine_to` **before** it is read. Everything else — paths, includes, commands,
+parsing, merging, hydration — is the sync pipeline in a worker thread
+(`asyncio.to_thread`). Cancelling stops the async reads; work handed to the thread
+finishes. A sync `load`/`Loader.load` given an async source raises `TypeError`
+pointing here.
+
+- **`await aload(source, /, *, format=None, encoding="utf-8", policy=None, into=None, **options)`**
+  — `load`, plus async sources. The format is `format=`, else the source's `name`.
+- **`aload_all(source, /, ...) -> AsyncIterator[Any]`** — `load_all`'s documents.
+- **`await adump(obj, target, /, *, format=None, encoding="utf-8", **options)`** — a
+  path or sync file goes to `dump` in a thread; an async writer gets the text
+  (`async def write`: `str`, or bytes in `encoding` when it refuses `str`; a writer
+  with `async def drain()`: bytes, then `drain()`). Serialized completely first.
+- **`await Loader.aload(*sources, ...)`** / **`Loader.aload_all(*sources, ...)`** —
+  `load`/`load_all` with the same arguments; async sources may sit anywhere among
+  the others, nested lists included. `aload_all` checks its arguments when called.
+  A confinement refusal of an async source is offered to `on_error`.
 
 ## Loader (`yaconfiglib.Loader`)
 
@@ -296,6 +322,9 @@ Built-in formats and their dialects:
   is already data; a `format` a source read from data (not `trusted_format`) is
   limited to the document formats.
 - **`Text(data, *, format, name="")`** — in-memory content.
+- **`Chunks(chunks, *, format=None, name="")`** — content arriving in pieces: any
+  iterable of `str` or `bytes` (not mixed), joined as read and stopped past
+  `max_bytes`. Format: `format`, else `name`'s suffix. An iterator loads once.
 - **`Data(data, name="")`** — Python data, deep-copied on read (any mapping,
   read-only ones included, becomes a `dict`).
 - **`Env(prefix="", *, nested=None, lowercase=False, environ=None)`** — environment

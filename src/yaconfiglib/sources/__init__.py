@@ -21,7 +21,7 @@ import re
 import threading
 import typing as _ty
 
-from ._base import Data, Payload, Source, Text
+from ._base import Chunks, Data, Payload, Source, Text
 from ._command import Command
 from ._env import Env
 
@@ -32,6 +32,7 @@ __all__ = [
     "Env",
     "Data",
     "Text",
+    "Chunks",
     "register_scheme",
     "unregister_scheme",
     "schemes",

@@ -9,7 +9,7 @@ installed package.
 
 | Path | Holds |
 | --- | --- |
-| `src/yaconfiglib/` | the package. `_api.py` holds `load`/`loads`/`dump`/`dumps`; `_loader.py` the layered `Loader`; `formats/` the `Format` contract, its registry and one private module per built-in format; `sources/` the `Source` contract, `Command`/`Env`/`Data`/`Text` and the scheme registry; `_context.py` the `Policy`; `_paths.py` source resolution and globs; `_confine.py` confinement; `_merge.py`, `_hydrate.py`, `_templating.py`, `_dotaccess.py`; `exceptions.py`; `testing.py` the shipped `FormatContract` |
+| `src/yaconfiglib/` | the package. `_api.py` holds `load`/`loads`/`dump`/`dumps`; `_loader.py` the layered `Loader`; `formats/` the `Format` contract, its registry and one private module per built-in format; `sources/` the `Source` contract, `Command`/`Env`/`Data`/`Text` and the scheme registry; `_context.py` the `Policy`; `_paths.py` source resolution and globs; `_confine.py` confinement; `_async.py` the awaitable twins; `_merge.py`, `_hydrate.py`, `_templating.py`, `_dotaccess.py`; `exceptions.py`; `testing.py` the shipped `FormatContract` |
 | `src/yaconfiglib/AGENTS.md` | the shipped API header: every public name with its signature, defaults and gotchas. Keep it current in the same commit as an API change |
 | `tests/` | pytest suite. `conftest.py` has the shared fixtures, `_extras.py` the skip marks for optional dependencies |
 | `docs/` | MkDocs sources for the published site |

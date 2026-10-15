@@ -23,6 +23,7 @@ a file named explicitly anywhere in the call beats a glob match for it.
 from __future__ import annotations
 
 import glob as _glob
+import inspect
 import logging
 import os
 import pathlib
@@ -51,6 +52,15 @@ def is_stream(source: object) -> bool:
     return callable(getattr(source, "read", None))
 
 
+def is_async_source(source: object) -> bool:
+    """An async stream or iterable: ``__aiter__``, or an ``async def read``."""
+    if isinstance(source, (str, bytes, bytearray, Path, os.PathLike)):
+        return False
+    if hasattr(source, "__aiter__"):
+        return True
+    return inspect.iscoroutinefunction(getattr(source, "read", None))
+
+
 def _flatten(
     sources: _ty.Iterable[_ty.Any], allow_plugins: bool
 ) -> _ty.Iterator[_ty.Any]:
@@ -59,6 +69,11 @@ def _flatten(
             # The documented way to pass an absent optional layer.
             logger.debug("skipping empty source %r", source)
             continue
+        if is_async_source(source):
+            raise TypeError(
+                f"a {type(source).__name__} is read asynchronously; use "
+                "await yaconfiglib.aload(...) or await Loader().aload(...)"
+            )
         if isinstance(source, Source) or is_stream(source):
             yield source
             continue

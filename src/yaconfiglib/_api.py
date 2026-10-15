@@ -11,7 +11,7 @@ from pathapi import Path
 from . import formats as _formats
 from ._context import Policy
 from ._loader import Loader, _Session, check_format_options
-from ._paths import is_stream
+from ._paths import is_async_source, is_stream
 from .exceptions import ConfigValueError, UnsupportedFormatError
 from .sources import Source, Text
 
@@ -50,7 +50,7 @@ def _documents(
         yield session.finish(value, into=into)
 
 
-def _check_location(source: _ty.Any, name: str) -> None:
+def _check_location(source: _ty.Any, name: str, allow_async: bool = False) -> None:
     if source is None:
         raise TypeError(f"{name}() got None; pass a path or an open file")
     if isinstance(source, str) and not source:
@@ -59,6 +59,13 @@ def _check_location(source: _ty.Any, name: str) -> None:
         raise TypeError(
             f"{name}() takes a location, and bytes are content; use "
             "loads(data, format=...)"
+        )
+    if is_async_source(source):
+        if allow_async:
+            return
+        raise TypeError(
+            f"a {type(source).__name__} is read asynchronously; use "
+            f"await yaconfiglib.a{name}(...)"
         )
     if not isinstance(
         source, (str, os.PathLike, Path, Source, _ty.Mapping)

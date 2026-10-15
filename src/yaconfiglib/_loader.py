@@ -1082,5 +1082,59 @@ class Loader:
         ):
             yield session.finish(value, into=into)
 
+    async def aload(
+        self,
+        *sources: _ty.Any,
+        format: _ty.Any = None,
+        into: _ty.Any = None,
+        default: _ty.Any = None,
+        flatten: bool = False,
+        transform: "_ty.Optional[_ty.Callable[[_ty.Any, str], _ty.Any]]" = None,
+        **overrides: _ty.Any,
+    ) -> _ty.Any:
+        """:meth:`load`, awaitable; a source may also be an async stream.
+
+        An async source — an async iterable of `str`/`bytes` chunks, or an
+        object with ``async def read()`` — is read on the event loop first,
+        stopping past ``max_bytes``; the rest of the load runs in a worker
+        thread.
+        """
+        from ._async import loader_aload
+
+        if not sources:
+            raise TypeError("aload() needs at least one source")
+        return await loader_aload(
+            self,
+            sources,
+            dict(
+                format=format,
+                into=into,
+                default=default,
+                flatten=flatten,
+                transform=transform,
+                **overrides,
+            ),
+        )
+
+    def aload_all(
+        self,
+        *sources: _ty.Any,
+        format: _ty.Any = None,
+        into: _ty.Any = None,
+        transform: "_ty.Optional[_ty.Callable[[_ty.Any, str], _ty.Any]]" = None,
+        **overrides: _ty.Any,
+    ) -> _ty.AsyncIterator[_ty.Any]:
+        """:meth:`load_all` as an async iterator; sources as :meth:`aload`."""
+        from ._async import loader_aload_all
+
+        if not sources:
+            raise TypeError("aload_all() needs at least one source")
+        self._call(overrides)  # checked now, not on the first iteration
+        return loader_aload_all(
+            self,
+            sources,
+            dict(format=format, into=into, transform=transform, **overrides),
+        )
+
     def __repr__(self) -> str:
         return f"Loader(base_dir={self.base_dir!r}, policy={self.policy!r})"

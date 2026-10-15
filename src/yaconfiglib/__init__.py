@@ -23,6 +23,7 @@ from importlib.metadata import version as _version
 
 from . import formats, sources
 from ._api import dump, dumps, load, load_all, loads, loads_all
+from ._async import adump, aload, aload_all
 from ._context import LoadContext, Policy
 from ._dotaccess import DotAccessibleDict
 from ._hydrate import (
@@ -68,6 +69,9 @@ __all__ = [
     "loads_all",
     "dump",
     "dumps",
+    "aload",
+    "aload_all",
+    "adump",
     # layers
     "Loader",
     "LoadEvent",

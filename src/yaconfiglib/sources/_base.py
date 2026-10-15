@@ -7,7 +7,7 @@ import typing as _ty
 
 from .._context import LoadContext
 
-__all__ = ["Source", "Payload", "Data", "Text"]
+__all__ = ["Source", "Payload", "Data", "Text", "Chunks"]
 
 
 def _copy_data(value: _ty.Any, memo: dict) -> _ty.Any:
@@ -150,3 +150,75 @@ class Text(Source):
 
     def __repr__(self) -> str:
         return f"Text(format={self.format!r}, name={self._name!r})"
+
+
+def _join_chunks(chunks: _ty.Iterable[_ty.Any], limit: int, name: str) -> _ty.Any:
+    """*chunks* (all `str` or all bytes-like) joined, stopping past *limit*."""
+    from ..exceptions import BudgetExceededError
+
+    parts: list = []
+    total = 0
+    kind: "_ty.Optional[type]" = None
+    for chunk in chunks:
+        if isinstance(chunk, (bytearray, memoryview)):
+            chunk = bytes(chunk)
+        if not isinstance(chunk, (str, bytes)):
+            raise TypeError(f"a chunk is str or bytes, not {type(chunk).__name__}")
+        if kind is None:
+            kind = type(chunk)
+        elif type(chunk) is not kind:
+            raise TypeError("chunks mix str and bytes")
+        total += len(chunk)
+        if total > limit:
+            # Before the rest arrives: a hostile stream stops here.
+            raise BudgetExceededError(
+                f"reading {name or '<chunks>'} takes the load past max_bytes={limit}"
+            )
+        parts.append(chunk)
+    if kind is str:
+        return "".join(parts)
+    return b"".join(parts)
+
+
+class Chunks(Source):
+    """Content arriving in pieces: any iterable of `str` or `bytes` chunks.
+
+    ``Chunks(response.iter_content(), format="json")``. The chunks are joined as
+    they arrive and the read stops once they pass the policy's ``max_bytes``. The
+    format is *format*, else the one *name*'s suffix selects. An iterator is read
+    once, so a source built on one loads once.
+    """
+
+    def __init__(
+        self,
+        chunks: _ty.Iterable[_ty.Any],
+        *,
+        format: "_ty.Optional[str]" = None,
+        name: str = "",
+    ) -> None:
+        if isinstance(chunks, (str, bytes, bytearray)) or not isinstance(
+            chunks, _ty.Iterable
+        ):
+            raise TypeError(
+                f"Chunks takes an iterable of chunks, not {type(chunks).__name__}"
+            )
+        self.chunks = chunks
+        self.format = format
+        self._name = name
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    def read(self, context: "LoadContext") -> Payload:
+        data = _join_chunks(self.chunks, context.policy.max_bytes, self._name)
+        return Payload(
+            data,
+            name=self._name,
+            identity=f"chunks:{id(self)}",
+            format=self.format,
+            trusted_format=self.format is not None,
+        )
+
+    def __repr__(self) -> str:
+        return f"Chunks(format={self.format!r}, name={self._name!r})"
