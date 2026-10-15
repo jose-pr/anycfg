@@ -57,6 +57,8 @@ _BUILTINS = {
 _BUILTIN, _REGISTERED, _ENTRY_POINT = "builtin", "registered", "entry_point"
 
 _lock = threading.RLock()
+#: Replaced whole under the lock, never mutated once published, so readers
+#: need no lock.
 _schemes: "_ty.Dict[str, _ty.Tuple[_ty.Callable[[str], Source], str]]" = {}
 _state = {"loaded": False}
 
@@ -79,21 +81,23 @@ def _entry_points() -> _ty.Iterable[_ty.Any]:
 def _ensure_loaded() -> None:
     if _state["loaded"]:
         return
+    global _schemes
     with _lock:
         if _state["loaded"]:
             return
         _state["loaded"] = True
+        table = dict(_schemes)
         for scheme, target in _BUILTINS.items():
-            _schemes[scheme] = (_import(target), _BUILTIN)
+            table[scheme] = (_import(target), _BUILTIN)
         for point in _entry_points():
             scheme = getattr(point, "name", "").lower()
             try:
-                if scheme in _schemes:
+                if scheme in table:
                     raise ValueError("the scheme is already registered")
                 factory = point.load()
                 if not callable(factory):
                     raise TypeError("the entry point is not callable")
-                _schemes[scheme] = (factory, _ENTRY_POINT)
+                table[scheme] = (factory, _ENTRY_POINT)
             except (
                 Exception
             ) as error:  # noqa: BLE001 - one bad plugin must not break loading
@@ -103,6 +107,7 @@ def _ensure_loaded() -> None:
                     type(error).__name__,
                     error,
                 )
+        _schemes = table
 
 
 def register_scheme(
@@ -112,6 +117,7 @@ def register_scheme(
 
     Raises `ValueError` when *scheme* is taken, unless *replace* is true.
     """
+    global _schemes
     _ensure_loaded()
     key = scheme.lower()
     with _lock:
@@ -119,14 +125,18 @@ def register_scheme(
             raise ValueError(
                 f"scheme {key!r} is already registered; pass replace=True to take it over"
             )
-        _schemes[key] = (factory, _REGISTERED)
+        _schemes = {**_schemes, key: (factory, _REGISTERED)}
 
 
 def unregister_scheme(scheme: str) -> bool:
     """Remove *scheme*; return whether it was registered."""
+    global _schemes
     _ensure_loaded()
     with _lock:
-        return _schemes.pop(scheme.lower(), None) is not None
+        table = dict(_schemes)
+        found = table.pop(scheme.lower(), None) is not None
+        _schemes = table
+        return found
 
 
 def schemes() -> "_ty.List[str]":

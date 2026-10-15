@@ -29,27 +29,16 @@ def format_registry():
     formats.names()  # load the built-ins and entry points before the snapshot
     registry = sys.modules["yaconfiglib.formats"]
     with registry._lock:
-        saved = (
-            dict(registry._by_name),
-            {suffix: list(claims) for suffix, claims in registry._by_suffix.items()},
-            dict(registry._entries),
-            dict(registry._state),
-        )
+        # The tables are replaced whole on every change, so keeping the
+        # reference is a snapshot.
+        saved = (registry._tables, dict(registry._state))
     try:
         yield formats
     finally:
         with registry._lock:
-            for live, copy in zip(
-                (
-                    registry._by_name,
-                    registry._by_suffix,
-                    registry._entries,
-                    registry._state,
-                ),
-                saved,
-            ):
-                live.clear()
-                live.update(copy)
+            registry._tables = saved[0]
+            registry._state.clear()
+            registry._state.update(saved[1])
 
 
 @pytest.fixture
@@ -795,3 +784,66 @@ class TestSchemeEntryPoints:
         main.write_text("x: !include 'zzplug://inner'\n", encoding="utf-8")
         with pytest.raises((yaconfiglib.ConfigError, OSError)):
             yaconfiglib.load(str(main))
+
+
+class TestReplaceTakesOnlyWhatCollides:
+    def test_taking_an_alias_leaves_the_other_format(self, format_registry):
+        class Cfg(Format):
+            name = "cfg"
+            suffixes = (".cfgx",)
+
+            def loads(self, data, /, *, context=None, **options):
+                return {}
+
+        format_registry.register_format(Cfg, replace=True)
+        assert "ini" in format_registry.names()
+        assert format_registry.get("cfg") is Cfg
+        assert format_registry.for_filename("a.ini").name == "ini"
+        assert yaconfiglib.loads("[s]\nk = v\n", format="ini") == {"s": {"k": "v"}}
+
+    def test_taking_the_name_replaces_the_format(self, format_registry):
+        class Json(Format):
+            name = "json"
+            suffixes = (".json",)
+
+            def loads(self, data, /, *, context=None, **options):
+                return "mine"
+
+        format_registry.register_format(Json, replace=True)
+        assert yaconfiglib.loads("{}", format="json") == "mine"
+
+
+class TestConcurrentReads:
+    def test_lookups_while_another_thread_registers(self, format_registry):
+        import threading
+
+        errors = []
+        stop = threading.Event()
+
+        def read():
+            while not stop.is_set():
+                try:
+                    format_registry.find_for_filename("a.json")
+                    format_registry.names()
+                    format_registry.document_formats()
+                except Exception as error:  # noqa: BLE001 - recorded for the assert
+                    errors.append(error)
+                    return
+
+        readers = [threading.Thread(target=read) for _ in range(3)]
+        for thread in readers:
+            thread.start()
+        try:
+            for index in range(300):
+                cls = type(
+                    f"F{index}",
+                    (Format,),
+                    {"name": f"f{index}", "suffixes": (f".f{index}",)},
+                )
+                format_registry.register_format(cls)
+                format_registry.unregister_format(cls.name)
+        finally:
+            stop.set()
+            for thread in readers:
+                thread.join()
+        assert errors == []

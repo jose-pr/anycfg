@@ -82,8 +82,13 @@ class INIFormat(Format):
     file holding nothing else logs a warning.
 
     ``dumps`` writes a mapping of sections whose values are strings and whose
-    option names are lower-case — exactly what ``loads`` returns, so the round
-    trip is exact. With the default interpolation a ``%`` is written ``%%``.
+    option names are lower-case — exactly what ``loads`` returns — and checks
+    the text loads back unchanged: a name holding ``=`` or ``:``, a value with
+    leading or trailing blanks, a continuation line that starts with a comment
+    character, or a ``[DEFAULT]`` section raises `ConfigValueError` naming the
+    option. ``interpolation`` is the one the file will be read with:
+    ``"basic"`` (the default) writes ``%`` as ``%%``, ``"extended"`` writes
+    ``$`` as ``$$``, ``"none"`` writes values as they are.
     """
 
     name = "ini"
@@ -140,15 +145,31 @@ class INIFormat(Format):
             raise ConfigTypeError(
                 f"INI holds a mapping of sections, not a {type(obj).__name__}"
             )
-        escape = _interpolation(interpolation) is not None
+        reading = _interpolation(interpolation)
+        if isinstance(reading, configparser.ExtendedInterpolation):
+            marker = "$"
+        elif isinstance(reading, configparser.BasicInterpolation):
+            marker = "%"
+        elif reading is None:
+            marker = None
+        else:
+            raise ConfigValueError(
+                "dumps cannot escape values for a custom interpolation; pass "
+                "'basic', 'extended' or 'none'"
+            )
         parser = configparser.ConfigParser(interpolation=None)
+        failure: "_ty.Optional[Exception]" = None
         for section, values in obj.items():
             if not isinstance(section, str) or not isinstance(values, _ty.Mapping):
                 raise ConfigTypeError(
                     f"INI section {section!r} must be a str name mapping to a "
                     "mapping of options"
                 )
-            parser.add_section(section)
+            if section == DEFAULT_SECTION:
+                raise ConfigValueError(
+                    f"[{DEFAULT_SECTION}] is inherited by other sections, not read "
+                    "as one; give the section another name"
+                )
             for key, value in values.items():
                 if not isinstance(key, str) or key != key.lower():
                     raise ConfigTypeError(
@@ -160,7 +181,55 @@ class INIFormat(Format):
                         f"INI values are strings; [{section}] {key} is a "
                         f"{type(value).__name__}"
                     )
-                parser.set(section, key, value.replace("%", "%%") if escape else value)
+            try:
+                parser.add_section(section)
+                for key, value in values.items():
+                    if marker is not None:
+                        value = value.replace(marker, marker * 2)
+                    parser.set(section, key, value)
+            except (ValueError, configparser.Error):
+                failure = ConfigValueError(
+                    f"INI cannot hold section [{section}] as written"
+                )
+            if failure is not None:
+                raise failure
         out = io.StringIO()
-        parser.write(out)
-        return out.getvalue()
+        try:
+            parser.write(out)
+        except (ValueError, configparser.Error):
+            failure = ConfigValueError("INI cannot hold an option name as written")
+        if failure is not None:
+            # Outside the except block: the error may quote a value.
+            raise failure
+        text = out.getvalue()
+        _check_round_trip(obj, text, interpolation)
+        return text
+
+
+def _check_round_trip(obj: _ty.Mapping, text: str, interpolation: object) -> None:
+    """Raise unless *text* loads back as *obj*, naming the first option that differs."""
+    try:
+        again = INIFormat().loads(text, interpolation=interpolation)
+    except ParseError as error:
+        failure: Exception = ConfigValueError(
+            f"INI cannot hold this mapping as written ({error.msg})"
+        )
+    else:
+        failure = None
+    if failure is not None:
+        raise failure
+    for section, values in obj.items():
+        loaded = again.get(section, {})
+        for key, value in values.items():
+            if loaded.get(key) != value:
+                raise ConfigValueError(
+                    f"[{section}] {key} would not load back as written: INI drops "
+                    "leading and trailing blanks, splits a name at = or :, and "
+                    "reads a continuation line starting with # or ; as a comment"
+                )
+        extra = set(loaded) - set(values)
+        if extra:
+            raise ConfigValueError(
+                f"[{section}] would load back with extra option(s) "
+                f"{', '.join(sorted(extra))}: an option name holds = or :"
+            )

@@ -273,3 +273,46 @@ class TestEncoding:
         source = tmp_path / "c.ini"
         source.write_bytes(b"[s]\nk = caf\xe9\n")
         assert yaconfiglib.load(str(source), encoding="latin-1") == {"s": {"k": "café"}}
+
+
+class TestDumpsRoundTrips:
+    @pytest.mark.parametrize(
+        ("interpolation", "value"),
+        [("basic", "50% off"), ("extended", "cost $5 and 50%"), ("none", "%($x)")],
+    )
+    def test_escapes_for_the_interpolation_it_will_be_read_with(
+        self, interpolation, value
+    ):
+        data = {"s": {"k": value}}
+        text = yaconfiglib.dumps(data, format="ini", interpolation=interpolation)
+        assert (
+            yaconfiglib.loads(text, format="ini", interpolation=interpolation) == data
+        )
+
+    @pytest.mark.parametrize(
+        "data",
+        [
+            {"s": {"a=b": "v"}},
+            {"s": {"a:b": "v"}},
+            {"s": {"k": "  padded"}},
+            {"s": {"k": "line\n# comment"}},
+            {"DEFAULT": {"k": "v"}},
+        ],
+    )
+    def test_what_would_not_load_back_raises(self, data):
+        with pytest.raises(yaconfiglib.ConfigValueError) as caught:
+            yaconfiglib.dumps(data, format="ini")
+        assert "padded" not in str(caught.value)
+
+    def test_a_custom_interpolation_cannot_be_escaped_for(self):
+        with pytest.raises(yaconfiglib.ConfigValueError, match="custom"):
+            yaconfiglib.dumps(
+                {"s": {"k": "v"}},
+                format="ini",
+                interpolation=configparser.Interpolation(),
+            )
+
+    def test_multi_line_value_round_trips(self):
+        data = {"s": {"k": "one\ntwo"}}
+        text = yaconfiglib.dumps(data, format="ini")
+        assert yaconfiglib.loads(text, format="ini") == data

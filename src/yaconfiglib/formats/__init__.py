@@ -60,11 +60,31 @@ class _Entry(_ty.NamedTuple):
     origin: str
 
 
+class _Tables(_ty.NamedTuple):
+    by_name: "_ty.Dict[str, _Entry]"
+    by_suffix: "_ty.Dict[str, _ty.List[_Entry]]"
+    entries: "_ty.Dict[str, _Entry]"
+
+    def copy(self) -> "_Tables":
+        # Shallow: claim lists are replaced on change, never mutated.
+        return _Tables(dict(self.by_name), dict(self.by_suffix), dict(self.entries))
+
+
 _lock = threading.RLock()
-_by_name: "_ty.Dict[str, _Entry]" = {}
-_by_suffix: "_ty.Dict[str, _ty.List[_Entry]]" = {}
-_entries: "_ty.Dict[str, _Entry]" = {}
+#: Replaced whole under the lock and never mutated after publishing, so a
+#: reader takes one consistent snapshot without locking.
+_tables = _Tables({}, {}, {})
 _state = {"builtins": False, "entry_points": False}
+
+
+def _update(change: "_ty.Callable[[_Tables], _ty.Any]") -> _ty.Any:
+    """Apply *change* to a copy of the tables and publish it; under the lock."""
+    global _tables
+    with _lock:
+        tables = _tables.copy()
+        result = change(tables)
+        _tables = tables
+        return result
 
 
 def _import(target: str) -> type:
@@ -86,19 +106,23 @@ def _validate(cls: object) -> "_ty.Type[Format]":
     return cls
 
 
-def _add(cls: "_ty.Type[Format]", origin: str, replace: bool) -> None:
-    """Register *cls*, refusing a name or suffix someone else holds."""
+def _add(t: _Tables, cls: "_ty.Type[Format]", origin: str, replace: bool) -> None:
+    """Register *cls* in *t*, refusing a name or suffix someone else holds.
+
+    With *replace*, only what collides moves to *cls*: a format that loses one
+    alias keeps its other names, and is removed only when *cls* takes its name.
+    """
     entry = _Entry(cls, origin)
     keys = [cls.name] + [alias.lower() for alias in cls.aliases]
     for key in keys:
-        held = _by_name.get(key)
+        held = t.by_name.get(key)
         if held is not None and held.cls is not cls and not replace:
             raise ValueError(
                 f"format name {key!r} is already registered by "
                 f"{held.cls.__qualname__}; pass replace=True to take it over"
             )
     for suffix in cls.suffixes:
-        for held in _by_suffix.get(suffix, ()):
+        for held in t.by_suffix.get(suffix, ()):
             if (
                 held.cls is not cls
                 and held.cls.priority == cls.priority
@@ -112,33 +136,33 @@ def _add(cls: "_ty.Type[Format]", origin: str, replace: bool) -> None:
                 )
     if replace:
         for key in keys:
-            old = _by_name.get(key)
-            if old is not None and old.cls is not cls:
-                _remove(old.cls.name)
+            old = t.by_name.get(key)
+            if old is not None and old.cls is not cls and old.cls.name == key:
+                _remove(t, old.cls.name)
     for key in keys:
-        _by_name[key] = entry
+        t.by_name[key] = entry
     for suffix in cls.suffixes:
-        claims = [held for held in _by_suffix.get(suffix, ()) if held.cls is not cls]
+        claims = [held for held in t.by_suffix.get(suffix, ()) if held.cls is not cls]
         if replace:
             claims = [held for held in claims if held.cls.priority != cls.priority]
         claims.append(entry)
         claims.sort(key=lambda held: -held.cls.priority)
-        _by_suffix[suffix] = claims
-    _entries[cls.name] = entry
+        t.by_suffix[suffix] = claims
+    t.entries[cls.name] = entry
 
 
-def _remove(name: str) -> bool:
-    entry = _entries.pop(name, None)
+def _remove(t: _Tables, name: str) -> bool:
+    entry = t.entries.pop(name, None)
     if entry is None:
         return False
-    for key in [k for k, held in _by_name.items() if held.cls is entry.cls]:
-        del _by_name[key]
-    for suffix in list(_by_suffix):
-        claims = [held for held in _by_suffix[suffix] if held.cls is not entry.cls]
+    for key in [k for k, held in t.by_name.items() if held.cls is entry.cls]:
+        del t.by_name[key]
+    for suffix in list(t.by_suffix):
+        claims = [held for held in t.by_suffix[suffix] if held.cls is not entry.cls]
         if claims:
-            _by_suffix[suffix] = claims
+            t.by_suffix[suffix] = claims
         else:
-            del _by_suffix[suffix]
+            del t.by_suffix[suffix]
     return True
 
 
@@ -158,8 +182,13 @@ def _ensure_loaded() -> None:
         return
     with _lock:
         if not _state["builtins"]:
-            for target in _BUILTINS.values():
-                _add(_validate(_import(target)), _BUILTIN, False)
+            classes = [_validate(_import(target)) for target in _BUILTINS.values()]
+
+            def add_builtins(t: _Tables) -> None:
+                for cls in classes:
+                    _add(t, cls, _BUILTIN, False)
+
+            _update(add_builtins)
             _state["builtins"] = True
         if not _state["entry_points"]:
             # Set first: an entry point that imports yaconfiglib.formats while
@@ -172,7 +201,7 @@ def _ensure_loaded() -> None:
                         alias.lower() in _BUILTINS for alias in cls.aliases
                     ):
                         raise ValueError("an entry point cannot take a built-in name")
-                    _add(cls, _ENTRY_POINT, False)
+                    _update(lambda t, cls=cls: _add(t, cls, _ENTRY_POINT, False))
                 except (
                     Exception
                 ) as error:  # noqa: BLE001 - one bad plugin must not break loading
@@ -198,8 +227,8 @@ def register_format(
 
     def apply(target: "_ty.Type[Format]") -> "_ty.Type[Format]":
         _ensure_loaded()
-        with _lock:
-            _add(_validate(target), _REGISTERED, replace)
+        cls = _validate(target)
+        _update(lambda t: _add(t, cls, _REGISTERED, replace))
         return target
 
     return apply if cls is None else apply(cls)
@@ -208,22 +237,25 @@ def register_format(
 def unregister_format(name: str) -> bool:
     """Remove the format registered under *name*; return whether one was."""
     _ensure_loaded()
-    with _lock:
-        entry = _by_name.get(name.lower())
-        return _remove(entry.cls.name) if entry is not None else False
+
+    def remove(t: _Tables) -> bool:
+        entry = t.by_name.get(name.lower())
+        return _remove(t, entry.cls.name) if entry is not None else False
+
+    return _update(remove)
 
 
 def names() -> "_ty.List[str]":
     """Every registered format name, sorted."""
     _ensure_loaded()
-    return sorted(_entries)
+    return sorted(_tables.entries)
 
 
 def document_formats() -> "_ty.FrozenSet[str]":
     """The formats a document may select by default: built-in and code-registered."""
     _ensure_loaded()
     return frozenset(
-        name for name, entry in _entries.items() if entry.origin != _ENTRY_POINT
+        name for name, entry in _tables.entries.items() if entry.origin != _ENTRY_POINT
     )
 
 
@@ -251,7 +283,7 @@ def get(
             that are.
     """
     _ensure_loaded()
-    entry = _by_name.get(str(name).lower())
+    entry = _tables.by_name.get(str(name).lower())
     if entry is None:
         raise UnsupportedFormatError(
             f"unknown format {name!r}; registered: {', '.join(names())}"
@@ -268,21 +300,22 @@ def find_for_filename(
     *filename* is a base name or a path; only the last component is used.
     """
     _ensure_loaded()
+    tables = _tables  # one snapshot for the whole lookup
     base = str(filename).replace("\\", "/").rsplit("/", 1)[-1].lower()
     if not base:
         return None
     # Every registered suffix that fits in the name's tail, longest first:
     # "a.tar.json" asks ".tar.json", then ".json". Only the last `longest`
     # characters are ever examined, so the lookup is linear in the name.
-    longest = max((len(suffix) for suffix in _by_suffix), default=0)
+    longest = max((len(suffix) for suffix in tables.by_suffix), default=0)
     tail = base[-longest:] if longest else ""
     position = tail.find(".")
     while position != -1:
-        claims = _by_suffix.get(tail[position:])
+        claims = tables.by_suffix.get(tail[position:])
         if claims and base.endswith(tail[position:]):
             return _first_reachable(claims, allowed, filename)
         position = tail.find(".", position + 1)
-    for entry in _entries.values():
+    for entry in tables.entries.values():
         claims_name = getattr(entry.cls, "claims_name", None)
         if callable(claims_name) and claims_name(base):
             _refuse_unreachable(entry, allowed, filename)
