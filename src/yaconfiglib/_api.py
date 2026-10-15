@@ -47,7 +47,7 @@ def _documents(
     for _name, value in session.each(
         [source], session.context(), explicit=explicit, options=options, single=single
     ):
-        yield session.finish(value, interpolate=False, into=into)
+        yield session.finish(value, into=into)
 
 
 def _check_location(source: _ty.Any, name: str) -> None:

@@ -11,8 +11,8 @@ Everything public is importable from `yaconfiglib`, `yaconfiglib.formats`,
 
 `pip install yaconfiglib` brings pathapi, the path layer. Extras: `yaml` (PyYAML 6),
 `toml` (`tomli` below Python 3.11, and `tomli-w` to write), `templates`
-(`tplx[jinja]` 0.1.5+: interpolation and template files; other engines need their
-own tplx extra), `all`. `import yaconfiglib`
+(`tplx[jinja]` 0.1.5+: template files and engine interpolation; other engines need
+their own tplx extra; `interpolate="vars"` needs none), `all`. `import yaconfiglib`
 imports none of them; a feature whose extra is missing raises
 `MissingDependencyError` naming it when used.
 
@@ -65,7 +65,7 @@ counted.
 
 `Loader(*, base_dir=None, policy=None, encoding="utf-8", merge="simple",
 merge_options=None, collect=None, key=None, recursive=False, bound_loops=True,
-interpolate=False, interpolator=None, inject_env=False, wrap=None, on_error=False,
+interpolate=False, inject_env=False, wrap=None, on_error=False,
 format_options=None, formats=None)`
 
 - **`.load(*sources, format=None, into=None, default=None, flatten=False, transform=None, **overrides) -> Any`**
@@ -74,7 +74,7 @@ format_options=None, formats=None)`
   — every document of every source, each finished on its own (interpolated, wrapped,
   hydrated); a `---` stream yields each of its documents.
 - `**overrides`: any of `policy`, `encoding`, `merge`, `merge_options`, `collect`,
-  `key`, `recursive`, `interpolate`, `interpolator`, `inject_env`, `wrap`,
+  `key`, `recursive`, `interpolate`, `inject_env`, `wrap`,
   `on_error`, `format_options` — for that call only (`policy=None` keeps the
   loader's). Anything else is `TypeError` (format options go in
   `format_options={"json": {...}}`). No sources is `TypeError`.
@@ -101,7 +101,7 @@ Settings:
 - `recursive` — `**` in a glob descends into directories. `bound_loops` — bound a `**`
   walk through a Windows junction loop (on by default; a POSIX directory symlink is
   never descended).
-- `interpolate`, `interpolator`, `inject_env` — see "Interpolation".
+- `interpolate`, `inject_env` — see "Interpolation".
 - `wrap` — `None` returns plain data; `True` (or `DotAccessibleDict`) returns
   dot-accessible mappings; a callable is applied to the result. Ignored with `into=`.
 - `on_error` — `False` raises; `True` skips a failing source (WARNING naming source,
@@ -193,8 +193,8 @@ policy of the load that reached them. Refusals are `PolicyError` subclasses (als
   a program. Else `CommandsDisabledError`.
 - `allow_templates` — template files; else `TemplatesDisabledError`.
 - `allow_includes` — `!include`; else `PolicyError`.
-- `sandbox` — interpolation and Jinja template files run in Jinja's
-  `SandboxedEnvironment`; non-Jinja template engines are refused.
+- `sandbox` — interpolation and template files run in tplx's sandbox; an engine
+  tplx cannot sandbox (mako, Cheetah, ERB, EPP) is refused (`TemplatesDisabledError`).
 - `strict` — an undefined template name raises; a reference cycle in interpolation
   raises.
 - `confine_to` — every **local** file read (top-level sources, includes, glob
@@ -434,14 +434,37 @@ value with segments left gives `default`; the final value is returned as stored,
 defines (`items`, `get`, ...) raise `AttributeError`; use `cfg[name]`. `copy()`,
 `|`, `|=` keep the class; values assigned later are stored as given.
 
-## Interpolation (`yaconfiglib.TemplateInterpolator`)
+## Interpolation (`Loader(interpolate=...)`)
 
-`Loader(interpolate=True)` renders `{{ ... }}`/`{% ... %}` in the merged document's
-strings, once, with the document's string keys as the scope (`env`, a read-only
-`os.environ` snapshot, too with `inject_env=True`). Top-level keys render after the
+Value interpolation and template files are two features. **Interpolation** runs at
+value time: after every source is loaded and merged, the strings of the result that
+hold the engine's syntax are rendered, once, with the document's string keys as the
+scope (`env`, a read-only `os.environ` snapshot, too with `inject_env=True`).
+`Loader.load` interpolates the merged document, `Loader.load_all` each document;
+includes are not interpolated on their own, and the top-level `yaconfiglib.load()`
+never interpolates. **Template files** (next section) are chosen by file suffix and
+rendered whole before parsing.
+
+`interpolate=` picks the renderer, and is checked when the `Loader` is built (or the
+per-call override is applied):
+
+- `False`/`None` (default): off. `True`: Jinja.
+- a tplx engine's name or class (`"liquid"`, `"envsubst"`, `tplx.JinjaTemplate`):
+  that engine, sandboxed and strict as the policy says. Under the sandbox an engine
+  tplx cannot sandbox raises `TemplatesDisabledError`; an engine that runs a program
+  (ERB, EPP) needs `allow_commands` (`CommandsDisabledError`); a missing engine
+  extra is `MissingDependencyError`; an unknown name `ValueError`.
+- `"vars"`: `VarsInterpolator`, no extra needed.
+- an object with `render` and `references` (an `Interpolator`): used as it is.
+- anything else: `TypeError`.
+
+Which strings render is the engine's syntax: `{{`/`{%`/`{#` for Jinja, `{{` for
+Mustache, Handlebars and Go, `$` for envsubst and shell, `${` for `"vars"`, `<%` for
+ERB/EPP; every string for an engine not in that table. A custom interpolator decides
+with an optional `is_template(text) -> bool`, else Jinja's markers. Top-level keys render after the
 keys they reference, so chains resolve in any order; a rendered value is never
-rendered again. A bare `{{ expr }}` (only a trailing newline around it) keeps its
-type. Copy-on-write: the input is never modified, containers keep their types, and a
+rendered again. A bare expression (`{{ expr }}`, `${name}`; only a trailing
+newline around it) keeps its type. Copy-on-write: the input is never modified, containers keep their types, and a
 document with no template marker is returned untouched. A templated key rendering to
 a key that already exists raises `ConfigValueError` naming both templates (a skip
 under `on_error` keeps the entry under its template text). A value may refer into
@@ -452,10 +475,16 @@ skip under `on_error` keeps that value's template text. Messages and DEBUG logs 
 the template, never the rendered value.
 
 - **`Interpolator`** — protocol: `references(text) -> frozenset[str]`,
-  `render(text, scope) -> Any`.
-- **`TemplateInterpolator(engine="jinja", *, sandbox=True, strict=False)`** — the
-  default (Jinja, `sandbox`/`strict` from the policy), on tplx: `engine` is any tplx
-  engine with expressions (`"jinja"`, `"liquid"`, ...). Sandboxed, a value cannot
+  `render(text, scope) -> Any`, optionally `is_template(text) -> bool`.
+- **`VarsInterpolator(*, strict=False)`** — `${name}` and `${a.b.0}` references:
+  each step a mapping key or a list index, no expressions, no attribute access, so
+  no sandbox is needed. A value that is exactly one reference keeps its type; inside
+  text a value is written with `str` (`None` as nothing). `$${` is a literal `${`.
+  Undefined: empty (`None` alone), or `TemplateError` when strict. A malformed
+  reference (`${a..b}`) is `TemplateError`.
+- **`TemplateInterpolator(engine="jinja", *, sandbox=True, strict=False)`** — a tplx
+  engine by name or class; `.engine_class` is the class it resolved to, and
+  `is_template(text)` its syntax test. Sandboxed, a value cannot
   reach Python internals and sees plain data: a mapping or list as itself, any other
   non-plain value (a date) as its text; a container an expression builds comes back
   as plain `dict`/`list`/`tuple`. A sandboxed render is bounded by tplx's defaults

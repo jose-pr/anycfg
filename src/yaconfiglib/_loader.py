@@ -22,7 +22,8 @@ from ._merge import Merge, deep, prune_deletes, resolve_merge, simple, substitut
 from ._scalar import resolved
 from ._templating import (
     Interpolator,
-    default_interpolator,
+    InterpolateChoice,
+    resolve_interpolator,
     check_template,
     interpolate_document,
     render_file,
@@ -104,7 +105,8 @@ class _Call:
     key: "_ty.Callable[[str, _ty.Any], _ty.Any]"
     recursive: bool
     bound_loops: bool
-    interpolate: bool
+    interpolate: InterpolateChoice
+    #: What *interpolate* resolves to under *policy*; None when off.
     interpolator: "_ty.Optional[Interpolator]"
     inject_env: bool
     wrap: _ty.Any
@@ -795,17 +797,14 @@ class _Session:
 
     # -- finishing -----------------------------------------------------------
 
-    def finish(self, result: _ty.Any, *, interpolate: bool, into: _ty.Any) -> _ty.Any:
+    def finish(self, result: _ty.Any, *, into: _ty.Any) -> _ty.Any:
         call = self.call
         if self.prune or self.state.deletes:
             result = prune_deletes(result)
-        if interpolate:
-            interpolator = call.interpolator or default_interpolator(
-                call.policy.sandbox, call.policy.strict
-            )
+        if call.interpolator is not None:
             result = interpolate_document(
                 result,
-                interpolator,
+                call.interpolator,
                 extra={"env": _environ_snapshot()} if call.inject_env else None,
                 strict=call.policy.strict,
                 on_error=lambda error, key: self.offer(error, "interpolate", None, key),
@@ -830,7 +829,6 @@ _OVERRIDABLE = frozenset(
         "key",
         "recursive",
         "interpolate",
-        "interpolator",
         "inject_env",
         "wrap",
         "on_error",
@@ -864,9 +862,13 @@ class Loader:
             file stem by default.
         recursive: Whether ``**`` in a glob source descends into directories.
         bound_loops: Bound a ``**`` walk through a Windows junction loop.
-        interpolate: Render ``{{ ... }}`` in the merged document's strings.
-        interpolator: The :class:`~yaconfiglib.Interpolator` to use; Jinja,
-            sandboxed as the policy says, by default.
+        interpolate: Render the template text in the merged document's
+            strings, once, after merging: `True` with Jinja, a tplx engine's
+            name or class (``"liquid"``, ``"envsubst"``) with that engine,
+            ``"vars"`` with :class:`~yaconfiglib.VarsInterpolator` (``${a.b}``
+            references; needs no extra), or an
+            :class:`~yaconfiglib.Interpolator` object. Engines are sandboxed
+            and strict as the policy says. `False` (the default) is off.
         inject_env: Give templates and interpolation a read-only ``env``
             snapshot of the environment.
         wrap: `True` (or `DotAccessibleDict`) returns dot-accessible mappings;
@@ -893,8 +895,7 @@ class Loader:
         key: "_ty.Optional[_ty.Callable[[str, _ty.Any], _ty.Any]]" = None,
         recursive: bool = False,
         bound_loops: bool = True,
-        interpolate: bool = False,
-        interpolator: "_ty.Optional[Interpolator]" = None,
+        interpolate: InterpolateChoice = False,
         inject_env: bool = False,
         wrap: _ty.Any = None,
         on_error: OnError = False,
@@ -912,7 +913,6 @@ class Loader:
                 recursive=recursive,
                 bound_loops=bound_loops,
                 interpolate=interpolate,
-                interpolator=interpolator,
                 inject_env=inject_env,
                 wrap=wrap,
                 on_error=on_error,
@@ -952,8 +952,8 @@ class Loader:
             key=values["key"] or _default_key,
             recursive=bool(values["recursive"]),
             bound_loops=bool(values["bound_loops"]),
-            interpolate=bool(values["interpolate"]),
-            interpolator=values["interpolator"],
+            interpolate=values["interpolate"],
+            interpolator=resolve_interpolator(values["interpolate"], policy),
             inject_env=bool(values["inject_env"]),
             wrap=values["wrap"],
             on_error=on_error,
@@ -1044,7 +1044,7 @@ class Loader:
         )
         if flatten and loaded:
             result = _flatten_result(result)
-        return session.finish(result, interpolate=call.interpolate, into=into)
+        return session.finish(result, into=into)
 
     def load_all(
         self,
@@ -1080,7 +1080,7 @@ class Loader:
         for _name, value in session.each(
             sources, session.context(), explicit=format, transform=transform
         ):
-            yield session.finish(value, interpolate=session.call.interpolate, into=into)
+            yield session.finish(value, into=into)
 
     def __repr__(self) -> str:
         return f"Loader(base_dir={self.base_dir!r}, policy={self.policy!r})"

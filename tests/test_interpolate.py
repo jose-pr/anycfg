@@ -181,9 +181,11 @@ class TestSharedInterpolator:
     def test_loader_reuses_the_default_interpolator(self):
         from yaconfiglib._templating import default_interpolator
 
-        assert default_interpolator(True, False) is default_interpolator(True, False)
-        assert default_interpolator(True, False) is not default_interpolator(
-            False, False
+        assert default_interpolator("jinja", True, False) is default_interpolator(
+            "jinja", True, False
+        )
+        assert default_interpolator("jinja", True, False) is not default_interpolator(
+            "jinja", False, False
         )
 
 
@@ -646,7 +648,7 @@ class TestCustomInterpolator:
                 return text.upper()
 
         shout = Shout()
-        result = Loader(interpolate=True, interpolator=shout).load(
+        result = Loader(interpolate=shout).load(
             {"a": "{{ x }}", "b": "plain", "c": ["{% y %}"]}
         )
         assert result == {"a": "{{ X }}", "b": "plain", "c": ["{% Y %}"]}
@@ -663,7 +665,7 @@ class TestCustomInterpolator:
             def render(self, text, scope):
                 return f"<{scope[text[3:-3]]}>"
 
-        result = Loader(interpolate=True, interpolator=Lookup()).load(
+        result = Loader(interpolate=Lookup()).load(
             {"c": "{{ b }}", "b": "{{ a }}", "a": "v"}
         )
         assert result == {"c": "<<v>>", "b": "<v>", "a": "v"}
@@ -677,9 +679,7 @@ class TestCustomInterpolator:
                 raise KeyError("nope")
 
         with pytest.raises(TemplateError) as caught:
-            Loader(interpolate=True, interpolator=Broken()).load(
-                {"k": {"v": "{{ x }}"}}
-            )
+            Loader(interpolate=Broken()).load({"k": {"v": "{{ x }}"}})
         assert isinstance(caught.value.__cause__, KeyError)
         assert caught.value.config_key == ("k", "v")
 
@@ -692,7 +692,7 @@ class TestCustomInterpolator:
                 raise ConfigValueError("refused")
 
         with pytest.raises(ConfigValueError, match="refused") as caught:
-            Loader(interpolate=True, interpolator=Refusing()).load({"k": "{{ x }}"})
+            Loader(interpolate=Refusing()).load({"k": "{{ x }}"})
         assert caught.value.config_key == ("k",)
 
 
@@ -753,7 +753,10 @@ class TestYamlDocuments:
 
 
 def test_missing_jinja2_names_the_extra(tmp_path):
-    """Without Jinja2, interpolation raises MissingDependencyError naming the extra."""
+    """Without the extra, asking for Jinja raises naming it when the loader is built.
+
+    ``interpolate="vars"`` needs neither tplx nor Jinja2.
+    """
     package_root = os.path.dirname(
         os.path.dirname(os.path.abspath(yaconfiglib.__file__))
     )
@@ -761,12 +764,15 @@ def test_missing_jinja2_names_the_extra(tmp_path):
         "import sys\n"
         f"sys.path.insert(0, {package_root!r})\n"
         "sys.modules['jinja2'] = None\n"
+        "sys.modules['tplx'] = None\n"
         "import yaconfiglib\n"
-        "loader = yaconfiglib.Loader(interpolate=True, on_error=True)\n"
         "try:\n"
+        "    loader = yaconfiglib.Loader(interpolate=True, on_error=True)\n"
         "    print('RESULT', loader.load({'a': '{{ 1 }}'}))\n"
         "except yaconfiglib.MissingDependencyError as error:\n"
         "    print('MISSING', isinstance(error, ImportError), error)\n"
+        "plain = yaconfiglib.Loader(interpolate='vars')\n"
+        "print('VARS', plain.load({'a': 1, 'b': '${a}'}))\n"
     )
     done = subprocess.run(
         [sys.executable, "-c", code],
@@ -778,6 +784,7 @@ def test_missing_jinja2_names_the_extra(tmp_path):
     assert "MISSING True" in done.stdout, done.stdout + done.stderr
     assert "yaconfiglib[templates]" in done.stdout
     assert "RESULT" not in done.stdout
+    assert "VARS {'a': 1, 'b': 1}" in done.stdout
 
 
 @pytest.mark.usefixtures("needs_tplx")

@@ -16,11 +16,13 @@ result parsed as ``<fmt>``. The policy decides:
   also needs ``allow_commands``. Includes resolve under the confinement roots,
   or next to the template when there are none.
 
-**Value interpolation** (``Loader(interpolate=True)``) renders ``{{ ... }}``
-inside the strings of the merged document, once, with the document itself as
-the scope. A bare ``{{ expr }}`` keeps its type. It runs through an
-:class:`Interpolator`; the built-in :class:`TemplateInterpolator` uses a tplx
-engine (Jinja by default), sandboxed when the policy is.
+**Value interpolation** (``Loader(interpolate=...)``) renders the template
+text inside the strings of the merged document, once, with the document itself
+as the scope. A bare expression (``{{ expr }}``, ``${name}``) keeps its type. It
+runs through an :class:`Interpolator`: :class:`TemplateInterpolator` uses a
+tplx engine (Jinja by default), sandboxed when the policy is, and
+:class:`VarsInterpolator` substitutes ``${a.b}`` references with no expressions
+and no extra.
 """
 
 from __future__ import annotations
@@ -29,6 +31,7 @@ import collections.abc as _abc
 import logging
 import os
 import pathlib
+import re
 import threading
 import types
 import typing as _ty
@@ -48,11 +51,35 @@ from .exceptions import (
 if _ty.TYPE_CHECKING:
     from ._context import Policy
 
-__all__ = ["Interpolator", "TemplateInterpolator", "interpolate_document"]
+__all__ = [
+    "Interpolator",
+    "TemplateInterpolator",
+    "VarsInterpolator",
+    "interpolate_document",
+]
 
 logger = logging.getLogger(__name__)
 
+#: Jinja's markers: what an interpolator without ``is_template`` is asked about.
 _MARKERS = ("{{", "{%", "{#")
+
+#: Per tplx engine: the text that marks a template, and the delimiters of a bare
+#: expression whose value keeps its type (None: the engine evaluates nothing).
+_SYNTAX: (
+    "_ty.Dict[str, _ty.Tuple[_ty.Tuple[str, ...], _ty.Optional[_ty.Tuple[str, str]]]]"
+) = {
+    "jinja": (("{{", "{%", "{#"), ("{{", "}}")),
+    "liquid": (("{{", "{%"), ("{{", "}}")),
+    "mustache": (("{{",), ("{{", "}}")),
+    "handlebars": (("{{",), ("{{", "}}")),
+    "go": (("{{",), ("{{", "}}")),
+    "mako": (("${", "<%", "%"), ("${", "}")),
+    "cheetah": (("$", "#"), ("${", "}")),
+    "shell": (("$",), ("${", "}")),
+    "envsubst": (("$",), ("${", "}")),
+    "erb": (("<%",), None),
+    "epp": (("<%",), None),
+}
 
 
 def _tplx() -> _ty.Any:
@@ -104,28 +131,52 @@ def _plain(value: _ty.Any, memo: "_ty.Optional[dict]" = None) -> _ty.Any:
 
 
 class Interpolator(_ty.Protocol):
-    """Renders template text found inside loaded values."""
+    """Renders template text found inside loaded values.
+
+    An interpolator may also define ``is_template(text) -> bool``, which says
+    whether *text* holds its syntax at all; without it, Jinja's markers
+    (``{{``, ``{%``, ``{#``) decide.
+    """
 
     def references(self, text: str) -> _ty.FrozenSet[str]:
         """The top-level names *text* reads; empty for text that does not parse."""
 
     def render(self, text: str, scope: _ty.Mapping[str, _ty.Any]) -> _ty.Any:
-        """Render *text*; a bare ``{{ expr }}`` returns the expression's own value."""
+        """Render *text*; a bare expression returns the expression's own value."""
+
+
+def _engine_key(engine: type) -> str:
+    """tplx's name for an engine class: ``JinjaTemplate`` is ``jinja``."""
+    name = engine.__name__.lower()
+    if name.endswith("template") and name != "template":
+        name = name[: -len("template")]
+    return name
 
 
 class TemplateInterpolator:
     """Interpolation through a tplx engine; sandboxed by default.
 
-    *engine* is any tplx engine with expressions (``"jinja"`` by default,
-    ``"liquid"``, ...). *sandbox* uses tplx's sandbox: an untrusted value
-    cannot reach Python internals and sees plain data — a mapping or list as
-    itself, any other non-plain value (a date) as its text. *strict* makes an
-    undefined name raise instead of rendering empty. A template can include no
-    file. Compiled templates are cached per instance.
+    *engine* is a tplx engine's name or class (``"jinja"`` by default,
+    ``"liquid"``, ``"go"``, ``"envsubst"``, ...). *sandbox* uses tplx's sandbox:
+    an untrusted value cannot reach Python internals and sees plain data — a
+    mapping or list as itself, any other non-plain value (a date) as its text —
+    and an engine tplx cannot sandbox is refused. *strict* makes an undefined
+    name raise instead of rendering empty. A template can include no file.
+    Compiled templates are cached per instance.
+
+    Raises:
+        MissingDependencyError: Without tplx, or the engine's own extra.
+        TemplatesDisabledError: Under *sandbox*, for an engine tplx cannot
+            sandbox (mako, Cheetah, ERB, EPP).
+        ValueError: For a name no tplx engine has.
     """
 
     def __init__(
-        self, engine: str = "jinja", *, sandbox: bool = True, strict: bool = False
+        self,
+        engine: "_ty.Union[str, type]" = "jinja",
+        *,
+        sandbox: bool = True,
+        strict: bool = False,
     ) -> None:
         tplx = _tplx()
         self.engine = engine
@@ -136,14 +187,35 @@ class TemplateInterpolator:
             undefined="strict" if strict else "lenient",
             sandbox=sandbox,
         ).lookup()
+        failure: "_ty.Optional[Exception]" = None
         try:
             # Fails now, not once per value, when the engine's library is missing.
-            self._lookup.compile("", engine=engine)
+            probe = self._lookup.compile("", engine=engine)
         except tplx.EngineUnavailableError as error:
-            raise MissingDependencyError(
-                f'{error}; Jinja comes with the "templates" extra: '
+            hint = (
+                '; Jinja comes with the "templates" extra: '
                 'pip install "yaconfiglib[templates]"'
-            ) from None
+                if _engine_name(engine) in ("jinja", "j2", "jinja2")
+                else ""
+            )
+            failure = MissingDependencyError(f"{error}{hint}")
+        except tplx.SandboxError:
+            failure = TemplatesDisabledError(
+                f"refusing to interpolate with {_engine_name(engine)}: the engine "
+                "cannot be sandboxed, and the policy's sandbox is on"
+            )
+        if failure is not None:
+            raise failure
+        #: The tplx engine class *engine* names.
+        self.engine_class: type = type(probe)
+        markers, bare = _SYNTAX.get(_engine_key(self.engine_class), (None, None))
+        self._markers = markers
+        self._bare = bare
+
+    def is_template(self, text: str) -> bool:
+        """Whether *text* holds this engine's syntax; any text, for an unknown engine."""
+        markers = self._markers
+        return markers is None or any(marker in text for marker in markers)
 
     def references(self, text: str) -> _ty.FrozenSet[str]:
         try:
@@ -165,18 +237,101 @@ class TemplateInterpolator:
             except NotImplementedError:
                 names = scope
             values = {name: scope[name] for name in names if name in scope}
-            # Only a trailing newline may surround a bare expression: a YAML `|`
-            # block adds one, while spaces inside a quoted scalar are text.
-            stripped = text.rstrip("\r\n")
-            if stripped.startswith("{{") and stripped.endswith("}}"):
-                inner = stripped[2:-2].strip()
-                if "{{" not in inner and "}}" not in inner:
-                    return _plain(
-                        self._lookup.evaluate(inner, values, engine=self.engine)
-                    )
+            inner = _bare_expression(text, self._bare)
+            if inner is not None:
+                return _plain(self._lookup.evaluate(inner, values, engine=self.engine))
             return template.render(values)
         except tplx.TplxError as error:
             raise _template_error(error) from _root(error)
+
+
+def _engine_name(engine: _ty.Any) -> str:
+    return _engine_key(engine) if isinstance(engine, type) else str(engine).lower()
+
+
+def _bare_expression(
+    text: str, delimiters: "_ty.Optional[_ty.Tuple[str, str]]"
+) -> "_ty.Optional[str]":
+    """The expression inside *text* when it is one bare expression, else None.
+
+    Only a trailing newline may surround it: a YAML ``|`` block adds one, while
+    spaces inside a quoted scalar are text.
+    """
+    if delimiters is None:
+        return None
+    opening, closing = delimiters
+    stripped = text.rstrip("\r\n")
+    if not (stripped.startswith(opening) and stripped.endswith(closing)):
+        return None
+    inner = stripped[len(opening) : len(stripped) - len(closing)]
+    if opening in inner or closing in inner:
+        return None
+    return inner.strip()
+
+
+#: ``$${`` (an escaped ``${``) or ``${reference}``.
+_VAR = re.compile(r"\$\$\{|\$\{([^{}]*)\}")
+
+
+class VarsInterpolator:
+    """``${name}`` and ``${a.b.0}`` references; no expressions, no extra needed.
+
+    A reference is a dotted path into the document: each step a mapping key or
+    a list index. A value that is exactly one reference keeps the referenced
+    value's type; inside other text it is written with `str` (``None`` as
+    nothing). ``$${`` writes a literal ``${``. An undefined reference renders
+    empty (``None`` alone), or raises `TemplateError` when *strict*. It runs no
+    code and reads no attribute, so it needs no sandbox.
+    """
+
+    engine = "vars"
+
+    def __init__(self, *, strict: bool = False) -> None:
+        self.strict = strict
+
+    def is_template(self, text: str) -> bool:
+        return "${" in text
+
+    def references(self, text: str) -> _ty.FrozenSet[str]:
+        return frozenset(
+            match.group(1).strip().split(".", 1)[0]
+            for match in _VAR.finditer(text)
+            if match.group(1) is not None and match.group(1).strip()
+        )
+
+    def render(self, text: str, scope: _ty.Mapping[str, _ty.Any]) -> _ty.Any:
+        whole = _VAR.fullmatch(text.rstrip("\r\n"))
+        if whole is not None and whole.group(1) is not None:
+            return self._lookup(whole.group(1), scope)
+
+        def substitute(match: "re.Match[str]") -> str:
+            if match.group(1) is None:
+                return "${"
+            value = self._lookup(match.group(1), scope)
+            return "" if value is None else str(value)
+
+        return _VAR.sub(substitute, text)
+
+    def _lookup(self, path: str, scope: _ty.Mapping[str, _ty.Any]) -> _ty.Any:
+        steps = path.strip().split(".")
+        if not all(steps):
+            raise TemplateError(f"malformed reference ${{{path}}}")
+        value: _ty.Any = scope
+        for step in steps:
+            if isinstance(value, _abc.Mapping) and step in value:
+                value = value[step]
+            elif (
+                isinstance(value, _abc.Sequence)
+                and not isinstance(value, (str, bytes))
+                and step.isdigit()
+                and int(step) < len(value)
+            ):
+                value = value[int(step)]
+            elif self.strict:
+                raise TemplateError(f"undefined reference ${{{path.strip()}}}")
+            else:
+                return None
+        return value
 
 
 def _root(error: BaseException) -> BaseException:
@@ -192,17 +347,92 @@ def _template_error(error: BaseException) -> TemplateError:
 _INTERPOLATORS: dict = {}
 _INTERPOLATORS_LOCK = threading.Lock()
 
+#: What ``interpolate=`` takes: off, the default engine, an engine, or an object.
+InterpolateChoice = _ty.Union[bool, str, type, Interpolator, None]
 
-def default_interpolator(sandbox: bool, strict: bool) -> TemplateInterpolator:
-    """The shared Jinja interpolator for ``(sandbox, strict)``, so its cache stays warm."""
-    key = (sandbox, strict)
+
+def default_interpolator(
+    engine: "_ty.Union[str, type]", sandbox: bool, strict: bool
+) -> _ty.Any:
+    """The shared interpolator for an engine and a policy, so its cache stays warm.
+
+    ``"vars"`` is :class:`VarsInterpolator`; anything else a tplx engine.
+    """
+    key = (engine, sandbox, strict)
     with _INTERPOLATORS_LOCK:
         found = _INTERPOLATORS.get(key)
         if found is None:
-            found = _INTERPOLATORS[key] = TemplateInterpolator(
-                sandbox=sandbox, strict=strict
-            )
+            if isinstance(engine, str) and engine.lower() == "vars":
+                found = VarsInterpolator(strict=strict)
+            else:
+                found = TemplateInterpolator(engine, sandbox=sandbox, strict=strict)
+            _INTERPOLATORS[key] = found
     return found
+
+
+def resolve_interpolator(choice: InterpolateChoice, policy: "Policy") -> _ty.Any:
+    """The interpolator ``interpolate=choice`` means under *policy*, or None for off.
+
+    ``True`` is Jinja; a name or tplx engine class is that engine, sandboxed and
+    strict as the policy says; an object with ``render`` and ``references`` is
+    used as it is. An engine that runs a program (ERB, EPP) also needs
+    ``allow_commands``.
+
+    Raises:
+        TypeError: For anything else.
+    """
+    if choice is None or choice is False:
+        return None
+    if choice is True:
+        choice = "jinja"
+    if isinstance(choice, (str, type)):
+        if not (isinstance(choice, str) and choice.lower() == "vars"):
+            # Before the engine is built: building one probes for its program.
+            engine = _engine_class(choice)
+            tplx = _tplx()
+            if (
+                engine is not None
+                and issubclass(engine, tplx.SubprocessTemplate)
+                and not policy.allow_commands
+            ):
+                raise CommandsDisabledError(
+                    f"refusing to interpolate with {engine.__name__}, which runs a "
+                    "program: the policy does not allow commands"
+                )
+        return default_interpolator(choice, policy.sandbox, policy.strict)
+    if callable(getattr(choice, "render", None)) and callable(
+        getattr(choice, "references", None)
+    ):
+        return choice
+    raise TypeError(
+        "interpolate= takes a bool, an engine name or class, or an object with "
+        f"render() and references(), not {choice!r}"
+    )
+
+
+def _engine_class(engine: "_ty.Union[str, type]") -> "_ty.Optional[type]":
+    """The registered tplx engine class *engine* names, matched as tplx does.
+
+    None when no engine has that name; building the interpolator then reports it.
+    """
+    if isinstance(engine, type):
+        return engine
+    word = engine.lower().lstrip(".")
+    tplx = _tplx()
+    for cls in tplx.registered_engines():
+        names = [_engine_key(cls)] + [
+            suffix.lstrip(".") for suffix in tplx.template_extensions(cls) or ()
+        ]
+        if word in names:
+            return cls
+    return None
+
+
+def _is_template_for(interpolator: _ty.Any) -> "_ty.Callable[[str], bool]":
+    found = getattr(interpolator, "is_template", None)
+    if callable(found):
+        return found
+    return lambda text: any(marker in text for marker in _MARKERS)
 
 
 def _scope(document: _ty.Mapping, extra: _ty.Mapping[str, _ty.Any]) -> dict:
@@ -227,6 +457,7 @@ class _Pass:
         on_error: "_ty.Optional[_ty.Callable[[BaseException, tuple], bool]]",
     ) -> None:
         self.interpolator = interpolator
+        self.is_template = _is_template_for(interpolator)
         self.on_error = on_error
         # id(original) -> (original, result): keeps the original alive so its
         # id() cannot be reused within the pass, and keeps aliases aliased.
@@ -267,7 +498,7 @@ class _Pass:
         return result
 
     def text(self, data: str, scope: _ty.Mapping, keypath: tuple) -> _ty.Any:
-        if not any(marker in data for marker in _MARKERS):
+        if not self.is_template(data):
             return data
         try:
             try:
@@ -293,11 +524,13 @@ class _Pass:
         return result
 
 
-def _has_template(value: _ty.Any, seen: set) -> bool:
-    """Whether any string in *value* holds a template marker; each node once."""
+def _has_template(
+    value: _ty.Any, seen: set, is_template: "_ty.Callable[[str], bool]"
+) -> bool:
+    """Whether any string in *value* holds template text; each node once."""
     kind = type(value)
     if kind is str:
-        return any(marker in value for marker in _MARKERS)
+        return is_template(value)
     if kind in (int, float, bool) or value is None:
         return False
     if id(value) in seen:
@@ -305,21 +538,27 @@ def _has_template(value: _ty.Any, seen: set) -> bool:
     seen.add(id(value))
     if kind is dict or isinstance(value, _abc.Mapping):
         return any(
-            _has_template(key, seen) or _has_template(item, seen)
+            _has_template(key, seen, is_template)
+            or _has_template(item, seen, is_template)
             for key, item in value.items()
         )
     if isinstance(value, (_abc.Sequence, _abc.Set)) and not isinstance(
         value, (bytes, bytearray)
     ):
-        return any(_has_template(item, seen) for item in value)
+        return any(_has_template(item, seen, is_template) for item in value)
     return False
 
 
-def _references(interpolator: Interpolator, value: _ty.Any, cache: dict) -> set:
+def _references(
+    interpolator: Interpolator,
+    value: _ty.Any,
+    cache: dict,
+    is_template: "_ty.Callable[[str], bool]",
+) -> set:
     """Names every template inside *value* refers to; containers once each."""
     kind = type(value)
     if kind is str:
-        if not any(marker in value for marker in _MARKERS):
+        if not is_template(value):
             return set()
         return set(interpolator.references(value))
     if kind in (int, float, bool) or value is None:
@@ -330,13 +569,13 @@ def _references(interpolator: Interpolator, value: _ty.Any, cache: dict) -> set:
     names: set = set()
     if kind is dict or isinstance(value, _abc.Mapping):
         for key, item in value.items():
-            names |= _references(interpolator, key, cache)
-            names |= _references(interpolator, item, cache)
+            names |= _references(interpolator, key, cache, is_template)
+            names |= _references(interpolator, item, cache, is_template)
     elif isinstance(value, (_abc.Sequence, _abc.Set)) and not isinstance(
         value, (str, bytes, bytearray)
     ):
         for item in value:
-            names |= _references(interpolator, item, cache)
+            names |= _references(interpolator, item, cache, is_template)
     cache[id(value)] = names
     return names
 
@@ -369,7 +608,8 @@ def interpolate_document(
             reference cycle under *strict*.
     """
     extra = dict(extra or {})
-    if not _has_template(document, set()):
+    is_template = _is_template_for(interpolator)
+    if not _has_template(document, set(), is_template):
         return document
     walker = _Pass(interpolator, on_error)
     if not isinstance(document, _abc.Mapping):
@@ -397,7 +637,9 @@ def interpolate_document(
             return  # lenient: the reference sees the key's current value
         resolving.append(key)
         try:
-            for name in _references(interpolator, document[key], references):
+            for name in _references(
+                interpolator, document[key], references, is_template
+            ):
                 # A value referring into its own key (`db.url: "{{ db.host }}"`)
                 # sees that key's current value; only another key can cycle.
                 if name != key and name in document and name not in extra:

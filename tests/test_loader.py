@@ -161,7 +161,6 @@ class TestOverrides:
             ("key", lambda name, doc: name),
             ("recursive", True),
             ("interpolate", False),
-            ("interpolator", None),
             ("inject_env", False),
             ("wrap", None),
             ("on_error", False),
