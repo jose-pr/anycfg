@@ -99,13 +99,13 @@ class TestTemplateInterpolator:
         # A YAML `|` block adds a trailing newline to the scalar.
         assert TemplateInterpolator().render(text, {}) == 2
 
-    @pytest.mark.parametrize(
-        "text, expected",
-        [("  {{ 5 }}", "  5"), ("{{ 5 }} ", "5 "), ("\n{{ 5 }}", "\n5")],
-    )
-    def test_anything_else_around_an_expression_is_text(self, text, expected):
-        # Spaces inside a quoted scalar are deliberate text.
-        assert TemplateInterpolator().render(text, {}) == expected
+    @pytest.mark.parametrize("text", ["  {{ 5 }}", "{{ 5 }} ", "\n{{ 5 }}"])
+    def test_whitespace_around_one_expression_keeps_the_type(self, text):
+        # tplx's rule: whitespace around a single expression is not text.
+        assert TemplateInterpolator().render(text, {}) == 5
+
+    def test_text_around_an_expression_renders_text(self):
+        assert TemplateInterpolator().render("v{{ 5 }}", {}) == "v5"
 
     def test_two_expressions_render_as_text(self):
         assert TemplateInterpolator().render("{{ 1 }}{{ 2 }}", {}) == "12"
@@ -356,13 +356,13 @@ class TestLoaderInterpolation:
         assert result["d"] == {"a": 1}
         assert result["b"] is True
 
-    def test_only_a_trailing_newline_may_surround_a_bare_expression(self):
+    def test_whitespace_may_surround_a_bare_expression(self):
         result = render(
-            {"a": 2, "nl": "{{ a }}\n", "sp": " {{ a }}", "tail": "{{ a }} "}
+            {"a": 2, "nl": "{{ a }}\n", "sp": " {{ a }}", "txt": "x{{ a }}"}
         )
         assert result["nl"] == 2
-        assert result["sp"] == " 2"
-        assert result["tail"] == "2 "
+        assert result["sp"] == 2
+        assert result["txt"] == "x2"
 
     def test_non_string_top_level_keys_do_not_break_rendering(self):
         result = render({404: "{{ name }}", "name": "x", 1.5: "y", None: "{{ name }}!"})

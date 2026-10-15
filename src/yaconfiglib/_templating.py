@@ -63,24 +63,6 @@ logger = logging.getLogger(__name__)
 #: Jinja's markers: what an interpolator without ``is_template`` is asked about.
 _MARKERS = ("{{", "{%", "{#")
 
-#: Per tplx engine: the text that marks a template, and the delimiters of a bare
-#: expression whose value keeps its type (None: the engine evaluates nothing).
-_SYNTAX: (
-    "_ty.Dict[str, _ty.Tuple[_ty.Tuple[str, ...], _ty.Optional[_ty.Tuple[str, str]]]]"
-) = {
-    "jinja": (("{{", "{%", "{#"), ("{{", "}}")),
-    "liquid": (("{{", "{%"), ("{{", "}}")),
-    "mustache": (("{{",), ("{{", "}}")),
-    "handlebars": (("{{",), ("{{", "}}")),
-    "go": (("{{",), ("{{", "}}")),
-    "mako": (("${", "<%", "%"), ("${", "}")),
-    "cheetah": (("$", "#"), ("${", "}")),
-    "shell": (("$",), ("${", "}")),
-    "envsubst": (("$",), ("${", "}")),
-    "erb": (("<%",), None),
-    "epp": (("<%",), None),
-}
-
 
 def _tplx() -> _ty.Any:
     try:
@@ -208,14 +190,10 @@ class TemplateInterpolator:
             raise failure
         #: The tplx engine class *engine* names.
         self.engine_class: type = type(probe)
-        markers, bare = _SYNTAX.get(_engine_key(self.engine_class), (None, None))
-        self._markers = markers
-        self._bare = bare
 
     def is_template(self, text: str) -> bool:
-        """Whether *text* holds this engine's syntax; any text, for an unknown engine."""
-        markers = self._markers
-        return markers is None or any(marker in text for marker in markers)
+        """Whether *text* holds this engine's syntax: the engine's own cheap test."""
+        return bool(self.engine_class.is_template(text))
 
     def references(self, text: str) -> _ty.FrozenSet[str]:
         try:
@@ -237,36 +215,14 @@ class TemplateInterpolator:
             except NotImplementedError:
                 names = scope
             values = {name: scope[name] for name in names if name in scope}
-            inner = _bare_expression(text, self._bare)
-            if inner is not None:
-                return _plain(self._lookup.evaluate(inner, values, engine=self.engine))
-            return template.render(values)
+            # One expression keeps its type; anything else renders to text.
+            return _plain(self._lookup.evaluate(text, values, engine=self.engine))
         except tplx.TplxError as error:
             raise _template_error(error) from _root(error)
 
 
 def _engine_name(engine: _ty.Any) -> str:
     return _engine_key(engine) if isinstance(engine, type) else str(engine).lower()
-
-
-def _bare_expression(
-    text: str, delimiters: "_ty.Optional[_ty.Tuple[str, str]]"
-) -> "_ty.Optional[str]":
-    """The expression inside *text* when it is one bare expression, else None.
-
-    Only a trailing newline may surround it: a YAML ``|`` block adds one, while
-    spaces inside a quoted scalar are text.
-    """
-    if delimiters is None:
-        return None
-    opening, closing = delimiters
-    stripped = text.rstrip("\r\n")
-    if not (stripped.startswith(opening) and stripped.endswith(closing)):
-        return None
-    inner = stripped[len(opening) : len(stripped) - len(closing)]
-    if opening in inner or closing in inner:
-        return None
-    return inner.strip()
 
 
 #: ``$${`` (an escaped ``${``) or ``${reference}``.

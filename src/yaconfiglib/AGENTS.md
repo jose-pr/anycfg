@@ -11,7 +11,7 @@ Everything public is importable from `yaconfiglib`, `yaconfiglib.formats`,
 
 `pip install yaconfiglib` brings pathapi, the path layer. Extras: `yaml` (PyYAML 6),
 `toml` (`tomli` below Python 3.11, and `tomli-w` to write), `templates`
-(`tplx[jinja]` 0.1.5+: template files and engine interpolation; other engines need
+(`tplx[jinja]` 0.2+: template files and engine interpolation; other engines need
 their own tplx extra; `interpolate="vars"` needs none), `all`. `import yaconfiglib`
 imports none of them; a feature whose extra is missing raises
 `MissingDependencyError` naming it when used.
@@ -500,13 +500,14 @@ per-call override is applied):
 - an object with `render` and `references` (an `Interpolator`): used as it is.
 - anything else: `TypeError`.
 
-Which strings render is the engine's syntax: `{{`/`{%`/`{#` for Jinja, `{{` for
-Mustache, Handlebars and Go, `$` for envsubst and shell, `${` for `"vars"`, `<%` for
-ERB/EPP; every string for an engine not in that table. A custom interpolator decides
-with an optional `is_template(text) -> bool`, else Jinja's markers. Top-level keys render after the
+Which strings render is the engine's own syntax test (tplx's
+`Template.is_template`: `{{`/`{%`/`{#` for Jinja, `${` or `$name` for envsubst and
+shell, `<%` for ERB/EPP, ...; `${` for `"vars"`), so `cost $5` or `100%` is never
+rendered. A custom interpolator decides with an optional `is_template(text) ->
+bool`, else Jinja's markers. Top-level keys render after the
 keys they reference, so chains resolve in any order; a rendered value is never
-rendered again. A bare expression (`{{ expr }}`, `${name}`; only a trailing
-newline around it) keeps its type. Copy-on-write: the input is never modified, containers keep their types, and a
+rendered again. A value that is one expression (`{{ expr }}`, `${name}`;
+whitespace around it allowed) keeps its type, through tplx's `evaluate`. Copy-on-write: the input is never modified, containers keep their types, and a
 document with no template marker is returned untouched. A templated key rendering to
 a key that already exists raises `ConfigValueError` naming both templates (a skip
 under `on_error` keeps the entry under its template text). A value may refer into
@@ -532,7 +533,7 @@ the template, never the rendered value.
   as plain `dict`/`list`/`tuple`. A sandboxed render is bounded by tplx's defaults
   (1,000,000 characters of output, 100,000 loop iterations, depth 100); going over is
   a `TemplateError`. A value template can include no file. Compiled templates are
-  cached per instance. Needs the `templates` extra (tplx 0.1.5+).
+  cached per instance. Needs the `templates` extra (tplx 0.2+).
 
 ## Template files
 
