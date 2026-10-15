@@ -507,7 +507,7 @@ rendered. A custom interpolator decides with an optional `is_template(text) ->
 bool`, else Jinja's markers. Top-level keys render after the
 keys they reference, so chains resolve in any order; a rendered value is never
 rendered again. A value that is one expression (`{{ expr }}`, `${name}`;
-whitespace around it allowed) keeps its type, through tplx's `evaluate`. Copy-on-write: the input is never modified, containers keep their types, and a
+whitespace around it allowed) keeps its type, through tplx's `eval`. Copy-on-write: the input is never modified, containers keep their types, and a
 document with no template marker is returned untouched. A templated key rendering to
 a key that already exists raises `ConfigValueError` naming both templates (a skip
 under `on_error` keeps the entry under its template text). A value may refer into

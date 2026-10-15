@@ -30,7 +30,7 @@ dependencies = [
 [project.optional-dependencies]
 yaml = ["pyyaml>=6.0,<7"]
 toml = ["tomli>=2.0,<3; python_version < '3.11'", "tomli-w>=1.0,<2"]
-# 0.2: evaluate takes a whole value and keeps one expression's type,
+# 0.2: eval takes a whole value and keeps one expression's type,
 # Template.is_template, and a sandbox that bounds what a value may allocate.
 templates = ["tplx[jinja]>=0.2.0,<0.3"]
 all = ["yaconfiglib[yaml,toml,templates]"]

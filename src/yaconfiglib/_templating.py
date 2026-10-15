@@ -216,7 +216,7 @@ class TemplateInterpolator:
                 names = scope
             values = {name: scope[name] for name in names if name in scope}
             # One expression keeps its type; anything else renders to text.
-            return _plain(self._lookup.evaluate(text, values, engine=self.engine))
+            return _plain(self._lookup.eval(text, values, engine=self.engine))
         except tplx.TplxError as error:
             raise _template_error(error) from _root(error)
 
