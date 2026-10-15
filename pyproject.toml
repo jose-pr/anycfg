@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "yaconfiglib"
-version = "0.13.1"
+version = "0.14.0"
 authors = [{ name = "Jose A" }]
 description = "Another Config lib for python, basically load config/yaml/toml/... files and add some features like relative import and templating."
 readme = "README.md"

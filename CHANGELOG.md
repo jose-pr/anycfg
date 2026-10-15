@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-10-16
+
 This release replaces the public API. Every entry point, keyword and backend class
 changed; the migration guide in the documentation maps each old name to its
 replacement.
@@ -1173,7 +1175,8 @@ see Fixed.
 ### Removed
 - Legacy references and code blocks tied to `hiyapyco`.
 
-[Unreleased]: https://github.com/jose-pr/yaconfiglib/compare/v0.13.1...HEAD
+[Unreleased]: https://github.com/jose-pr/yaconfiglib/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/jose-pr/yaconfiglib/compare/v0.13.1...v0.14.0
 [0.13.1]: https://github.com/jose-pr/yaconfiglib/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/jose-pr/yaconfiglib/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/jose-pr/yaconfiglib/compare/v0.11.2...v0.12.0
