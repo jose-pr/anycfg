@@ -104,11 +104,23 @@ print(yaconfiglib.dumps({"a": [1, 2]}, format="json", indent=None))   # {"a": [1
 ### YAML
 
 PyYAML's safe loader (`yaconfiglib[yaml]`), so no Python object is ever
-constructed. The dialect is **YAML 1.1** as PyYAML implements it:
+constructed. The default dialect is **YAML 1.1** as PyYAML implements it:
 
 - `yes`, `no`, `on` and `off` are booleans;
 - `0755` is an octal integer and `1.10` is the float `1.1`;
+- `2024-01-02` is a date;
 - quote any of them to keep it a string.
+
+The load option **`dialect="1.2"`** reads plain scalars by the YAML 1.2 core
+schema instead: only `true`/`false` are booleans, `0755` is the decimal 755
+(`0o755` is octal), and dates, `yes` and `on` stay strings. It reaches the
+document's includes too, and a loader can set it for every YAML document:
+
+```python
+yaconfiglib.loads("country: NO\nmode: 0755\n", format="yaml", dialect="1.2")
+# {'country': 'NO', 'mode': 755}
+Loader(format_options={"yaml": {"dialect": "1.2"}})
+```
 
 Or let the type decide: **loading `into=` a type keeps each plain scalar's
 text beside the value YAML read**, so a `str` field gets `"NO"`, `"1.10"` or
@@ -222,6 +234,11 @@ the file.
 text = 'export HOST=example.org\nNAME="two\\nlines"   # comment\n'
 print(yaconfiglib.loads(text, format="dotenv"))   # {'HOST': 'example.org', 'NAME': 'two\nlines'}
 ```
+
+Values are strings unless the load option **`coerce`** is set: `True` reads
+each *unquoted* value by the YAML 1.2 core rules (`PORT=80` an int,
+`DEBUG=true` a bool), while a quoted one stays text (`PORT="80"`); a callable
+`(text) -> value` decides itself.
 
 `dumps` writes a flat mapping of string values, double-quoted and escaped.
 

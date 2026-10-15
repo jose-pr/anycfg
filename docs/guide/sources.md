@@ -78,13 +78,14 @@ is inside no local root) and a `MemPath` is exempt.
 
 A document can only ever name a local path: every `str` becomes a `LocalPath`,
 and yaconfiglib never builds a remote path itself. So the paths you pass are the
-only remote ones, and you decide how to vet them — `Loader(path_filter=...)` is
-asked about every path before it is read, and a falsy answer refuses it:
+only remote ones, and you decide how to vet them — the policy's `check_path`
+is asked about every path before it is read (see
+[Your own rules](security.md#your-own-rules)):
 
 ```python
-from pathapi import LocalPath
+from yaconfiglib import policies
 
-loader = Loader(path_filter=lambda path: isinstance(path, LocalPath))
+loader = Loader(policy=[policies.LocalPathsOnly])
 ```
 
 ## Open files
@@ -152,7 +153,7 @@ suffix. Async streams and async chunk iterables go to
 ## The environment
 
 `yaconfiglib.sources.Env(prefix="", *, nested=None, lowercase=False,
-environ=None)` reads environment variables starting with `prefix`, with the
+coerce=False, environ=None)` reads environment variables starting with `prefix`, with the
 prefix removed:
 
 ```python
@@ -170,7 +171,10 @@ print(Loader().load(Env("APP_", nested="__", environ=environ)))
 - **Keys keep their case**; `lowercase=True` folds them.
 - **Values stay strings.** Types come from [hydration](models.md):
   `load(..., into=Settings)` turns `"5432"` into `5432` and `"true"` into
-  `True` by the field's annotation.
+  `True` by the field's annotation. Or pass **`coerce=True`** to read each value
+  by the YAML 1.2 core rules — `80` an int, `true` a bool, `null` `None`, while
+  `yes`, `0755` and the empty string stay text — or a callable
+  `coerce=(text) -> value` of your own.
 - On Windows the prefix matches case-insensitively, as the environment does.
 - `environ` replaces `os.environ`, for tests and for a captured snapshot.
 

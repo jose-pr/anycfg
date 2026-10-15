@@ -6,4 +6,8 @@ applied.
 
 ::: yaconfiglib.Policy
 
+## Policy mixins
+
+::: yaconfiglib.policies
+
 ::: yaconfiglib.LoadContext

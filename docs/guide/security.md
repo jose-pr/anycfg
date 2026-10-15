@@ -60,6 +60,56 @@ Every refusal is a `PolicyError` subclass — `CommandsDisabledError`,
 **before** anything is read or run. `PolicyError` is also a `PermissionError`,
 and so an `OSError`.
 
+### Your own rules
+
+`Policy` is a class to subclass. Three hooks are asked **after** the fields
+have allowed something, so a subclass can only narrow; returning a falsy value
+refuses:
+
+| Hook | Asked about | Refusal |
+| --- | --- | --- |
+| `check_path(path)` | every path before it is read: a source, an include, a script, a glob pattern and each match — the pathapi `Path` that would be read | `ConfinementError` |
+| `check_command(command)` | a command's text or a script's path, once `allow_commands` is on | `CommandsDisabledError` |
+| `check_template(name, engine)` | a template file and its tplx engine class, once `allow_templates` allows it | `TemplatesDisabledError` |
+
+`yaconfiglib.policies` has ready-made ones. Each overrides one hook and calls
+`super()`, so they stack and nothing has to implement every check:
+
+| Mixin | Narrows to | Setting |
+| --- | --- | --- |
+| `LocalPathsOnly` | local and in-memory paths (no remote pathapi `Path`) | — |
+| `AllowedSuffixes` | file names ending in one of `suffixes` | `suffixes = {".yaml", ".json"}` |
+| `AllowedCommands` | exactly the listed commands | `commands = {"vault read ..."}` |
+| `AllowedEngines` | template files rendered by the listed tplx engines | `engines = {"jinja"}` |
+
+The simplest way to use them is a list, applied to the default policy in that
+order; `Mixin.using(...)` gives a mixin its setting:
+
+```python
+from yaconfiglib import Loader, policies
+
+loader = Loader(
+    policy=[policies.LocalPathsOnly, policies.AllowedSuffixes.using(suffixes={".yaml"})]
+)
+```
+
+A class statement combines them with your own fields, and `policies.compose()`
+does the same without one:
+
+```python
+class Production(policies.LocalPathsOnly, policies.AllowedCommands):
+    commands = {"vault read -field=password secret/db"}
+
+    def check_path(self, path):          # your own rule, on top of the mixins'
+        return "secrets" not in path.parts and super().check_path(path)
+
+
+loader = Loader(policy=Production(allow_commands=True))
+Strict = policies.compose(policies.LocalPathsOnly, policies.AllowedSuffixes, suffixes={".json"})
+```
+
+`trusted()`, `untrusted()` and `replace()` keep the subclass.
+
 ## Commands
 
 A command source — `cmd://`, `exec://` and `sh://` strings, `sources.Command`,
@@ -164,7 +214,8 @@ How the check works:
 - **A non-local path object** (a remote pathapi `Path`) is inside no local root
   and is refused while confinement is on. A document cannot produce one — every
   `str` it names is a local path — so remote paths come only from the caller,
-  who can vet them, and anything else, with `Loader(path_filter=...)`.
+  who can vet them, and anything else, with a [policy hook](#your-own-rules)
+  (`policies.LocalPathsOnly`).
 - **It confines reads only.** `dump()` writes wherever it is told.
 
 ### Glob patterns

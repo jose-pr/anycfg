@@ -8,6 +8,8 @@ Merge strategies, typed hydration and dot access, all importable from
 
 ::: yaconfiglib.DELETE
 
+::: yaconfiglib.INHERIT
+
 ::: yaconfiglib.Merge
 
 ::: yaconfiglib.register_merge

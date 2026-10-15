@@ -102,8 +102,15 @@ replacement.
   `register_merge`, `hydrate`, `Interpolator`, `TemplateInterpolator`, `LoadEvent`, `BudgetExceededError`,
   `MissingDependencyError`, `TemplateError`.
 - `Policy.max_includes`, `max_depth`, `max_bytes`: a load's budget.
-- `Loader(path_filter=...)`: a callable asked about every path (top-level, include,
-  script, glob pattern and match) before it is read; a falsy answer refuses it.
+- `Policy` is a class to subclass: `check_path`, `check_command` and
+  `check_template` narrow what its fields allow. `yaconfiglib.policies` has
+  mixins that stack (`LocalPathsOnly`, `AllowedSuffixes`, `AllowedCommands`,
+  `AllowedEngines`), with `Mixin.using(**settings)` and `compose()`; `policy=` also
+  takes a list of mixin classes, applied to the default policy in order.
+- YAML `dialect="1.2"` (the YAML 1.2 core schema); `Env(coerce=)` and the dotenv
+  `coerce=` option read values by the same rules or a callable.
+- `INHERIT` (`!inherit`) and the merge option `nulls="replace"`, which makes `None`
+  set a key while `INHERIT` keeps the earlier value.
 - Async loading: `aload`, `aload_all`, `adump`, `Loader.aload` and
   `Loader.aload_all` read async streams and async iterables of chunks on the event
   loop (stopping past `max_bytes`) and run the rest of the load in a worker thread.

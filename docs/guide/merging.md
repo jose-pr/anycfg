@@ -115,6 +115,25 @@ print(Loader().load({"cache": {"size": 10}, "debug": True}, {"cache": DELETE, "d
 `DELETE` markers left in the result — a key deleted that no earlier document
 had — are pruned, so they never reach your code.
 
+### Making `None` a value: `nulls="replace"` and `INHERIT`
+
+When `None` should *set* a key, pass the merge option `nulls="replace"`. "No
+opinion" is then said explicitly with `yaconfiglib.INHERIT` — `!inherit` in
+YAML — which keeps the earlier value in either mode (a key no earlier document
+set is left out):
+
+```yaml
+# local.yaml
+password: ~          # with nulls="replace": password is None
+debug: !inherit      # keeps base.yaml's debug
+```
+
+```python
+loader = Loader(merge="deep", merge_options={"nulls": "replace"})
+```
+
+The option also goes in an include's `merge_options:`.
+
 ## Collecting instead of merging
 
 `collect=` gathers the documents rather than merging them:
