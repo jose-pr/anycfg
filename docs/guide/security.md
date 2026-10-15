@@ -162,7 +162,9 @@ How the check works:
   `MemPath`, a stream without a real file name. A command source is governed
   by `allow_commands`, not by the roots.
 - **A non-local path object** (a remote pathapi `Path`) is inside no local root
-  and is refused while confinement is on.
+  and is refused while confinement is on. A document cannot produce one — every
+  `str` it names is a local path — so remote paths come only from the caller,
+  who can vet them, and anything else, with `Loader(path_filter=...)`.
 - **It confines reads only.** `dump()` writes wherever it is told.
 
 ### Glob patterns

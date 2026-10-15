@@ -99,6 +99,8 @@ replacement.
   `register_merge`, `hydrate`, `Interpolator`, `TemplateInterpolator`, `LoadEvent`, `BudgetExceededError`,
   `MissingDependencyError`, `TemplateError`.
 - `Policy.max_includes`, `max_depth`, `max_bytes`: a load's budget.
+- `Loader(path_filter=...)`: a callable asked about every path (top-level, include,
+  script, glob pattern and match) before it is read; a falsy answer refuses it.
 - Async loading: `aload`, `aload_all`, `adump`, `Loader.aload` and
   `Loader.aload_all` read async streams and async iterables of chunks on the event
   loop (stopping past `max_bytes`) and run the rest of the load in a worker thread.

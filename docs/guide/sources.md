@@ -76,6 +76,17 @@ its includes resolve against `base_dir` like other in-memory content. While
 [confinement](security.md#confining-reads) is on, a remote path is refused (it
 is inside no local root) and a `MemPath` is exempt.
 
+A document can only ever name a local path: every `str` becomes a `LocalPath`,
+and yaconfiglib never builds a remote path itself. So the paths you pass are the
+only remote ones, and you decide how to vet them — `Loader(path_filter=...)` is
+asked about every path before it is read, and a falsy answer refuses it:
+
+```python
+from pathapi import LocalPath
+
+loader = Loader(path_filter=lambda path: isinstance(path, LocalPath))
+```
+
 ## Open files
 
 Anything with a `read()` method — a file from `open()`, `codecs.open()`, a
