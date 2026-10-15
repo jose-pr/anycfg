@@ -65,10 +65,17 @@ class TestParsing:
     def test_loads_all_yields_the_one_document(self):
         assert list(yaconfiglib.loads_all('{"a": 1}', format="json")) == [{"a": 1}]
 
-    def test_deeply_nested_document_is_a_parse_error(self):
+    def test_deeply_nested_document_parses_or_is_a_parse_error(self):
+        # Whether json recurses that deep depends on the interpreter and the
+        # platform (3.14 on Linux and macOS parses it); a RecursionError never
+        # escapes either way.
         depth = 100000
-        with pytest.raises(yaconfiglib.ParseError):
-            yaconfiglib.loads("[" * depth + "]" * depth, format="json")
+        try:
+            result = yaconfiglib.loads("[" * depth + "]" * depth, format="json")
+        except yaconfiglib.ParseError as error:
+            assert "nested too deeply" in str(error)
+        else:
+            assert isinstance(result, list)
 
 
 class TestErrors:
