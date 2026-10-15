@@ -166,9 +166,18 @@ class TestTypeSteersScalars:
     def test_keys_are_never_text_kept(self):
 
         holder = yaconfiglib.loads(
-            "table: {1: a, yes: b}\n", format="yaml", into=Holder
+            "table: {2: a, yes: b}\n", format="yaml", into=Holder
         )
-        assert set(holder.table) == {1, True}
+        assert set(holder.table) == {2, True}
+        assert not any(isinstance(key, ScalarText) for key in holder.table)
+
+    def test_duplicate_keys_compare_as_read(self):
+        # `yes` and `true` are one key to YAML, kept text or not.
+        for into in (None, Holder):
+            with pytest.raises(yaconfiglib.ParseError, match="duplicate key"):
+                yaconfiglib.loads(
+                    "table: {yes: 1, true: 2}\n", format="yaml", into=into
+                )
 
     def test_loader_into_and_includes(self, tmp_path):
         (tmp_path / "inc.yaml").write_text("version: 2.10\n", encoding="utf-8")

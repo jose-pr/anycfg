@@ -778,3 +778,21 @@ def test_missing_jinja2_names_the_extra(tmp_path):
     assert "MISSING True" in done.stdout, done.stdout + done.stderr
     assert "yaconfiglib[templates]" in done.stdout
     assert "RESULT" not in done.stdout
+
+
+@pytest.mark.usefixtures("needs_tplx")
+class TestExpressionsBuildPlainData:
+    def test_a_container_built_by_an_expression_holds_no_views(self):
+        result = Loader(interpolate=True).load(
+            {
+                "db": {"host": "h", "ports": [1, 2]},
+                "b": "{{ {'x': db} }}",
+                "c": "{{ [db] }}",
+                "f": "{{ (db, 1) }}",
+            }
+        )
+        assert result["b"] == {"x": {"host": "h", "ports": [1, 2]}}
+        assert type(result["b"]["x"]) is dict
+        assert type(result["c"][0]) is dict
+        assert type(result["f"][0]) is dict
+        assert type(result["b"]["x"]["ports"]) is list

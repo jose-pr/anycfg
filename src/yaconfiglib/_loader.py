@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import codecs
+import collections.abc as _abc
 import dataclasses
 import logging
 import os
@@ -17,7 +18,8 @@ from . import formats as _formats
 from ._context import LoadContext, Policy, _LoadState
 from ._dotaccess import DotAccessibleDict, to_dot_access
 from ._hydrate import hydrate
-from ._merge import Merge, prune_deletes, resolve_merge
+from ._merge import Merge, deep, prune_deletes, resolve_merge, simple, substitute
+from ._scalar import resolved
 from ._templating import (
     Interpolator,
     default_interpolator,
@@ -39,7 +41,7 @@ from .exceptions import (
     UnsupportedFormatError,
     _add_error_context,
 )
-from .sources import Data, Payload, Source
+from .sources import Payload, Source
 from .sources._command import SCRIPT_SUFFIXES, Command
 
 __all__ = ["Loader", "LoadEvent"]
@@ -54,6 +56,18 @@ _COLLECT_MODES = ("last", "list", "hash")
 INCLUDE_OPTIONS = frozenset(
     {"encoding", "default", "flatten", "merge", "merge_options", "recursive", "format"}
 )
+#: The include options' types, checked because a document supplies them.
+_INCLUDE_OPTION_TYPES = {
+    "encoding": (str,),
+    "flatten": (bool,),
+    "recursive": (bool,),
+    "format": (str,),
+    "merge": (str,),
+    "merge_options": (_abc.Mapping,),
+}
+#: Strategies that understand scalars kept as text for a typed load; any other
+#: one is given plain values.
+_TEXT_AWARE_MERGES = (simple, substitute, deep)
 
 
 class LoadEvent(_ty.NamedTuple):
@@ -96,7 +110,7 @@ class _Call:
     wrap: _ty.Any
     on_error: OnError
     format_options: _ty.Mapping[str, _ty.Mapping[str, _ty.Any]]
-    document_formats: _ty.FrozenSet[str]
+    document_formats: "_ty.Optional[_ty.FrozenSet[str]]"
     base_dir: "_ty.Optional[Path]"
 
 
@@ -114,18 +128,38 @@ def _as_base_dir(value: _ty.Any) -> "_ty.Optional[Path]":
     raise TypeError(f"base_dir= takes a path, not {type(value).__name__}")
 
 
+def check_encoding(encoding: _ty.Any) -> str:
+    """*encoding*, if it names a text codec; anything else raises.
+
+    A bytes-to-bytes codec (``zlib_codec``, ``base64_codec``) is refused: it
+    would turn a few bytes counted against ``max_bytes`` into many.
+    """
+    if not isinstance(encoding, str):
+        raise ConfigTypeError(
+            f"an encoding is a codec name, not a {type(encoding).__name__}"
+        )
+    try:
+        info = codecs.lookup(encoding)
+    except LookupError:
+        info = None
+    if info is None:
+        raise ConfigValueError(f"unknown encoding {encoding!r}")
+    if not getattr(info, "_is_text_encoding", True):
+        raise ConfigValueError(f"{encoding!r} is not a text encoding")
+    return encoding
+
+
 def _decode(data: bytes, encoding: str, name: _ty.Optional[str]) -> str:
     """Strict decode; one leading BOM dropped; a failure is a parse failure."""
+    check_encoding(encoding)
     try:
-        text = codecs.decode(data, encoding)
+        text = data.decode(encoding)
     except UnicodeDecodeError as error:
         failure: Exception = ParseError(
             f"not valid {encoding} at byte {error.start}; pass encoding= naming "
             "the file's codec",
             path=name,
         )
-    except LookupError:
-        failure = ConfigValueError(f"unknown encoding {encoding!r}")
     else:
         failure = None
     if failure is not None:
@@ -219,15 +253,19 @@ def _format_name(explicit: _ty.Any) -> "_ty.Optional[str]":
     return str(explicit)
 
 
-def _check_format_options(
-    cls: "_ty.Type[_formats.Format]", options: _ty.Mapping[str, _ty.Any]
+def check_format_options(
+    cls: "_ty.Type[_formats.Format]",
+    options: _ty.Mapping[str, _ty.Any],
+    verb: str = "load",
 ) -> None:
-    unknown = set(options) - set(cls.load_options)
+    """Refuse an option *cls* does not take for *verb* (``load`` or ``dump``)."""
+    allowed = cls.load_options if verb == "load" else cls.dump_options
+    unknown = set(options) - set(allowed)
     if unknown:
         raise TypeError(
-            f"the {cls.name} format takes no option(s) "
+            f"the {cls.name} format takes no {verb} option(s) "
             f"{', '.join(sorted(unknown))}; it accepts: "
-            f"{', '.join(sorted(cls.load_options)) or 'none'}"
+            f"{', '.join(sorted(allowed)) or 'none'}"
         )
 
 
@@ -258,8 +296,7 @@ def _label(kind: str, item: _ty.Any) -> str:
 class _Session:
     """One top-level call: its settings, its counters, and include handling."""
 
-    def __init__(self, loader: "Loader", call: _Call) -> None:
-        self.loader = loader
+    def __init__(self, call: _Call) -> None:
         self.call = call
         self.state = _LoadState()
         self.roots = _confine.resolve_roots(call.policy.confine_to, call.base_dir)
@@ -406,9 +443,10 @@ class _Session:
                     f"refusing to run command source {source.name!r}: the policy "
                     "does not allow commands"
                 )
-            if isinstance(source, Data):
-                self.prune = True
             payload = source.read(context)
+            if payload.parsed:
+                # Parsed data can hold DELETE markers no format flagged.
+                self.prune = True
             if isinstance(payload.data, (str, bytes)):
                 self.count_bytes(len(payload.data), payload.name)
             return payload
@@ -462,6 +500,9 @@ class _Session:
         before anything is read.
         """
         allowed = self.call.document_formats
+        if allowed is None:
+            # Read per call: a format registered after the loader was built counts.
+            allowed = _formats.document_formats()
         restrict = allowed if document else None
         suffix = None
         if name and declared is None and not command:
@@ -504,8 +545,12 @@ class _Session:
         document: bool = False,
         options: "_ty.Optional[_ty.Mapping[str, _ty.Any]]" = None,
         single: bool = False,
+        planned: "_ty.Optional[_ty.Tuple[type, _ty.Optional[str]]]" = None,
     ) -> _ty.List[_ty.Any]:
-        """Parse *payload* into its documents (one, or every one of a stream)."""
+        """Parse *payload* into its documents (one, or every one of a stream).
+
+        *planned* is :meth:`plan`'s answer when the caller already asked it.
+        """
         if payload.parsed:
             return [payload.data]
         if payload.identity in context.chain:
@@ -517,14 +562,17 @@ class _Session:
                 f"includes nest deeper than max_depth={self.call.policy.max_depth}"
             )
         command = payload.identity.startswith("command:")
-        fmt_cls, suffix = self.plan(
-            payload.name,
-            explicit=explicit,
-            document=document,
-            declared=payload.format,
-            trusted=payload.trusted_format,
-            command=command,
-        )
+        if planned is not None and payload.format is None and not command:
+            fmt_cls, suffix = planned
+        else:
+            fmt_cls, suffix = self.plan(
+                payload.name,
+                explicit=explicit,
+                document=document,
+                declared=payload.format,
+                trusted=payload.trusted_format,
+                command=command,
+            )
         fmt = fmt_cls()
         encoding = payload.encoding or context.encoding
         data = payload.data
@@ -547,7 +595,7 @@ class _Session:
                 raise
         merged = dict(self.call.format_options.get(fmt_cls.name, {}))
         merged.update(options or {})
-        _check_format_options(fmt_cls, merged)
+        check_format_options(fmt_cls, merged)
         inner = context.derive(
             origin=payload.origin,
             name=payload.name or None,
@@ -585,21 +633,24 @@ class _Session:
 
         A failure is offered to ``on_error`` once, here, at this level.
         """
-        resolved = self.items(
+        items = self.items(
             sources,
             base_dir=self.call.base_dir if base_dir is None else base_dir,
             recursive=self.call.recursive if recursive is None else recursive,
             document=document,
         )
-        for kind, item in resolved:
+        for kind, item in items:
             label = _label(kind, item)
             try:
+                planned = None
                 if kind == "path" and not str(item[0]).lower().endswith(
                     SCRIPT_SUFFIXES
                 ):
                     # Decided from the name alone, so a file no format reads, or
                     # a template the policy refuses, fails before it is opened.
-                    self.plan(str(item[0]), explicit=explicit, document=document)
+                    planned = self.plan(
+                        str(item[0]), explicit=explicit, document=document
+                    )
                 payload = self.read(kind, item, context, explicit)
                 values = self.documents(
                     payload,
@@ -608,6 +659,7 @@ class _Session:
                     document=document,
                     options=options,
                     single=single,
+                    planned=planned,
                 )
             except Exception as error:  # noqa: BLE001 - feeds the on_error predicate
                 if label:
@@ -617,8 +669,13 @@ class _Session:
                 raise
             for value in values:
                 if transform is not None:
-                    value = transform(value, payload.name)
+                    # Plain values: a callable never sees text kept for into=.
+                    value = transform(self.plain(value), payload.name)
                 yield payload.name, value
+
+    def plain(self, value: _ty.Any) -> _ty.Any:
+        """*value* as the format read it, for code that is not the typed build."""
+        return resolved(value) if self.keep_text else value
 
     def combine(
         self,
@@ -628,16 +685,19 @@ class _Session:
         merge_options: _ty.Mapping[str, _ty.Any],
         collect: "_ty.Optional[str]",
         default: _ty.Any,
-    ) -> _ty.Any:
+    ) -> "_ty.Tuple[_ty.Any, bool]":
+        """``(result, whether any document was combined)``."""
         result = default
         started = False
+        plain_merge = self.keep_text and merge not in _TEXT_AWARE_MERGES
         for name, value in documents:
             if collect == "last":
                 result, started = value, True
                 continue
             if collect == "list":
-                result = (result if started else []) + [value]
-                started = True
+                if not started:
+                    result, started = [], True
+                result.append(value)
                 continue
             if collect == "hash":
                 if not name and self.call.key is _default_key:
@@ -645,28 +705,31 @@ class _Session:
                         'collect="hash" needs a named source; in-memory content has '
                         "no key"
                     )
-                key = self.call.key(name, value)
-                base = result if started else {}
-                if key in base:
+                key = self.call.key(name, self.plain(value))
+                if not started:
+                    result, started = {}, True
+                if key in result:
                     logger.warning(
                         'collect="hash": key %r comes from more than one source; the '
                         "later document replaces the earlier one (pass key= to keep both)",
                         key,
                     )
-                result = {**base, key: value}
-                started = True
+                result[key] = value
                 continue
             if not started:
                 result, started = value, True
                 continue
             try:
-                result = merge(result, value, **merge_options)
+                if plain_merge:
+                    result = merge(resolved(result), resolved(value), **merge_options)
+                else:
+                    result = merge(result, value, **merge_options)
             except Exception as error:  # noqa: BLE001 - feeds the on_error predicate
                 _add_error_context(error, frame=ErrorFrame("merge", name))
                 if self.offer(error, "merge", name):
                     continue
                 raise
-        return result
+        return result, started
 
     # -- includes ------------------------------------------------------------
 
@@ -684,23 +747,26 @@ class _Session:
                 ", ".join(map(str, dropped)),
             )
         options = {k: v for k, v in options.items() if k in INCLUDE_OPTIONS}
+        for name, accepted in _INCLUDE_OPTION_TYPES.items():
+            value = options.get(name)
+            if value is not None and not isinstance(value, accepted):
+                raise ConfigTypeError(
+                    f"an include's {name}: takes a {accepted[0].__name__}, not a "
+                    f"{type(value).__name__}"
+                )
         self.state.includes += 1
         if self.state.includes > policy.max_includes:
             raise BudgetExceededError(
                 f"more than max_includes={policy.max_includes} includes in one load"
             )
         merge_name = options.get("merge")
-        if merge_name is not None and not isinstance(merge_name, str):
-            raise ConfigTypeError("an include's merge: must be a strategy name")
         try:
             merge = resolve_merge(merge_name) if merge_name else self.call.merge
         except ValueError as error:
             # A document's mistake, not the caller's: a configuration error.
             raise ConfigValueError(str(error)) from None
         merge_options = options.get("merge_options") or self.call.merge_options
-        if not isinstance(merge_options, _ty.Mapping):
-            raise ConfigTypeError("an include's merge_options: must be a mapping")
-        encoding = options.get("encoding") or context.encoding
+        encoding = check_encoding(options.get("encoding") or context.encoding)
         nested = context.derive(encoding=encoding)
         origin = context.origin
         base = (
@@ -713,17 +779,17 @@ class _Session:
             nested,
             explicit=options.get("format"),
             base_dir=base,
-            recursive=bool(options.get("recursive", self.call.recursive)),
+            recursive=options.get("recursive", self.call.recursive),
             document=True,
         )
-        result = self.combine(
+        result, loaded = self.combine(
             documents,
             merge=merge,
             merge_options=merge_options,
             collect=None,
             default=options.get("default"),
         )
-        if options.get("flatten"):
+        if options.get("flatten") and loaded:
             result = _flatten_result(result)
         return result
 
@@ -852,9 +918,11 @@ class Loader:
                 on_error=on_error,
                 format_options=format_options,
                 document_formats=(
-                    _formats.document_formats()
+                    None
                     if formats is None
-                    else frozenset(_formats.get(name).name for name in formats)
+                    else frozenset(
+                        _formats.get(_format_name(name)).name for name in formats
+                    )
                 ),
                 base_dir=_as_base_dir(base_dir),
             )
@@ -874,10 +942,10 @@ class Loader:
         format_options = dict(values["format_options"] or {})
         for name, opts in format_options.items():
             # An unknown format name or option raises here, not at first use.
-            _check_format_options(_formats.get(name), dict(opts))
+            check_format_options(_formats.get(name), dict(opts))
         return _Call(
             policy=policy,
-            encoding=values["encoding"] or "utf-8",
+            encoding=check_encoding(values["encoding"] or "utf-8"),
             merge=resolve_merge(values["merge"]),
             merge_options=dict(values["merge_options"] or {}),
             collect=collect,
@@ -914,6 +982,9 @@ class Loader:
                 f"unexpected keyword argument(s) {', '.join(sorted(unknown))}; "
                 "format options go in format_options={'<format>': {...}}"
             )
+        if "policy" in overrides and overrides["policy"] is None:
+            # None means "the loader's", as it means "the default" when building.
+            overrides = {k: v for k, v in overrides.items() if k != "policy"}
         if not overrides:
             return self._defaults
         values = {
@@ -921,8 +992,6 @@ class Loader:
             for field in dataclasses.fields(_Call)
         }
         values.update(overrides)
-        if "format_options" not in overrides:
-            values["format_options"] = self._defaults.format_options
         return self._settle(values)
 
     def load(
@@ -961,19 +1030,19 @@ class Loader:
         if not sources:
             raise TypeError("load() needs at least one source")
         call = self._call(overrides)
-        session = _Session(self, call)
+        session = _Session(call)
         session.keep_text = into is not None
         documents = session.each(
             sources, session.context(), explicit=format, transform=transform
         )
-        result = session.combine(
+        result, loaded = session.combine(
             documents,
             merge=call.merge,
             merge_options=call.merge_options,
             collect=call.collect,
             default=default,
         )
-        if flatten:
+        if flatten and loaded:
             result = _flatten_result(result)
         return session.finish(result, interpolate=call.interpolate, into=into)
 
@@ -995,7 +1064,7 @@ class Loader:
         if not sources:
             raise TypeError("load_all() needs at least one source")
         call = self._call(overrides)
-        session = _Session(self, call)
+        session = _Session(call)
         session.keep_text = into is not None
         # Checked above, not on the first next(): the documents are a generator.
         return self._documents(session, sources, format, into, transform)

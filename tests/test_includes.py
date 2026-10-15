@@ -1017,3 +1017,26 @@ class TestDocumentFormatReach:
             assert Loader().load(str(tmp_path / "app.yaml")) == {"x": {"reg": "data"}}
         finally:
             formats_registry.unregister_format("yacltestreg")
+
+
+class TestMalformedIncludes:
+    """A bad value in an include is the document's error: a ConfigError."""
+
+    @pytest.mark.parametrize(
+        "include",
+        [
+            "!include {pathname: 5}",
+            "!include [1, 2]",
+            "!include {pathname: [a.yaml, 3]}",
+            "!include {pathname: a.yaml, encoding: 5}",
+            "!include {pathname: a.yaml, flatten: 'false'}",
+            "!include {pathname: a.yaml, recursive: 1}",
+            "!include {pathname: a.yaml, merge_options: [1]}",
+            "!include {pathname: a.yaml, merge: 1}",
+        ],
+    )
+    def test_raises_a_config_error(self, tmp_path, include):
+        (tmp_path / "a.yaml").write_text("k: 1\n", encoding="utf-8")
+        (tmp_path / "app.yaml").write_text(f"x: {include}\n", encoding="utf-8")
+        with pytest.raises(yaconfiglib.ConfigError):
+            yaconfiglib.Loader(base_dir=tmp_path).load("app.yaml")

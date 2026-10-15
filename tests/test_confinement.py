@@ -673,3 +673,42 @@ class TestEnvironmentVariable:
         )
         assert done.returncode == 0, done.stderr
         assert done.stdout.split() == ["imported", "ConfigTypeError"]
+
+
+class TestPatternsBeforeTheirExistenceProbe:
+    def test_relative_glob_without_base_dir_is_checked_against_the_cwd(
+        self, tmp_path, monkeypatch
+    ):
+        (tmp_path / "conf").mkdir()
+        (tmp_path / "conf" / "a.json").write_text('{"a": 1}', encoding="utf-8")
+        monkeypatch.chdir(tmp_path)
+        loader = Loader(policy=Policy(confine_to=[str(tmp_path)]))
+        assert loader.load("conf/*.json") == {"a": 1}
+        assert Loader(policy=Policy(confine_to=True)).load("conf/*.json") == {"a": 1}
+
+    def test_a_pattern_outside_the_roots_is_never_probed(self, tmp_path, monkeypatch):
+        from pathapi import LocalPath
+
+        root = tmp_path / "root"
+        root.mkdir()
+        probed = []
+        real_exists = LocalPath.exists
+
+        def exists(self, *args, **kwargs):
+            probed.append(str(self))
+            return real_exists(self, *args, **kwargs)
+
+        monkeypatch.setattr(LocalPath, "exists", exists)
+        loader = Loader(base_dir=root, policy=Policy(confine_to=[str(root)]))
+        for source in ("../secret[1].json", str(tmp_path / "secret[1].json")):
+            with pytest.raises(ConfinementError):
+                loader.load(source)
+        assert not any("secret" in path for path in probed)
+
+    def test_a_pattern_that_normalizes_outside_is_refused(self, tmp_path):
+        root = tmp_path / "root"
+        (root / "a").mkdir(parents=True)
+        (tmp_path / "out.json").write_text("{}", encoding="utf-8")
+        loader = Loader(base_dir=root, policy=Policy(confine_to=[str(root)]))
+        with pytest.raises(ConfinementError):
+            loader.load("a[x]/../../out.json")

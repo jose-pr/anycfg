@@ -1267,3 +1267,59 @@ class TestStreams:
             io.StringIO('{"a": 1}'), io.StringIO('{"b": 2}'), format="json"
         )
         assert result == [{"a": 1}, {"b": 2}]
+
+
+class TestLoaderEdges:
+    def test_a_parsed_source_has_its_delete_markers_pruned(self):
+        class Parsed(yaconfiglib.sources.Source):
+            name = "parsed"
+
+            def read(self, context):
+                return yaconfiglib.sources.Payload(
+                    {"a": yaconfiglib.DELETE, "b": 1},
+                    name="parsed",
+                    identity="parsed",
+                    parsed=True,
+                )
+
+        assert yaconfiglib.Loader().load(Parsed()) == {"b": 1}
+
+    def test_per_call_policy_none_is_the_loaders(self):
+        loader = yaconfiglib.Loader(policy=yaconfiglib.Policy(strict=True))
+        assert loader.load({"a": 1}, policy=None) == {"a": 1}
+
+    def test_formats_takes_classes(self):
+        json_format = yaconfiglib.formats.get("json")
+        loader = yaconfiglib.Loader(formats=[json_format, "yaml"])
+        assert loader.load({"a": 1}) == {"a": 1}
+
+    @needs_yaml
+    def test_a_format_registered_later_is_reachable_from_documents(self, tmp_path):
+        (tmp_path / "a.laterfmt").write_text("x", encoding="utf-8")
+        (tmp_path / "app.yaml").write_text("v: !include a.laterfmt", encoding="utf-8")
+        loader = yaconfiglib.Loader(base_dir=tmp_path)
+
+        class Later(yaconfiglib.formats.Format):
+            name = "laterfmt"
+            suffixes = (".laterfmt",)
+
+            def loads(self, data, /, *, context=None, **options):
+                return {"later": data.strip()}
+
+        yaconfiglib.formats.register_format(Later)
+        try:
+            assert loader.load("app.yaml") == {"v": {"later": "x"}}
+        finally:
+            yaconfiglib.formats.unregister_format("laterfmt")
+
+    def test_flatten_with_nothing_loaded_returns_the_default(self, tmp_path):
+        loader = yaconfiglib.Loader(base_dir=tmp_path)
+        assert loader.load("*.json", flatten=True) is None
+
+    def test_a_merge_failure_of_unnamed_data_names_it(self):
+        def failing(a, b, *, memo=None, **options):
+            raise yaconfiglib.ConfigValueError("refused")
+
+        with pytest.raises(yaconfiglib.ConfigValueError) as caught:
+            yaconfiglib.Loader(merge=failing).load({"a": 1}, {"b": 2})
+        assert "while merging in-memory data" in str(caught.value)

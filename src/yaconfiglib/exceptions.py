@@ -273,7 +273,7 @@ def _render_context(error: BaseException) -> str:
         elif frame.kind == "command":
             parts.append(f"output of command {frame.source!r}")
         elif frame.kind == "merge":
-            parts.append(f"while merging {frame.source}")
+            parts.append(f"while merging {frame.source or 'in-memory data'}")
         else:
             parts.append(f"{frame.kind} {frame.source}")
     key = getattr(error, "config_key", None)

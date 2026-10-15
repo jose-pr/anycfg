@@ -34,6 +34,7 @@ import types
 import typing as _ty
 
 from . import exceptions as _errors
+from ._merge import _mapping_with, _sequence_with
 from ._scalar import resolved
 from .exceptions import (
     CommandsDisabledError,
@@ -72,14 +73,29 @@ def _nowhere() -> _ty.Any:
     return MemPath("yaconfiglib-no-includes")
 
 
-def _plain(value: _ty.Any) -> _ty.Any:
-    """A sandboxed engine's read-only views turned back into plain data."""
+def _plain(value: _ty.Any, memo: "_ty.Optional[dict]" = None) -> _ty.Any:
+    """A sandboxed engine's read-only views turned back into plain data.
+
+    Walks containers an expression built too (``{'x': db}`` holds a view), each
+    node once, so shared and self-referencing values stay finite.
+    """
     if isinstance(value, (str, bytes, int, float, bool)) or value is None:
         return value
-    if isinstance(value, _abc.Mapping) and not isinstance(value, dict):
-        return {key: _plain(item) for key, item in value.items()}
-    if isinstance(value, _abc.Sequence) and not isinstance(value, (list, tuple)):
-        return [_plain(item) for item in value]
+    memo = {} if memo is None else memo
+    hit = memo.get(id(value))
+    if hit is not None:
+        return hit[1]
+    if isinstance(value, _abc.Mapping):
+        result: _ty.Any = {}
+        memo[id(value)] = (value, result)
+        for key, item in value.items():
+            result[_plain(key, memo)] = _plain(item, memo)
+        return result
+    if isinstance(value, _abc.Sequence) and not isinstance(value, str):
+        items: list = []
+        memo[id(value)] = (value, items)
+        items.extend(_plain(item, memo) for item in value)
+        return tuple(items) if isinstance(value, tuple) else items
     return value
 
 
@@ -202,31 +218,6 @@ def _scope(document: _ty.Mapping, extra: _ty.Mapping[str, _ty.Any]) -> dict:
     return scope
 
 
-def _rebuild_mapping(original: _ty.Mapping, items: list) -> _ty.Mapping:
-    if type(original) is dict:
-        return dict(items)
-    if isinstance(original, dict):
-        import copy
-
-        result = copy.copy(original)
-        result.clear()
-        result.update(items)
-        return result
-    try:
-        return type(original)(items)
-    except TypeError:
-        return dict(items)
-
-
-def _rebuild_sequence(original: _ty.Any, items: list) -> _ty.Any:
-    if type(original) is list:
-        return items
-    try:
-        return type(original)(items)
-    except TypeError:
-        return items
-
-
 class _Pass:
     """One interpolation pass over a document: copy-on-write, each node once."""
 
@@ -259,7 +250,7 @@ class _Pass:
                 new_item = self.value(item, scope, keypath + (key,))
                 changed = changed or new_key is not key or new_item is not item
                 items.append((new_key, new_item))
-            result = _rebuild_mapping(data, items) if changed else data
+            result = _mapping_with(data, dict(items)) if changed else data
         elif kind in (list, tuple) or isinstance(data, (_abc.Sequence, _abc.Set)):
             if isinstance(data, (str, bytes, bytearray)):
                 return data
@@ -269,7 +260,7 @@ class _Pass:
                 for index, item in enumerate(data)
             ]
             changed = any(new is not old for new, old in zip(items, data))
-            result = _rebuild_sequence(data, items) if changed else data
+            result = _sequence_with(data, items) if changed else data
         else:
             return data
         self.memo[id(data)] = (data, result)
@@ -445,7 +436,7 @@ def interpolate_document(
         for (new_key, value), key in zip(items, document)
     )
     return (
-        _rebuild_mapping(document, items)
+        _mapping_with(document, dict(items))
         if changed or len(items) != len(document)
         else document
     )

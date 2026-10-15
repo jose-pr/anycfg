@@ -9,6 +9,7 @@ import time
 
 import pytest
 
+import yaconfiglib
 from yaconfiglib import (
     BudgetExceededError,
     CommandsDisabledError,
@@ -549,3 +550,35 @@ class TestRobustness:
 
     def test_long_dotted_file_name_resolves_correctly(self):
         assert formats.find_for_filename(".env" * 2000 + ".json") is formats.get("json")
+
+
+class TestTextCodecsOnly:
+    """A bytes-to-bytes codec would inflate input past what ``max_bytes`` counted."""
+
+    @pytest.mark.parametrize("codec", ["zlib_codec", "base64_codec", "hex_codec"])
+    def test_loads_refuses_a_non_text_codec(self, codec):
+        with pytest.raises(yaconfiglib.ConfigValueError, match="not a text encoding"):
+            yaconfiglib.loads(b"{}", format="json", encoding=codec)
+
+    def test_loader_refuses_a_non_text_codec(self):
+        with pytest.raises(yaconfiglib.ConfigValueError, match="not a text encoding"):
+            yaconfiglib.Loader(encoding="zlib_codec")
+
+    @pytest.mark.usefixtures("needs_yaml")
+    def test_an_include_cannot_name_a_decompressing_codec(self, tmp_path):
+        import zlib
+
+        (tmp_path / "bomb.json").write_bytes(
+            zlib.compress(b"[" + b"0," * 100000 + b"0]")
+        )
+        (tmp_path / "app.yaml").write_text(
+            "x: !include {pathname: bomb.json, encoding: zlib_codec}\n",
+            encoding="utf-8",
+        )
+        loader = yaconfiglib.Loader(base_dir=tmp_path, policy=Policy(max_bytes=4096))
+        with pytest.raises(yaconfiglib.ConfigValueError, match="not a text encoding"):
+            loader.load("app.yaml")
+
+    def test_unknown_codec(self):
+        with pytest.raises(yaconfiglib.ConfigValueError, match="unknown encoding"):
+            yaconfiglib.loads(b"{}", format="json", encoding="no-such-codec")

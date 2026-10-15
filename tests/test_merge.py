@@ -748,3 +748,30 @@ class TestPerformance:
         elapsed = time.perf_counter() - started
         assert result["l"] is result["r"]
         assert elapsed < 1.0, elapsed
+
+
+_Pair = collections.namedtuple("_Pair", "x y")
+_One = collections.namedtuple("_One", "x")
+
+
+class TestNamedTuples:
+    def test_deep_extension_never_packs_items_into_one_field(self):
+        merged = deep(_One([1]), _One([2]))
+        assert merged == ([1], [2]) and type(merged) is tuple
+        merged = deep(_Pair(1, 2), _Pair(3, 1))
+        assert type(merged) is tuple and list(merged) == [1, 2, 3]
+
+    def test_a_named_tuple_that_no_longer_fits_becomes_a_tuple(self):
+        assert _merge.prune_deletes(_Pair(1, DELETE)) == (1,)
+        assert type(_merge.prune_deletes(_Pair(1, DELETE))) is tuple
+
+    def test_a_named_tuple_that_still_fits_keeps_its_type(self):
+        rebuilt = _merge._sequence_with(_Pair(1, 2), [3, 4])
+        assert rebuilt == _Pair(3, 4) and type(rebuilt) is _Pair
+
+    def test_a_mapping_type_is_rebuilt_from_its_items(self):
+        import types
+
+        proxy = types.MappingProxyType({1: "a"})
+        rebuilt = _merge._mapping_with(proxy, {1: "b", 2: "c"})
+        assert dict(rebuilt) == {1: "b", 2: "c"}

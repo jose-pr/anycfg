@@ -35,6 +35,8 @@ import copy
 import threading
 import typing as _ty
 
+from ._scalar import ScalarText
+
 __all__ = [
     "DELETE",
     "Merge",
@@ -109,7 +111,8 @@ def _mapping_with(a: _ty.Mapping, items: dict) -> _ty.Mapping:
 
     A ``dict`` subclass is shallow-copied so its type and state (a
     ``defaultdict``'s factory) survive. Any other Mapping is rebuilt through its
-    constructor, falling back to a plain dict when that refuses the keys.
+    constructor, given the items positionally (keys are data, not names),
+    falling back to a plain dict when that refuses them.
     """
     if type(a) is dict:
         return items
@@ -119,19 +122,28 @@ def _mapping_with(a: _ty.Mapping, items: dict) -> _ty.Mapping:
         result.update(items)
         return result
     try:
-        return type(a)(**items)
-    except TypeError:
+        return type(a)(items)
+    except (TypeError, ValueError):
         return dict(items)
 
 
 def _sequence_with(a: _ty.Sequence, items: list) -> _ty.Sequence:
-    """A sequence of *a*'s type holding *items*, without touching *a*."""
+    """A sequence of *a*'s type holding *items*, without touching *a*.
+
+    A NamedTuple takes its items as fields, and becomes a plain tuple when they
+    no longer fit them.
+    """
     if type(a) is list:
         return items
     if isinstance(a, list):
         result = copy.copy(a)
         result[:] = items
         return result
+    if isinstance(a, tuple) and hasattr(a, "_fields"):
+        try:
+            return type(a)(*items)
+        except TypeError:
+            return tuple(items)
     try:
         return type(a)(items)
     except TypeError:
@@ -246,6 +258,9 @@ class _StructuralKeys:
         self._table: dict = {}
 
     def key(self, value: object) -> object:
+        if isinstance(value, ScalarText):
+            # A scalar kept for a typed load is a duplicate of what it reads as.
+            value = value.value
         try:
             hash(value)
         except TypeError:
@@ -353,13 +368,15 @@ def register_merge(name: str, strategy: Merge, *, replace: bool = False) -> None
 
     Raises `ValueError` when *name* is taken, unless *replace* is true.
     """
+    global _STRATEGIES
     key = name.lower()
     with _lock:
         if key in _STRATEGIES and not replace:
             raise ValueError(
                 f"merge strategy {key!r} is already registered; pass replace=True"
             )
-        _STRATEGIES[key] = strategy
+        # Replaced whole, so a reader never sees the table change under it.
+        _STRATEGIES = {**_STRATEGIES, key: strategy}
 
 
 def resolve_merge(merge: "_ty.Union[str, Merge]") -> Merge:

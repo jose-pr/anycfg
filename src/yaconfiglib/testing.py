@@ -39,8 +39,8 @@ class FormatContract:
             is replaced by :data:`SECRET` before parsing.
     """
 
-    format: "_ty.ClassVar[_ty.Type[Format]]"
-    samples: "_ty.ClassVar[_ty.Sequence[_ty.Any]]" = ()
+    format: _ty.ClassVar[_ty.Type[Format]]
+    samples: _ty.ClassVar[_ty.Sequence[_ty.Any]] = ()
     document: _ty.ClassVar[str] = ""
     malformed: _ty.ClassVar[str] = ""
 

@@ -105,11 +105,12 @@ def _components(path: object) -> "_ty.List[str]":
 
 
 def has_glob_pattern(path: object) -> bool:
-    """Whether *path* holds glob wildcards outside its anchor."""
+    """Whether *path* holds glob wildcards outside its anchor (pathapi decides)."""
     text = str(path)
     if not _glob.has_magic(text):
-        return False
-    return any(_glob.has_magic(part) for part in _components(path))
+        return False  # the common case, without building a path
+    candidate = path if isinstance(path, Path) else LocalPath(text)
+    return candidate.has_glob_pattern()
 
 
 def literal_base(source: object, glob_base: object) -> str:
@@ -126,8 +127,11 @@ def literal_base(source: object, glob_base: object) -> str:
         literal.append(component)
     if glob_base is not None:
         base = str(glob_base)
+    elif pathlib.PurePath(str(source)).is_absolute():
+        base = pathlib.PurePath(str(source)).anchor
     else:
-        base = pathlib.PurePath(str(source)).anchor or os.sep
+        # A relative pattern with no base_dir expands from the working directory.
+        base = os.getcwd()
     return os.path.join(base, *literal) if literal else base
 
 
@@ -212,27 +216,39 @@ def resolve(
     """
     memo = set() if memo is None else memo
     hook = _glob_hook(on_glob_error) if on_glob_error is not None else None
+
+    def pattern_or_literal(
+        path: Path, glob_base: _ty.Any, source: _ty.Any
+    ) -> "_ty.Optional[_ty.Tuple[str, _ty.Any]]":
+        if not has_glob_pattern(source):
+            return ("literal", path)
+        # Confined before the existence probe, so a pattern aimed outside the
+        # roots cannot learn whether a file of that name exists there.
+        if confine is not None and (
+            confine(literal_base(source, glob_base)) or confine(path)
+        ):
+            return None
+        if path.exists():
+            return ("literal", path)
+        return ("pattern", (path, glob_base, source))
+
     classified: "_ty.List[_ty.Tuple[str, _ty.Any]]" = []
     for source in _flatten(sources, allow_plugins):
         if isinstance(source, Source):
             classified.append(("source", source))
         elif is_stream(source):
             classified.append(("stream", source))
-        elif isinstance(source, Path):
-            if has_glob_pattern(source) and not source.exists():
-                classified.append(("pattern", (source, None, source)))
-            else:
-                classified.append(("literal", source))
         else:
-            path: Path = LocalPath(source)
-            glob_base = None
-            if base_dir is not None and not path.is_absolute():
-                glob_base = base_dir
-                path = base_dir / source
-            if has_glob_pattern(source) and not path.exists():
-                classified.append(("pattern", (path, glob_base, source)))
+            if isinstance(source, Path):
+                path, glob_base = source, None
             else:
-                classified.append(("literal", path))
+                path, glob_base = LocalPath(source), None
+                if base_dir is not None and not path.is_absolute():
+                    glob_base = base_dir
+                    path = base_dir / source
+            entry = pattern_or_literal(path, glob_base, source)
+            if entry is not None:
+                classified.append(entry)
 
     literal_keys = {_dedup_key(item) for kind, item in classified if kind == "literal"}
     for kind, item in classified:
@@ -248,8 +264,6 @@ def resolve(
             yield "path", (item, None)
             continue
         path, glob_base, source = item
-        if confine is not None and confine(literal_base(source, glob_base)):
-            continue
         if glob_base is not None:
             matches = glob_base.glob(
                 str(source),

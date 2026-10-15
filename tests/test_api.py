@@ -690,3 +690,44 @@ class TestRoundTrip:
         value = {"x": {"y": [1, {"z": None}]}}
         yaconfiglib.dump(value, target)
         assert yaconfiglib.load(os.fspath(target)) == value
+
+
+class TestLoadReadsOneLocation:
+    def test_a_glob_matching_nothing(self, tmp_path):
+        with pytest.raises(yaconfiglib.ConfigValueError, match="gave none"):
+            yaconfiglib.load(str(tmp_path / "*.json"))
+
+    def test_a_glob_matching_several(self, tmp_path):
+        for name in ("a", "b"):
+            (tmp_path / f"{name}.json").write_text("{}", encoding="utf-8")
+        with pytest.raises(yaconfiglib.ConfigValueError, match="more than one"):
+            yaconfiglib.load(str(tmp_path / "*.json"))
+
+    def test_a_glob_matching_one(self, tmp_path):
+        (tmp_path / "a.json").write_text('{"a": 1}', encoding="utf-8")
+        assert yaconfiglib.load(str(tmp_path / "*.json")) == {"a": 1}
+
+    @pytest.mark.parametrize("sources", [["a.json", "b.json"], ("a.json",)])
+    def test_a_list_is_not_a_location(self, sources):
+        with pytest.raises(TypeError, match="one location"):
+            yaconfiglib.load(sources)
+
+
+@dataclasses.dataclass
+class _Doc:
+    a: int
+
+
+class TestLoadAllInto:
+    @needs_yaml
+    def test_load_all_and_loads_all_build_each_document(self, tmp_path):
+        text = "a: '1'\n---\na: 2\n"
+        assert list(yaconfiglib.loads_all(text, format="yaml", into=_Doc)) == [
+            _Doc(1),
+            _Doc(2),
+        ]
+        (tmp_path / "s.yaml").write_text(text, encoding="utf-8")
+        assert list(yaconfiglib.load_all(str(tmp_path / "s.yaml"), into=_Doc)) == [
+            _Doc(1),
+            _Doc(2),
+        ]

@@ -15,7 +15,7 @@ from ..exceptions import (
     ParseError,
     _add_error_context,
 )
-from .._scalar import ScalarText
+from .._scalar import ScalarText, resolved
 from ._base import Format
 
 from .._context import LoadContext
@@ -44,31 +44,30 @@ def _include_call(loader: _ty.Any, node: _ty.Any) -> tuple:
 
     Three forms: a scalar (one source), a sequence (several sources, merged in
     order) and a mapping (``pathname:`` plus options). A malformed form raises
-    PyYAML's `ConstructorError`, whose mark names the file and line.
+    PyYAML's `ConstructorError`, whose mark names the file and line. Values are
+    the ones YAML read, even for a typed load: they configure the include.
     """
     yaml = _yaml()
+
+    def refuse(problem: str) -> None:
+        raise yaml.constructor.ConstructorError(None, None, problem, node.start_mark)
+
     if isinstance(node, yaml.nodes.ScalarNode):
         return (loader.construct_scalar(node),), {}
     if isinstance(node, yaml.nodes.SequenceNode):
-        items = loader.construct_sequence(node, deep=True)
-        if not items:
-            raise yaml.constructor.ConstructorError(
-                None,
-                None,
-                "an !include sequence needs at least one path",
-                node.start_mark,
-            )
-        return tuple(items), {}
-    options = loader.construct_mapping(node, deep=True)
-    pathname = options.pop("pathname", None)
-    if not pathname:
-        raise yaml.constructor.ConstructorError(
-            None,
-            None,
-            "an !include mapping needs a non-empty 'pathname' key",
-            node.start_mark,
-        )
-    sources = tuple(pathname) if isinstance(pathname, list) else (pathname,)
+        sources = tuple(resolved(loader.construct_sequence(node, deep=True)))
+        if not sources:
+            refuse("an !include sequence needs at least one path")
+        options: dict = {}
+    else:
+        options = resolved(loader.construct_mapping(node, deep=True))
+        options = dict(options)
+        pathname = options.pop("pathname", None)
+        if not pathname:
+            refuse("an !include mapping needs a non-empty 'pathname' key")
+        sources = tuple(pathname) if isinstance(pathname, list) else (pathname,)
+    if not all(isinstance(source, str) and source for source in sources):
+        refuse("an !include path must be non-empty text")
     return sources, options
 
 
@@ -130,6 +129,9 @@ def _classes_for() -> "_ty.Tuple[type, type]":
                         if key_node.tag == merge_tag:
                             continue
                         key = self.construct_object(key_node, deep=deep)
+                        if isinstance(key, ScalarText):
+                            # `yes` and `true` are one key whatever their text.
+                            key = key.value
                         try:
                             duplicate = key in seen
                         except TypeError:

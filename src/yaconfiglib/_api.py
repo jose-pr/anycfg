@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import os
 import typing as _ty
 
@@ -9,9 +10,10 @@ from pathapi import Path
 
 from . import formats as _formats
 from ._context import Policy
-from ._loader import Loader, _Session
-from .exceptions import UnsupportedFormatError
-from .sources import Text
+from ._loader import Loader, _Session, check_format_options
+from ._paths import is_stream
+from .exceptions import ConfigValueError, UnsupportedFormatError
+from .sources import Source, Text
 
 __all__ = ["load", "loads", "load_all", "loads_all", "dump", "dumps"]
 
@@ -28,21 +30,6 @@ def _format_class(format: FormatLike) -> "_ty.Type[_formats.Format]":
     return _formats.get(format)
 
 
-def _check_options(
-    cls: "_ty.Type[_formats.Format]",
-    options: _ty.Mapping[str, _ty.Any],
-    allowed: _ty.FrozenSet[str],
-    verb: str,
-) -> None:
-    unknown = set(options) - set(allowed)
-    if unknown:
-        raise TypeError(
-            f"the {cls.name} format takes no {verb} option(s) "
-            f"{', '.join(sorted(unknown))}; it accepts: "
-            f"{', '.join(sorted(allowed)) or 'none'}"
-        )
-
-
 def _documents(
     source: _ty.Any,
     *,
@@ -51,16 +38,16 @@ def _documents(
     policy: "_ty.Optional[Policy]",
     options: _ty.Mapping[str, _ty.Any],
     single: bool,
-    keep_text: bool = False,
+    into: _ty.Any = None,
 ) -> _ty.Iterator[_ty.Any]:
     loader = Loader(policy=policy, encoding=encoding)
-    session = _Session(loader, loader._defaults)
-    session.keep_text = keep_text
+    session = _Session(loader._defaults)
+    session.keep_text = into is not None
     explicit = None if format is None else _format_class(format)
     for _name, value in session.each(
         [source], session.context(), explicit=explicit, options=options, single=single
     ):
-        yield session.finish(value, interpolate=False, into=None)
+        yield session.finish(value, interpolate=False, into=into)
 
 
 def _check_location(source: _ty.Any, name: str) -> None:
@@ -72,6 +59,13 @@ def _check_location(source: _ty.Any, name: str) -> None:
         raise TypeError(
             f"{name}() takes a location, and bytes are content; use "
             "loads(data, format=...)"
+        )
+    if not isinstance(
+        source, (str, os.PathLike, Path, Source, _ty.Mapping)
+    ) and not is_stream(source):
+        raise TypeError(
+            f"{name}() takes one location, not a {type(source).__name__}; "
+            "layer several sources with yaconfiglib.Loader().load(...)"
         )
 
 
@@ -103,22 +97,24 @@ def load(
         TypeError: For an unknown option, or a source that is not a location.
     """
     _check_location(source, "load")
-    value = next(
-        _documents(
-            source,
-            format=format,
-            encoding=encoding,
-            policy=policy,
-            options=options,
-            single=True,
-            keep_text=into is not None,
-        )
+    documents = _documents(
+        source,
+        format=format,
+        encoding=encoding,
+        policy=policy,
+        options=options,
+        single=True,
+        into=into,
     )
-    if into is None:
-        return value
-    from ._hydrate import hydrate
-
-    return hydrate(into, value)
+    # Two at most: a glob pattern is one location that can name several files.
+    found = list(itertools.islice(documents, 2))
+    if len(found) != 1:
+        raise ConfigValueError(
+            f"load() reads one document, and {source!r} gave "
+            f"{'none' if not found else 'more than one'}; layer several sources "
+            "with yaconfiglib.Loader().load(...)"
+        )
+    return found[0]
 
 
 def load_all(
@@ -128,12 +124,13 @@ def load_all(
     format: FormatLike = None,
     encoding: str = "utf-8",
     policy: "_ty.Optional[Policy]" = None,
+    into: _ty.Any = None,
     **options: _ty.Any,
 ) -> _ty.Iterator[_ty.Any]:
     """Yield every document of *source* (a ``---``-separated YAML stream).
 
-    A format with one document per file yields that one. Otherwise as
-    :func:`load`.
+    A format with one document per file yields that one. *into* builds each
+    document into that type. Otherwise as :func:`load`.
     """
     _check_location(source, "load_all")
     return _documents(
@@ -143,6 +140,7 @@ def load_all(
         policy=policy,
         options=options,
         single=False,
+        into=into,
     )
 
 
@@ -186,6 +184,7 @@ def loads_all(
     format: FormatLike,
     encoding: str = "utf-8",
     policy: "_ty.Optional[Policy]" = None,
+    into: _ty.Any = None,
     **options: _ty.Any,
 ) -> _ty.Iterator[_ty.Any]:
     """Yield every document in *data*; otherwise as :func:`loads`."""
@@ -197,6 +196,7 @@ def loads_all(
         format=cls,
         encoding=encoding,
         policy=policy,
+        into=into,
         **options,
     )
 
@@ -216,7 +216,7 @@ def dumps(obj: _ty.Any, /, *, format: FormatLike, **options: _ty.Any) -> str:
     cls = _format_class(format)
     if "dump" not in _formats.capabilities(cls):
         raise UnsupportedFormatError(f"the {cls.name} format cannot write")
-    _check_options(cls, options, cls.dump_options, "dump")
+    check_format_options(cls, options, "dump")
     from ._hydrate import dehydrate
 
     return cls().dumps(dehydrate(obj), **options)

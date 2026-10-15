@@ -11,7 +11,7 @@ Everything public is importable from `yaconfiglib`, `yaconfiglib.formats`,
 
 `pip install yaconfiglib` brings pathapi, the path layer. Extras: `yaml` (PyYAML 6),
 `toml` (`tomli` below Python 3.11, and `tomli-w` to write), `templates`
-(`tplx[jinja]` 0.1.4+: interpolation and template files; other engines need their
+(`tplx[jinja]` 0.1.5+: interpolation and template files; other engines need their
 own tplx extra), `all`. `import yaconfiglib`
 imports none of them; a feature whose extra is missing raises
 `MissingDependencyError` naming it when used.
@@ -29,6 +29,8 @@ The `json` module's vocabulary: `loads` takes **content**, `load` takes a
   `format=` (a name or a `Format` class), else the one the file name's suffix selects;
   when neither decides, `UnsupportedFormatError` is raised **before the file is
   opened**. A multi-document source (YAML `---`) raises `ParseError`; use `load_all`.
+  A glob pattern is one location: matching no file or more than one raises
+  `ConfigValueError`; a list of sources is `TypeError` (layer them with `Loader`).
   `options` go to the format and are checked against its `load_options` (an unknown
   one is `TypeError`). `into=` hydrates the result (see `hydrate`). `load(None)` is
   `TypeError`, `load("")` is `ValueError`, `load(b"...")` is `TypeError`.
@@ -38,6 +40,7 @@ The `json` module's vocabulary: `loads` takes **content**, `load` takes a
   against the working directory).
 - **`load_all(source, /, ...)`** / **`loads_all(data, /, *, format, ...)`** `-> Iterator[Any]`
   — every document of a multi-document source; one for a single-document format.
+  Both take `into=`, which builds each document.
 - **`dumps(obj, /, *, format, **options) -> str`** — `format=` required. `obj` is
   passed through `dehydrate` first (dataclasses, enums, paths, `_dump_()`). Raises
   `UnsupportedFormatError` when the format cannot write, `ConfigTypeError` /
@@ -53,7 +56,10 @@ The `json` module's vocabulary: `loads` takes **content**, `load` takes a
   failure leaves an existing file untouched. A trailing newline is ensured.
 
 Decoding is strict UTF-8 by default, one leading BOM is dropped, and a decode failure
-is a `ParseError` naming the byte offset.
+is a `ParseError` naming the byte offset. An `encoding` must name a **text** codec:
+`zlib_codec`, `base64_codec` and other bytes-to-bytes codecs raise `ConfigValueError`
+(from a document's include as well), since they would inflate what `max_bytes`
+counted.
 
 ## Loader (`yaconfiglib.Loader`)
 
@@ -69,8 +75,13 @@ format_options=None, formats=None)`
   hydrated); a `---` stream yields each of its documents.
 - `**overrides`: any of `policy`, `encoding`, `merge`, `merge_options`, `collect`,
   `key`, `recursive`, `interpolate`, `interpolator`, `inject_env`, `wrap`,
-  `on_error`, `format_options` — for that call only. Anything else is `TypeError`
-  (format options go in `format_options={"json": {...}}`). No sources is `TypeError`.
+  `on_error`, `format_options` — for that call only (`policy=None` keeps the
+  loader's). Anything else is `TypeError` (format options go in
+  `format_options={"json": {...}}`). No sources is `TypeError`.
+- With `into=`, only the typed build sees a scalar's text: merging, includes,
+  `transform`, `key=`, a custom merge strategy and the duplicate-key check get the
+  values the format read, exactly as without `into=`. `flatten=True` with nothing
+  loaded returns `default`.
 - Properties: `.policy`, `.base_dir` (a pathapi `Path` or `None`).
 
 Settings:
@@ -157,7 +168,10 @@ opt: !include {pathname: x.yaml, format: json, merge: deep, default: {}}
 A relative path resolves against the **including file's** directory, at every depth
 (in-memory content: `base_dir`). Mapping keys allowed: `pathname`, `encoding`,
 `default`, `flatten`, `merge` (a strategy **name**), `merge_options`, `recursive`,
-`format`; anything else is dropped with a WARNING. An include's encoding is inherited
+`format`; anything else is dropped with a WARNING. A path that is not non-empty text,
+or an option of the wrong type (`flatten`/`recursive` take booleans, `encoding`,
+`format` and `merge` text, `merge_options` a mapping), is a `ConfigError`. Option
+values are what YAML read, even under `into=`. An include's encoding is inherited
 by its own includes. Include cycles raise `ConfigValueError("include cycle: a -> b ->
 a")`, detected by the **canonical** path, so `../conf/self.yaml` cannot dodge it.
 Each included document is its own YAML anchor scope. Includes are not interpolated on
@@ -217,7 +231,10 @@ policy of the load that reached them. Refusals are `PolicyError` subclasses (als
   overridden.
 - **`register_format(cls=None, *, replace=False)`** — bare or as a decorator.
   `ValueError` when another class holds one of its names, or one of its suffixes at the
-  same priority, unless `replace=True`. **`unregister_format(name) -> bool`**.
+  same priority, unless `replace=True`, which moves only what collides: a format
+  that loses an alias keeps its other names, and is replaced only when the new class
+  takes its name. Lookups never lock and see one consistent registry while another
+  thread registers. **`unregister_format(name) -> bool`**.
 - **`names()`**, **`get(name, *, allowed=None)`** (aliases, case-insensitive;
   `UnsupportedFormatError` listing the names), **`for_filename(name, *, allowed=None)`**
   / **`find_for_filename(...)`** (longest suffix wins, case-insensitive, then
@@ -225,7 +242,8 @@ policy of the load that reached them. Refusals are `PolicyError` subclasses (als
 - Entry-point group **`yaconfiglib.formats`**: `name = "pkg.module:FormatClass"`.
   Read lazily; an entry point cannot take a built-in name; a broken one is logged
   and skipped. Its formats are not reachable from documents unless named in
-  `Loader(formats=...)`.
+  `Loader(formats=...)` (names or `Format` classes). A format registered in code
+  after a `Loader` was built is reachable from its documents.
 
 Built-in formats and their dialects:
 
@@ -250,9 +268,14 @@ Built-in formats and their dialects:
   str}}`; option names lower-cased, sections kept; `[DEFAULT]` keys are inherited,
   not returned (a DEFAULT-only file warns). Load options: `interpolation` (`"basic"`
   default, `"extended"`, `"none"`/`None`, or a `configparser.Interpolation`),
-  `default_section`. `dumps` accepts exactly what `loads` returns: string values,
-  lower-case option names; with the default interpolation `%` is written `%%`. Errors
-  never quote the offending line.
+  `default_section`. `dumps` accepts exactly what `loads` returns (string values,
+  lower-case option names) and escapes for its `interpolation` option, the one the
+  file will be read with: `"basic"` (default) writes `%` as `%%`, `"extended"` `$` as
+  `$$`, `"none"` nothing; a custom `Interpolation` is `ConfigValueError`. It checks the
+  text loads back unchanged, so a name holding `=`/`:`, a value with leading or
+  trailing blanks, a continuation line starting with `#`/`;`, or a `DEFAULT` section
+  raises `ConfigValueError` naming the option. Errors never quote the offending line
+  or a value.
 - **`dotenv`** (`.env`, `*.env`, and `.env.<stage>` unless the name's last suffix
   belongs to another format) — `KEY=value`, `export KEY=value`; spaces around `=`
   dropped; keys keep their case (load option `lowercase=True` to fold); double quotes
@@ -343,12 +366,15 @@ the active loader — `ConfigValueError` without one (a direct `Format.loads` ca
 - **The type steers the parse.** While loading `into=` a type, YAML keeps each plain
   (unquoted) scalar it read as a bool, number or date **beside its text**, and the
   target decides: a `str` field gets the text as written (`NO` stays `"NO"`, `1.10`
-  stays `"1.10"`, `0755` stays `"0755"`), a field of the read type gets the read
-  value, any other type is built from the text, and anything without type
-  information (`Any`, an unannotated `dict`/`list`, extra keys) gets the read
-  value. Keys are never affected, and a union picks its member by the read value.
-  A Pydantic model receives the texts and parses them itself. Without `into=`,
-  values are exactly what the format read.
+  stays `"1.10"`, `0755` stays `"0755"`) and so does a `Decimal` (`0.10` keeps its
+  digits); any other type is built from the read value first (`level: 1` into an
+  `IntEnum`, `1.0` into an `int`, `0x10` into a `float`) and from the text only when
+  that fails. Anything without type information (`Any`, `object`, an unannotated
+  `dict`/`list`, extra keys) gets the read value. Keys are never affected. A union
+  picks the member holding the read value, then the one holding the text
+  (`Union[int, str]` keeps `yes` as `"yes"`). A Pydantic model gets the text for a
+  field annotated `str` and the read value everywhere else. Without `into=`, values
+  are exactly what the format read.
 - **`dehydrate(obj) -> plain data`** — the inverse, which `dump`/`dumps` apply
   before writing: a type's `_dump_()` result, a dataclass/namespace/`NamedTuple` as a
   mapping, an `Enum` member as its value, a path, `Decimal` or `UUID` as its text,
@@ -361,13 +387,22 @@ the active loader — `ConfigValueError` without one (a direct `Format.loads` ca
   everything before it; when the **last** layer cannot be built into `cls`,
   `ConfigTypeError`. Sequences take the last layer, each item coerced; `Tuple[A, B]`
   coerces by position (`ConfigTypeError` on a length mismatch); a `NamedTuple` is
-  rebuilt with its constructor; `Dict[K, V]` coerces keys while collecting (so `"80"`
-  and `80` group as one). Coercion never loses data: `int` takes whole floats and
-  integer strings (not `1.9`); `bool` reads `true/yes/on/1` and `false/no/off/0`
+  rebuilt with its constructor from a sequence or a mapping of its fields (how
+  `dehydrate` writes it); `Set`/`FrozenSet` coerce each item; `Dict[K, V]` coerces
+  keys while collecting (so `"80"` and `80` group as one); a `TypedDict` applies
+  `extra=` and raises `ConfigTypeError` for a missing required key. Coercion never
+  loses data: `int` takes whole floats and integer strings (not `1.9`, not a bool);
+  no number takes a bool; `float` refuses an int it cannot hold exactly; `Decimal`
+  takes a float's shortest text; `bool` reads `true/yes/on/1` and `false/no/off/0`
   (else `ConfigValueError`); `date`/`datetime`/`time` read ISO strings; `Enum` takes a
-  value, then a member name. A union keeps a value it already accepts, else coerces
-  through its first non-`None` member; `Optional`, `X | None` and `Annotated` are
-  unwrapped; `Any` keeps the last value. Annotations resolve per entry when
+  value, then a member name; `Literal[...]` takes one of its values (else
+  `ConfigValueError`); a `NewType` coerces as its base type. Any other constructor's
+  failure is `ConfigValueError`/`ConfigTypeError`. A union keeps a value it already
+  accepts, else coerces through its first non-`None` member; `Optional`,
+  `X | None` and `Annotated` are unwrapped; `Any` keeps the last value. A node
+  reached twice (a YAML anchor) is built once and stays one object, so an aliased
+  document costs its distinct nodes; data that contains itself, or nests past the
+  recursion limit, is `ConfigValueError`. Annotations resolve per entry when
   `get_type_hints` fails (3.14+: through `annotationlib`). Errors carry
   `config_key` (`at db.hosts[0].port`) and `config_model` (the outermost model).
 - Hooks, looked up on the unwrapped type (so `Optional[T]` finds them); without
@@ -422,8 +457,11 @@ the template, never the rendered value.
   default (Jinja, `sandbox`/`strict` from the policy), on tplx: `engine` is any tplx
   engine with expressions (`"jinja"`, `"liquid"`, ...). Sandboxed, a value cannot
   reach Python internals and sees plain data: a mapping or list as itself, any other
-  non-plain value (a date) as its text. A value template can include no file.
-  Compiled templates are cached per instance. Needs the `templates` extra.
+  non-plain value (a date) as its text; a container an expression builds comes back
+  as plain `dict`/`list`/`tuple`. A sandboxed render is bounded by tplx's defaults
+  (1,000,000 characters of output, 100,000 loop iterations, depth 100); going over is
+  a `TemplateError`. A value template can include no file. Compiled templates are
+  cached per instance. Needs the `templates` extra (tplx 0.1.5+).
 
 ## Template files
 
