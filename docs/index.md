@@ -60,7 +60,7 @@ pip install "yaconfiglib[yaml,toml,templates]"
 | --- | --- | --- |
 | `yaml` | PyYAML 6 | the YAML format and `!include` |
 | `toml` | `tomli` (Python < 3.11), `tomli-w` | reading TOML below 3.11; writing TOML |
-| `templates` | `tplx[jinja]` 0.1.5+ | interpolation and template files, with Jinja |
+| `templates` | `tplx[jinja]` 0.2+ | interpolation and template files, with Jinja |
 | `all` | every extra above | |
 
 A template engine other than Jinja needs its own tplx extra

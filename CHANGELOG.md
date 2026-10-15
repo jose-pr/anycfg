@@ -81,7 +81,7 @@ replacement.
   render. `interpolator=` is gone; the choice is checked when the `Loader` is built.
   `JinjaInterpolator`, `utils.jinja2` and its caches are gone. `transform=` and
   `key=` take callables; their Jinja-string forms are gone.
-- **Extras**: `jinja2` and `transform` became `templates` (`tplx[jinja]` 0.1.5 or
+- **Extras**: `jinja2` and `transform` became `templates` (`tplx[jinja]` 0.2 or
   later); `toml` adds `tomli-w`; `all` installs every extra. Another template engine
   needs its own tplx extra (`tplx[liquid]`).
 
