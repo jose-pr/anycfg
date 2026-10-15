@@ -692,6 +692,10 @@ def check_template(name: str, suffix: str, policy: "Policy") -> None:
             f"refusing to render {name} with {engine.__name__}, which runs a "
             "program: the policy does not allow commands"
         )
+    if not policy.check_template(name, engine):
+        raise TemplatesDisabledError(
+            f"refusing to render {name} with {engine.__name__}: the policy refused it"
+        )
 
 
 def render_file(

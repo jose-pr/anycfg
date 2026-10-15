@@ -24,6 +24,18 @@ class Policy:
     of these fields, and every nested load (an include, a command's output)
     runs under the policy of the load that reached it.
 
+    **Subclass it** to apply your own trust rules. The hooks :meth:`check_path`,
+    :meth:`check_command` and :meth:`check_template` are asked after the fields
+    have allowed something, so a subclass can only narrow them; returning a
+    falsy value refuses. ``trusted()``, ``untrusted()`` and ``replace()`` keep
+    the subclass::
+
+        class LocalOnly(Policy):
+            def check_path(self, path):
+                return isinstance(path, pathapi.LocalPath)
+
+        Loader(policy=LocalOnly())
+
     Attributes:
         allow_commands: Run command sources (``cmd://``, ``exec://``,
             ``sh://``, script files) instead of raising
@@ -75,6 +87,43 @@ class Policy:
     def replace(self, **changes: _ty.Any) -> "Policy":
         """A copy with *changes* applied."""
         return dataclasses.replace(self, **changes)
+
+    @classmethod
+    def using(cls, **settings: _ty.Any) -> "_ty.Type[Policy]":
+        """This class with *settings* as class attributes: a mixin carrying its
+        settings, as in ``AllowedSuffixes.using(suffixes={".yaml"})``.
+
+        Raises:
+            TypeError: For a setting the class does not declare.
+        """
+        from .policies import compose
+
+        return compose(cls, name=cls.__name__, **settings)
+
+    # -- hooks a subclass overrides; each may only narrow what the fields allow --
+
+    def check_path(self, path: _ty.Any) -> bool:
+        """Whether *path*, a pathapi ``Path``, may be read.
+
+        Asked about every path before it is read: a top-level source, an
+        include, a script file, a glob pattern before it is expanded and each
+        match. A ``str`` source, top-level or from a document, is always a
+        local path; any other kind of ``Path`` comes only from the caller. A
+        refusal is a `ConfinementError`. Allows everything by default.
+        """
+        return True
+
+    def check_command(self, command: str) -> bool:
+        """Whether the command source *command* may run, once ``allow_commands``
+        is on. *command* is the text a source names (``cmd://`` and friends) or
+        a script file's path. A refusal is a `CommandsDisabledError`."""
+        return True
+
+    def check_template(self, name: str, engine: type) -> bool:
+        """Whether the template file *name* may render with the tplx *engine*
+        class, once ``allow_templates`` and the sandbox allow it. A refusal is a
+        `TemplatesDisabledError`."""
+        return True
 
 
 class _LoadState:

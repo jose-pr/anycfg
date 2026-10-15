@@ -12,7 +12,6 @@ import typing as _ty
 
 from ..exceptions import (
     CommandError,
-    CommandsDisabledError,
     CommandTimeoutError,
     ConfigValueError,
     ParseError,
@@ -246,11 +245,9 @@ class Command(Source):
     def read(self, context: "LoadContext") -> Payload:
         # A backstop: the loader refuses an executing source before it gets
         # here, but a source can also be read directly.
-        if not context.policy.allow_commands:
-            raise CommandsDisabledError(
-                f"refusing to run command source {self.text!r}: the policy does "
-                "not allow commands"
-            )
+        from .._loader import check_command
+
+        check_command(context.policy, self.text)
         timeout = (
             context.policy.command_timeout if self.timeout is _UNSET else self.timeout
         )

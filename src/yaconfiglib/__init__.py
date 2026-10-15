@@ -21,7 +21,7 @@ from __future__ import annotations
 from importlib.metadata import PackageNotFoundError as _PackageNotFoundError
 from importlib.metadata import version as _version
 
-from . import formats, sources
+from . import formats, policies, sources
 from ._api import dump, dumps, load, load_all, loads, loads_all
 from ._async import adump, aload, aload_all
 from ._context import LoadContext, Policy
@@ -95,6 +95,7 @@ __all__ = [
     "VarsInterpolator",
     # registries
     "formats",
+    "policies",
     "sources",
     # errors
     "ConfigError",

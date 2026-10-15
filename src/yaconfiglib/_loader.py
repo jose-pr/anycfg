@@ -94,8 +94,6 @@ class LoadEvent(_ty.NamedTuple):
 
 
 OnError = _ty.Union[bool, _ty.Callable[[LoadEvent], bool]]
-#: ``path_filter=``: given each path before it is read; falsy refuses it.
-PathFilter = _ty.Callable[[Path], _ty.Any]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -110,7 +108,6 @@ class _Call:
     key: "_ty.Callable[[str, _ty.Any], _ty.Any]"
     recursive: bool
     bound_loops: bool
-    path_filter: "_ty.Optional[PathFilter]"
     interpolate: InterpolateChoice
     #: What *interpolate* resolves to under *policy*; None when off.
     interpolator: "_ty.Optional[Interpolator]"
@@ -134,6 +131,19 @@ def _as_base_dir(value: _ty.Any) -> "_ty.Optional[Path]":
     if isinstance(value, (str, os.PathLike)):
         return LocalPath(os.fsdecode(os.fspath(value)))
     raise TypeError(f"base_dir= takes a path, not {type(value).__name__}")
+
+
+def check_command(policy: Policy, command: str) -> None:
+    """Refuse running *command* unless the policy's field and hook allow it."""
+    if not policy.allow_commands:
+        raise CommandsDisabledError(
+            f"refusing to run command source {command!r}: the policy does not "
+            "allow commands"
+        )
+    if not policy.check_command(command):
+        raise CommandsDisabledError(
+            f"refusing to run command source {command!r}: the policy refused it"
+        )
 
 
 def check_encoding(encoding: _ty.Any) -> str:
@@ -310,6 +320,8 @@ class _Session:
         self.roots = _confine.resolve_roots(call.policy.confine_to, call.base_dir)
         self.prune = False
         self.keep_text = False
+        #: Options the call passed for a format, by format name.
+        self.format_options: _ty.Dict[str, _ty.Dict[str, _ty.Any]] = {}
 
     # -- context -------------------------------------------------------------
 
@@ -359,12 +371,12 @@ class _Session:
     def check_confinement(
         self, path: _ty.Any, pattern: _ty.Optional[str] = None
     ) -> None:
-        """Refuse *path* unless confinement and ``path_filter`` allow it.
+        """Refuse *path* unless confinement and the policy's ``check_path`` allow it.
 
         Nothing has been read yet.
         """
-        if isinstance(path, Path) and self.call.path_filter is not None:
-            self.check_filter(path, pattern)
+        if isinstance(path, Path):
+            self.check_path_hook(path, pattern)
         roots = self.roots
         if roots is None:
             return
@@ -392,19 +404,19 @@ class _Session:
             _add_error_context(error, source=str(path))
         raise error
 
-    def check_filter(self, path: Path, pattern: "_ty.Optional[str]") -> None:
-        """Refuse *path* when the caller's ``path_filter`` returns a falsy value."""
-        if self.call.path_filter(path):
+    def check_path_hook(self, path: Path, pattern: "_ty.Optional[str]") -> None:
+        """Refuse *path* when the policy's ``check_path`` says no."""
+        if self.call.policy.check_path(path):
             return
         if pattern is not None:
             # As for confinement: never name a file the document did not write.
-            logger.debug("path_filter refused %s, matched by %s", path, pattern)
+            logger.debug("policy refused %s, matched by %s", path, pattern)
             error = ConfinementError(
-                f"refusing to read a match of {pattern}: path_filter refused it"
+                f"refusing to read a match of {pattern}: the policy refused it"
             )
             _add_error_context(error, source=str(pattern))
         else:
-            error = ConfinementError(f"refusing to read {path}: path_filter refused it")
+            error = ConfinementError(f"refusing to read {path}: the policy refused it")
             _add_error_context(error, source=str(path))
         raise error
 
@@ -468,11 +480,8 @@ class _Session:
                 return Payload(data, name=name, identity=identity, origin=path)
         if kind == "source":
             source: Source = item
-            if source.executes and not context.policy.allow_commands:
-                raise CommandsDisabledError(
-                    f"refusing to run command source {source.name!r}: the policy "
-                    "does not allow commands"
-                )
+            if source.executes:
+                check_command(context.policy, source.name)
             payload = source.read(context)
             if payload.parsed:
                 # Parsed data can hold DELETE markers no format flagged.
@@ -667,6 +676,11 @@ class _Session:
                 _add_error_context(error, frame=ErrorFrame("render", payload.name))
                 raise
         merged = dict(self.call.format_options.get(fmt_cls.name, {}))
+        if options:
+            # A call's format options reach that format's includes too, so a
+            # document and what it includes are read the same way.
+            self.format_options.setdefault(fmt_cls.name, dict(options))
+        merged.update(self.format_options.get(fmt_cls.name, {}))
         merged.update(options or {})
         check_format_options(fmt_cls, merged)
         inner = context.derive(
@@ -903,7 +917,6 @@ _OVERRIDABLE = frozenset(
         "inject_env",
         "wrap",
         "on_error",
-        "path_filter",
         "format_options",
     }
 )
@@ -921,7 +934,10 @@ class Loader:
         base_dir: The directory relative path sources resolve against, and
             includes inside in-memory content. `None` means the working
             directory. A pathapi ``Path`` source is never joined to it.
-        policy: The :class:`~yaconfiglib.Policy`; untrusted by default.
+        policy: The :class:`~yaconfiglib.Policy`; untrusted by default. A list
+            or tuple of `Policy` mixin classes (``[policies.LocalPathsOnly,
+            policies.AllowedSuffixes.using(suffixes={".yaml"})]``) is applied
+            to the default policy in that order.
         encoding: The codec bytes are decoded with (strict; one BOM ignored),
             and the default for includes.
         merge: A strategy name (``"simple"``, ``"substitute"``, ``"deep"``, or
@@ -934,15 +950,6 @@ class Loader:
             file stem by default.
         recursive: Whether ``**`` in a glob source descends into directories.
         bound_loops: Bound a ``**`` walk through a Windows junction loop.
-        path_filter: ``(path) -> bool``, asked about every path before it is
-            read — a top-level source, an include, a script, a glob pattern
-            before it is expanded and each match — with the pathapi ``Path``
-            that would be read. A falsy result refuses it with
-            `ConfinementError` (offered to ``on_error``); an exception it
-            raises propagates. A ``str`` source, top-level or from a document,
-            always becomes a local path; any other kind of ``Path`` comes only
-            from the caller, so this is where a caller who passes remote paths
-            vets them.
         interpolate: Render the template text in the merged document's
             strings, once, after merging: `True` with Jinja, a tplx engine's
             name or class (``"liquid"``, ``"envsubst"``) with that engine,
@@ -976,7 +983,6 @@ class Loader:
         key: "_ty.Optional[_ty.Callable[[str, _ty.Any], _ty.Any]]" = None,
         recursive: bool = False,
         bound_loops: bool = True,
-        path_filter: "_ty.Optional[PathFilter]" = None,
         interpolate: InterpolateChoice = False,
         inject_env: bool = False,
         wrap: _ty.Any = None,
@@ -994,7 +1000,6 @@ class Loader:
                 key=key,
                 recursive=recursive,
                 bound_loops=bound_loops,
-                path_filter=path_filter,
                 interpolate=interpolate,
                 inject_env=inject_env,
                 wrap=wrap,
@@ -1014,17 +1019,22 @@ class Loader:
     @staticmethod
     def _settle(values: dict) -> _Call:
         policy = values["policy"]
+        if isinstance(policy, (list, tuple)):
+            # Mixins applied to the default policy, in the order given.
+            from .policies import compose
+
+            policy = compose(*policy)()
         if not isinstance(policy, Policy):
-            raise TypeError(f"policy= takes a Policy, not {type(policy).__name__}")
+            raise TypeError(
+                "policy= takes a Policy, or a list of Policy mixin classes, not "
+                f"{type(policy).__name__}"
+            )
         collect = values["collect"]
         if collect is not None and collect not in _COLLECT_MODES:
             raise ValueError(f"collect= takes one of {_COLLECT_MODES}, not {collect!r}")
         on_error = values["on_error"]
         if not (isinstance(on_error, bool) or callable(on_error)):
             raise TypeError("on_error= takes a bool or a callable (LoadEvent) -> bool")
-        path_filter = values["path_filter"]
-        if path_filter is not None and not callable(path_filter):
-            raise TypeError("path_filter= takes a callable (path) -> bool, or None")
         format_options = dict(values["format_options"] or {})
         for name, opts in format_options.items():
             # An unknown format name or option raises here, not at first use.
@@ -1038,7 +1048,6 @@ class Loader:
             key=values["key"] or _default_key,
             recursive=bool(values["recursive"]),
             bound_loops=bool(values["bound_loops"]),
-            path_filter=path_filter,
             interpolate=values["interpolate"],
             interpolator=resolve_interpolator(values["interpolate"], policy),
             inject_env=bool(values["inject_env"]),
