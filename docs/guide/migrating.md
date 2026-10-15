@@ -363,7 +363,7 @@ print(config.server.port)
 without wrapping, `yaconfiglib.dig` follows Puppet's `dig`:
 
 ```python
-yaconfiglib.dig(config, "server", "port")        # None when any step is missing
+yaconfiglib.dig(config, "server", "port", default=8080)   # the default when a step is missing
 ```
 
 ### Errors

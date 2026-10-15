@@ -216,9 +216,9 @@ class DotAccessibleDict(dict):
         # unhashable one has already raised TypeError above.)
         return default
 
-    def dig(self, *keys: typing.Any) -> typing.Any:
-        """:func:`yaconfiglib.dig` on this mapping: keys as given, a miss is ``None``."""
-        return dig(self, *keys)
+    def dig(self, *keys: typing.Any, default: typing.Any = None) -> typing.Any:
+        """:func:`yaconfiglib.dig` on this mapping: keys as given, a miss is *default*."""
+        return dig(self, *keys, default=default)
 
     def _dig(
         self, segments: typing.Sequence[typing.Hashable], default: object
@@ -254,16 +254,17 @@ class DotAccessibleDict(dict):
         return current
 
 
-def dig(data: typing.Any, *keys: typing.Any) -> typing.Any:
+def dig(data: typing.Any, *keys: typing.Any, default: typing.Any = None) -> typing.Any:
     """The value at *keys* inside *data*, as Puppet's and Ruby's ``dig`` find it.
 
     Each key is used exactly as given — no dotted strings, so a key holding a
     ``.`` needs no quoting: a mapping is indexed by the key, a list or tuple by
     an `int` (negative counts from the end). The first step that finds nothing
-    — a missing key, an index out of range, or ``None`` on the way — gives
-    ``None``. Digging into anything else (a string, a number) raises::
+    — a missing key, an index out of range, or ``None`` with keys still to go —
+    gives *default*; a value found at the last key is returned as stored, a
+    ``None`` included. Digging into anything else (a string, a number) raises::
 
-        dig(config, "db", "hosts", 0, "port")
+        dig(config, "db", "hosts", 0, "port", default=5432)
 
     Works on plain results and on `DotAccessibleDict` alike.
 
@@ -276,24 +277,27 @@ def dig(data: typing.Any, *keys: typing.Any) -> typing.Any:
     current = data
     for depth, key in enumerate(keys):
         if current is None:
-            return None
+            return default
         if isinstance(current, dict):
             # dict.get: a defaultdict must not grow a key through a read.
-            current = dict.get(current, key)
+            current = dict.get(current, key, _MISSING)
         elif isinstance(current, collections.abc.Mapping):
-            current = current[key] if key in current else None
+            current = current[key] if key in current else _MISSING
         elif isinstance(current, (list, tuple)):
             if not isinstance(key, int) or isinstance(key, bool):
                 raise ConfigTypeError(
                     f"dig: step {depth + 1} indexes a {type(current).__name__} with "
                     f"a {type(key).__name__}, not an int"
                 )
-            current = current[key] if -len(current) <= key < len(current) else None
+            in_range = -len(current) <= key < len(current)
+            current = current[key] if in_range else _MISSING
         else:
             raise ConfigTypeError(
                 f"dig: step {depth + 1} reaches a {type(current).__name__}, which "
                 "holds no keys"
             )
+        if current is _MISSING:
+            return default
     return current
 
 

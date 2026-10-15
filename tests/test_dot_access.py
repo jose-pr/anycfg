@@ -413,3 +413,31 @@ class TestDig:
 
         wrapped = Loader(wrap=True).load(self.DATA)
         assert wrapped.dig("db", "hosts", 0, "port") == 1
+
+
+class TestDigDefault:
+    DATA = {"db": {"port": None, "hosts": [1]}, "text": "x"}
+
+    def test_a_miss_gives_the_default(self):
+        from yaconfiglib import dig
+
+        assert dig(self.DATA, "db", "user", default="root") == "root"
+        assert dig(self.DATA, "db", "hosts", 5, default=0) == 0
+        assert dig(self.DATA, "nope", "deeper", default="d") == "d"
+
+    def test_a_stored_none_at_the_last_key_is_returned(self):
+        from yaconfiglib import dig
+
+        assert dig(self.DATA, "db", "port", default=5432) is None
+        assert dig(self.DATA, "db", "port", "x", default=5432) == 5432
+
+    def test_digging_into_a_value_still_raises(self):
+        from yaconfiglib import ConfigTypeError, dig
+
+        with pytest.raises(ConfigTypeError):
+            dig(self.DATA, "text", "x", default="d")
+
+    def test_on_wrapped_results(self):
+        from yaconfiglib import Loader
+
+        assert Loader(wrap=True).load(self.DATA).dig("db", "user", default="u") == "u"
