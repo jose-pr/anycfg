@@ -32,6 +32,7 @@ nav:
       - Includes: guide/includes.md
       - Templating: guide/templating.md
       - Typed results: guide/models.md
+      - Async: guide/async.md
       - Security: guide/security.md
       - Migrating: guide/migrating.md
   - API Reference:

@@ -99,6 +99,10 @@ replacement.
   `register_merge`, `hydrate`, `Interpolator`, `TemplateInterpolator`, `LoadEvent`, `BudgetExceededError`,
   `MissingDependencyError`, `TemplateError`.
 - `Policy.max_includes`, `max_depth`, `max_bytes`: a load's budget.
+- Async loading: `aload`, `aload_all`, `adump`, `Loader.aload` and
+  `Loader.aload_all` read async streams and async iterables of chunks on the event
+  loop (stopping past `max_bytes`) and run the rest of the load in a worker thread.
+  `sources.Chunks` loads a sync iterable of chunks.
 - **The target type steers the parse.** With `into=`, YAML keeps each plain scalar
   it read as a bool, number or date beside its text, and the type decides: a `str`
   or `Decimal` field gets `NO`, `1.10` or `0755` as written, other fields the read

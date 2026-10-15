@@ -14,6 +14,8 @@ for how each kind of source is resolved.
 
 ::: yaconfiglib.sources.Text
 
+::: yaconfiglib.sources.Chunks
+
 ::: yaconfiglib.sources.Data
 
 ::: yaconfiglib.sources.Env

@@ -129,6 +129,15 @@ config = Loader(merge="deep").load("server.yaml", overlay)
 `data` is `str`, or `bytes` decoded with the load's encoding. Relative
 includes inside it resolve against the loader's `base_dir`.
 
+## Content in pieces
+
+`yaconfiglib.sources.Chunks(chunks, *, format=None, name="")` is one source
+whose content arrives as an iterable of `str` or `bytes` chunks — a response's
+`iter_content()`, a generator. The chunks are joined as they arrive and the
+read stops once they pass `max_bytes`; the format is `format`, else `name`'s
+suffix. Async streams and async chunk iterables go to
+[`aload`](async.md) instead.
+
 ## The environment
 
 `yaconfiglib.sources.Env(prefix="", *, nested=None, lowercase=False,

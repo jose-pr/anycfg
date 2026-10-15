@@ -37,6 +37,9 @@ trust policy that is **untrusted by default**. Documentation:
   merging — or `interpolate="liquid"` (any [tplx](https://github.com/jose-pr/tplx)
   engine), or `interpolate="vars"` for `${a.b}` references with no extra; a file
   named `app.yaml.j2` (any engine's suffix) is rendered whole before parsing.
+- **Async.** `await aload(...)`, `aload_all`, `adump` and `Loader.aload` read
+  async streams and chunk iterators (stopping past the byte budget) and run the
+  rest of the load off the event loop; no extra needed.
 - **Safe by default.** Commands and templates are off, interpolation is
   sandboxed, includes can be confined to directories, and errors never carry
   document text.
@@ -124,9 +127,9 @@ config = Loader(policy=Policy.trusted()).load(
 
 | Module | Purpose |
 | --- | --- |
-| `yaconfiglib` | `load`, `loads`, `load_all`, `loads_all`, `dump`, `dumps`; `Loader`, `Policy`; merging (`DELETE`, `register_merge`); `hydrate`, `typed_merge`; `DotAccessibleDict`; interpolation; every exception |
+| `yaconfiglib` | `load`, `loads`, `load_all`, `loads_all`, `dump`, `dumps`; `aload`, `aload_all`, `adump`; `Loader`, `Policy`; merging (`DELETE`, `register_merge`); `hydrate`, `typed_merge`; `DotAccessibleDict`; interpolation; every exception |
 | `yaconfiglib.formats` | the `Format` contract and the registry: `register_format`, `get`, `for_filename`, `names` |
-| `yaconfiglib.sources` | `Source`, `Text`, `Data`, `Env`, `Command`, and the scheme registry |
+| `yaconfiglib.sources` | `Source`, `Text`, `Chunks`, `Data`, `Env`, `Command`, and the scheme registry |
 | `yaconfiglib.testing` | `FormatContract`, the suite every format passes |
 
 The installed package carries its API header, `yaconfiglib/AGENTS.md`.
