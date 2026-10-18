@@ -7,7 +7,7 @@ import os
 
 import pytest
 
-from yaconfiglib import (
+from anycfg import (
     DELETE,
     ConfigValueError,
     Loader,
@@ -15,7 +15,7 @@ from yaconfiglib import (
     UnsupportedFormatError,
     sources,
 )
-from yaconfiglib.sources import _env
+from anycfg.sources import _env
 
 
 def _env_load(environ, prefix="", **options):

@@ -9,8 +9,8 @@ import typing
 
 import pytest
 
-import yaconfiglib
-from yaconfiglib import ConfigTypeError, ConfigValueError, hydrate, typed_merge
+import anycfg
+from anycfg import ConfigTypeError, ConfigValueError, hydrate, typed_merge
 
 # list[list[...[str]]], eight deep: every level is coerced, none is Any.
 DEEP: typing.Any = str
@@ -76,7 +76,7 @@ class TestAliases:
             lines.append(f"{chr(97 + index)}: &{chr(97 + index)} [{refs}]")
         lines.append(f"items: *{chr(97 + 8)}")
         start = time.perf_counter()
-        node = yaconfiglib.loads("\n".join(lines) + "\n", format="yaml", into=Node)
+        node = anycfg.loads("\n".join(lines) + "\n", format="yaml", into=Node)
         assert time.perf_counter() - start < 2
         assert len(node.items) == 10
 
@@ -89,7 +89,7 @@ class TestAliases:
     @pytest.mark.usefixtures("needs_yaml")
     def test_a_recursive_yaml_anchor_raises_a_config_error(self):
         with pytest.raises(ConfigValueError):
-            yaconfiglib.loads("&x {children: [*x]}\n", format="yaml", into=Tree)
+            anycfg.loads("&x {children: [*x]}\n", format="yaml", into=Tree)
 
     def test_too_deep_is_a_config_error(self):
         data: dict = {"children": []}

@@ -17,8 +17,8 @@ import time
 
 import pytest
 
-import yaconfiglib
-from yaconfiglib import (
+import anycfg
+from anycfg import (
     CommandError,
     CommandsDisabledError,
     CommandTimeoutError,
@@ -458,13 +458,13 @@ class TestExecution:
     def test_command_runs_with_stdin_closed(self, tmp_path):
         # Run in a child whose stdin is a pipe that is never closed: a command
         # inheriting it would wait forever on the read.
-        package_root = str(pathlib.Path(yaconfiglib.__file__).resolve().parent.parent)
+        package_root = str(pathlib.Path(anycfg.__file__).resolve().parent.parent)
         inner = _program(
             tmp_path, "import sys\nsys.stdin.read()\nprint(1)\n", "reads_stdin.py"
         )
         code = (
             f"import sys\nsys.path.insert(0, {package_root!r})\n"
-            "from yaconfiglib import Loader, Policy\n"
+            "from anycfg import Loader, Policy\n"
             "print(Loader(policy=Policy(allow_commands=True)).load("
             f"{'cmd+json://' + inner!r}))\n"
         )

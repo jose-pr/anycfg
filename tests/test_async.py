@@ -11,15 +11,15 @@ import json
 
 import pytest
 
-import yaconfiglib
-from yaconfiglib import (
+import anycfg
+from anycfg import (
     BudgetExceededError,
     ConfinementError,
     Loader,
     Policy,
     UnsupportedFormatError,
 )
-from yaconfiglib.sources import Chunks
+from anycfg.sources import Chunks
 
 
 class AsyncChunks:
@@ -84,53 +84,51 @@ class Conf:
 class TestAload:
     def test_async_iterable_of_bytes(self):
         source = AsyncChunks([b'{"a"', b": 1}"])
-        assert asyncio.run(yaconfiglib.aload(source, format="json")) == {"a": 1}
+        assert asyncio.run(anycfg.aload(source, format="json")) == {"a": 1}
 
     def test_async_reader_named_by_its_file(self):
         source = AsyncReader(b'{"port": "80"}', name="conf.json")
-        assert asyncio.run(yaconfiglib.aload(source, into=Conf)) == Conf(80)
+        assert asyncio.run(anycfg.aload(source, into=Conf)) == Conf(80)
 
     def test_reader_whose_read_takes_no_size(self):
         source = AsyncReader('{"a": 2}', sized=False)
-        assert asyncio.run(yaconfiglib.aload(source, format="json")) == {"a": 2}
+        assert asyncio.run(anycfg.aload(source, format="json")) == {"a": 2}
 
     def test_text_chunks(self):
         source = AsyncChunks(['{"a": ', "3}"])
-        assert asyncio.run(yaconfiglib.aload(source, format="json")) == {"a": 3}
+        assert asyncio.run(anycfg.aload(source, format="json")) == {"a": 3}
 
     def test_a_path_still_works(self, tmp_path):
         (tmp_path / "a.json").write_text('{"a": 1}', encoding="utf-8")
-        assert asyncio.run(yaconfiglib.aload(str(tmp_path / "a.json"))) == {"a": 1}
+        assert asyncio.run(anycfg.aload(str(tmp_path / "a.json"))) == {"a": 1}
 
     def test_no_name_no_format(self):
         with pytest.raises(UnsupportedFormatError):
-            asyncio.run(yaconfiglib.aload(AsyncChunks([b"{}"])))
+            asyncio.run(anycfg.aload(AsyncChunks([b"{}"])))
 
     def test_stops_reading_past_max_bytes(self):
         source = AsyncChunks([b"x" * 1000] * 50)
         with pytest.raises(BudgetExceededError):
             asyncio.run(
-                yaconfiglib.aload(source, format="json", policy=Policy(max_bytes=2500))
+                anycfg.aload(source, format="json", policy=Policy(max_bytes=2500))
             )
         assert source.taken == 3
 
     def test_mixed_chunks_are_refused(self):
         with pytest.raises(TypeError, match="mixes"):
-            asyncio.run(yaconfiglib.aload(AsyncChunks([b"{", "}"]), format="json"))
+            asyncio.run(anycfg.aload(AsyncChunks([b"{", "}"]), format="json"))
 
     def test_a_named_async_file_outside_the_roots_is_not_read(self, tmp_path):
         root = tmp_path / "root"
         root.mkdir()
         source = AsyncReader(b"{}", name=str(tmp_path / "outside.json"))
         with pytest.raises(ConfinementError):
-            asyncio.run(
-                yaconfiglib.aload(source, policy=Policy(confine_to=[str(root)]))
-            )
+            asyncio.run(anycfg.aload(source, policy=Policy(confine_to=[str(root)])))
         assert source.calls == 0
 
     def test_sync_load_points_to_aload(self):
         with pytest.raises(TypeError, match="aload"):
-            yaconfiglib.load(AsyncChunks([b"{}"]))
+            anycfg.load(AsyncChunks([b"{}"]))
         with pytest.raises(TypeError, match="aload"):
             Loader().load(AsyncReader(b"{}"))
 
@@ -141,7 +139,7 @@ class TestAloadAll:
         source = AsyncChunks([b"a: 1\n--", b"-\na: 2\n"])
 
         async def collect():
-            return [doc async for doc in yaconfiglib.aload_all(source, format="yaml")]
+            return [doc async for doc in anycfg.aload_all(source, format="yaml")]
 
         assert asyncio.run(collect()) == [{"a": 1}, {"a": 2}]
 
@@ -201,12 +199,12 @@ class TestLoaderAload:
 class TestAdump:
     def test_async_text_writer(self):
         writer = AsyncWriter(name="out.json")
-        asyncio.run(yaconfiglib.adump({"a": 1}, writer))
+        asyncio.run(anycfg.adump({"a": 1}, writer))
         assert json.loads("".join(writer.parts)) == {"a": 1}
 
     def test_async_binary_writer(self):
         writer = AsyncWriter(binary=True)
-        asyncio.run(yaconfiglib.adump({"a": 1}, writer, format="json"))
+        asyncio.run(anycfg.adump({"a": 1}, writer, format="json"))
         assert writer.parts[0].endswith(b"}\n")
 
     def test_stream_writer_with_drain(self):
@@ -222,23 +220,23 @@ class TestAdump:
                 self.drained = True
 
         writer = StreamWriter()
-        asyncio.run(yaconfiglib.adump({"a": 1}, writer, format="json"))
+        asyncio.run(anycfg.adump({"a": 1}, writer, format="json"))
         assert writer.drained and json.loads(writer.parts[0]) == {"a": 1}
 
     def test_a_path(self, tmp_path):
         target = tmp_path / "o.json"
-        asyncio.run(yaconfiglib.adump({"a": 1}, str(target)))
-        assert yaconfiglib.load(str(target)) == {"a": 1}
+        asyncio.run(anycfg.adump({"a": 1}, str(target)))
+        assert anycfg.load(str(target)) == {"a": 1}
 
     def test_nothing_written_when_serializing_fails(self):
         writer = AsyncWriter(name="out.json")
-        with pytest.raises(yaconfiglib.ConfigTypeError):
-            asyncio.run(yaconfiglib.adump({"a": object()}, writer))
+        with pytest.raises(anycfg.ConfigTypeError):
+            asyncio.run(anycfg.adump({"a": object()}, writer))
         assert writer.parts == []
 
     def test_an_unnamed_writer_needs_a_format(self):
         with pytest.raises(UnsupportedFormatError):
-            asyncio.run(yaconfiglib.adump({}, AsyncWriter()))
+            asyncio.run(anycfg.adump({}, AsyncWriter()))
 
 
 class TestChunks:

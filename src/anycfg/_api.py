@@ -65,14 +65,14 @@ def _check_location(source: _ty.Any, name: str, allow_async: bool = False) -> No
             return
         raise TypeError(
             f"a {type(source).__name__} is read asynchronously; use "
-            f"await yaconfiglib.a{name}(...)"
+            f"await anycfg.a{name}(...)"
         )
     if not isinstance(
         source, (str, os.PathLike, Path, Source, _ty.Mapping)
     ) and not is_stream(source):
         raise TypeError(
             f"{name}() takes one location, not a {type(source).__name__}; "
-            "layer several sources with yaconfiglib.Loader().load(...)"
+            "layer several sources with anycfg.Loader().load(...)"
         )
 
 
@@ -93,10 +93,10 @@ def load(
     location, never content (see :func:`loads`). Bytes are decoded with
     *encoding*, strictly, one BOM ignored. *options* go to the format and are
     checked against what it accepts. *into* builds that type from the result
-    (:func:`~yaconfiglib.hydrate`).
+    (:func:`~anycfg.hydrate`).
 
     Includes, templates and commands follow *policy* (untrusted by default).
-    For several layered sources, use :class:`~yaconfiglib.Loader`.
+    For several layered sources, use :class:`~anycfg.Loader`.
 
     Raises:
         UnsupportedFormatError: When no format is named or claimed.
@@ -119,7 +119,7 @@ def load(
         raise ConfigValueError(
             f"load() reads one document, and {source!r} gave "
             f"{'none' if not found else 'more than one'}; layer several sources "
-            "with yaconfiglib.Loader().load(...)"
+            "with anycfg.Loader().load(...)"
         )
     return found[0]
 
@@ -228,7 +228,7 @@ def loads_all(
 def dumps(obj: _ty.Any, /, *, format: FormatLike, **options: _ty.Any) -> str:
     """Serialize *obj* as *format* and return the text.
 
-    *obj* is first turned into plain data (:func:`~yaconfiglib.dehydrate`), so
+    *obj* is first turned into plain data (:func:`~anycfg.dehydrate`), so
     a dataclass, a namespace, an enum member, a path or a type with a
     ``_dump_()`` method writes as what it holds. *options* go to the format and
     are checked against what it accepts.

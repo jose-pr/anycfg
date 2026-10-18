@@ -10,7 +10,7 @@ import json
 import logging
 from pathlib import Path
 
-import yaconfiglib
+import anycfg
 
 HERE = Path(__file__).resolve().parent
 
@@ -21,11 +21,11 @@ def main():
     # The default policy is the untrusted posture: includes are allowed, but
     # commands and templates are not, and interpolation is sandboxed.
     # confine_to=True keeps every file read inside base_dir.
-    loader = yaconfiglib.Loader(
+    loader = anycfg.Loader(
         base_dir=HERE,
         merge="deep",
         interpolate=True,
-        policy=yaconfiglib.Policy(confine_to=True),
+        policy=anycfg.Policy(confine_to=True),
     )
     config = loader.load("advanced.yaml")
     print(json.dumps(config, indent=2, default=str))

@@ -1,4 +1,4 @@
-"""Exception types yaconfiglib raises.
+"""Exception types anycfg raises.
 
 Every condition the library reports is a `ConfigError`. Each class also inherits
 the builtin exception that describes the same condition, so ``except ValueError``
@@ -10,8 +10,8 @@ A parser's own error never crosses the API: every format translates it into
 load failure::
 
     try:
-        config = yaconfiglib.load("app.yaml")
-    except (yaconfiglib.ConfigError, OSError) as error:
+        config = anycfg.load("app.yaml")
+    except (anycfg.ConfigError, OSError) as error:
         ...
 
 A leaf module: stdlib imports only, so every other module can import it.
@@ -80,7 +80,7 @@ class ErrorFrame(_ty.NamedTuple):
 
 
 class ConfigError(Exception):
-    """Base class for every error yaconfiglib raises.
+    """Base class for every error anycfg raises.
 
     An `OSError` from reading a source is not wrapped; catch
     ``(ConfigError, OSError)`` to cover every load failure.

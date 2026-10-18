@@ -12,21 +12,21 @@ import typing
 
 import pytest
 
-import yaconfiglib
-import yaconfiglib.formats
-import yaconfiglib.sources
-import yaconfiglib.testing
+import anycfg
+import anycfg.formats
+import anycfg.sources
+import anycfg.testing
 
 _NAMESPACES = (
-    yaconfiglib,
-    yaconfiglib.formats,
-    yaconfiglib.sources,
-    yaconfiglib.testing,
+    anycfg,
+    anycfg.formats,
+    anycfg.sources,
+    anycfg.testing,
 )
 
 
 def _is_ours(obj):
-    return (getattr(obj, "__module__", "") or "").startswith("yaconfiglib")
+    return (getattr(obj, "__module__", "") or "").startswith("anycfg")
 
 
 def _class_members(cls):
@@ -59,8 +59,8 @@ def _public_classes():
                 classes.setdefault(f"{obj.__module__}.{obj.__qualname__}", obj)
     # Built-in formats are public through formats.get(); their classes import
     # nothing optional, so every one is listed whatever extras are installed.
-    for name in yaconfiglib.formats.names():
-        cls = yaconfiglib.formats.get(name)
+    for name in anycfg.formats.names():
+        cls = anycfg.formats.get(name)
         classes.setdefault(f"{cls.__module__}.{cls.__qualname__}", cls)
     return classes
 
@@ -121,42 +121,42 @@ class TestResolvable:
         # A pin on the discovery rule itself: a rule that stops finding these is
         # broken, and every parametrized case above would still pass.
         core = [
-            "yaconfiglib._api.load",
-            "yaconfiglib._api.loads",
-            "yaconfiglib._api.load_all",
-            "yaconfiglib._api.loads_all",
-            "yaconfiglib._api.dump",
-            "yaconfiglib._api.dumps",
-            "yaconfiglib._loader.Loader.__init__",
-            "yaconfiglib._loader.Loader.load",
-            "yaconfiglib._loader.Loader.load_all",
-            "yaconfiglib._loader.Loader.policy",
-            "yaconfiglib._loader.Loader.base_dir",
-            "yaconfiglib._hydrate.hydrate",
-            "yaconfiglib._hydrate.typed_merge",
-            "yaconfiglib._hydrate.opaque",
-            "yaconfiglib._hydrate.OpaqueMerge.__merge__",
-            "yaconfiglib._hydrate.TypedNamespace.__init__",
-            "yaconfiglib._merge.register_merge",
-            "yaconfiglib._merge.merge_strategies",
-            "yaconfiglib._merge.Merge.__call__",
-            "yaconfiglib._dotaccess.DotAccessibleDict.get",
-            "yaconfiglib._dotaccess.DotAccessibleDict.__getattr__",
-            "yaconfiglib._context.LoadContext.include",
-            "yaconfiglib._context.LoadContext.derive",
-            "yaconfiglib._context.Policy.trusted",
-            "yaconfiglib._context.Policy.untrusted",
-            "yaconfiglib._context.Policy.replace",
-            "yaconfiglib.formats._base.Format.loads",
-            "yaconfiglib.formats._base.Format.loads_all",
-            "yaconfiglib.formats._base.Format.dumps",
-            "yaconfiglib.formats.register_format",
-            "yaconfiglib.formats.get",
-            "yaconfiglib.formats.for_filename",
-            "yaconfiglib.sources.register_scheme",
-            "yaconfiglib.sources.from_text",
-            "yaconfiglib.sources._base.Source.read",
-            "yaconfiglib.sources._command.Command.script",
+            "anycfg._api.load",
+            "anycfg._api.loads",
+            "anycfg._api.load_all",
+            "anycfg._api.loads_all",
+            "anycfg._api.dump",
+            "anycfg._api.dumps",
+            "anycfg._loader.Loader.__init__",
+            "anycfg._loader.Loader.load",
+            "anycfg._loader.Loader.load_all",
+            "anycfg._loader.Loader.policy",
+            "anycfg._loader.Loader.base_dir",
+            "anycfg._hydrate.hydrate",
+            "anycfg._hydrate.typed_merge",
+            "anycfg._hydrate.opaque",
+            "anycfg._hydrate.OpaqueMerge.__merge__",
+            "anycfg._hydrate.TypedNamespace.__init__",
+            "anycfg._merge.register_merge",
+            "anycfg._merge.merge_strategies",
+            "anycfg._merge.Merge.__call__",
+            "anycfg._dotaccess.DotAccessibleDict.get",
+            "anycfg._dotaccess.DotAccessibleDict.__getattr__",
+            "anycfg._context.LoadContext.include",
+            "anycfg._context.LoadContext.derive",
+            "anycfg._context.Policy.trusted",
+            "anycfg._context.Policy.untrusted",
+            "anycfg._context.Policy.replace",
+            "anycfg.formats._base.Format.loads",
+            "anycfg.formats._base.Format.loads_all",
+            "anycfg.formats._base.Format.dumps",
+            "anycfg.formats.register_format",
+            "anycfg.formats.get",
+            "anycfg.formats.for_filename",
+            "anycfg.sources.register_scheme",
+            "anycfg.sources.from_text",
+            "anycfg.sources._base.Source.read",
+            "anycfg.sources._command.Command.script",
         ]
         missing = [name for name in core if name not in _CALLABLES]
         assert not missing, f"discovery missed: {missing}"
@@ -165,8 +165,7 @@ class TestResolvable:
         loads = {
             qualname
             for qualname in _CALLABLES
-            if qualname.startswith("yaconfiglib.formats._")
-            and qualname.endswith(".loads")
+            if qualname.startswith("anycfg.formats._") and qualname.endswith(".loads")
         }
         # Format.loads plus one per built-in format.
         assert len(loads) >= 1 + len({"json", "yaml", "toml", "ini", "dotenv"}), sorted(
@@ -175,11 +174,11 @@ class TestResolvable:
 
     def test_named_tuple_and_dataclass_fields_resolve(self):
         for cls in (
-            yaconfiglib.LoadEvent,
-            yaconfiglib.ErrorFrame,
-            yaconfiglib.Policy,
-            yaconfiglib.LoadContext,
-            yaconfiglib.sources.Payload,
+            anycfg.LoadEvent,
+            anycfg.ErrorFrame,
+            anycfg.Policy,
+            anycfg.LoadContext,
+            anycfg.sources.Payload,
         ):
             assert typing.get_type_hints(cls), cls
 
@@ -189,18 +188,18 @@ class TestHintsSayWhatTheRuntimeAccepts:
         # A document can be a mapping, a list or a scalar, and `config.db.host`
         # is documented; `object` would make every such access a type error.
         for obj in (
-            yaconfiglib.load,
-            yaconfiglib.loads,
-            yaconfiglib.Loader.load,
-            yaconfiglib.DotAccessibleDict.get,
-            yaconfiglib.DotAccessibleDict.__getattr__,
-            yaconfiglib.typed_merge,
+            anycfg.load,
+            anycfg.loads,
+            anycfg.Loader.load,
+            anycfg.DotAccessibleDict.get,
+            anycfg.DotAccessibleDict.__getattr__,
+            anycfg.typed_merge,
         ):
             assert _hints(obj)["return"] is typing.Any, obj
         for obj in (
-            yaconfiglib.load_all,
-            yaconfiglib.loads_all,
-            yaconfiglib.Loader.load_all,
+            anycfg.load_all,
+            anycfg.loads_all,
+            anycfg.Loader.load_all,
         ):
             assert typing.get_args(_hints(obj)["return"]) == (typing.Any,), obj
 
@@ -246,44 +245,44 @@ class TestHintsSayWhatTheRuntimeAccepts:
         assert not missing, "\n".join(missing)
 
     def test_merge_hint_accepts_a_name_or_a_callable(self):
-        members = _flatten_union(_hints(yaconfiglib.Loader.__init__)["merge"])
+        members = _flatten_union(_hints(anycfg.Loader.__init__)["merge"])
         assert str in members
-        assert yaconfiglib.Merge in members
+        assert anycfg.Merge in members
 
     def test_merge_options_hint_is_a_keyword_mapping(self):
-        members = _flatten_union(_hints(yaconfiglib.Loader.__init__)["merge_options"])
+        members = _flatten_union(_hints(anycfg.Loader.__init__)["merge_options"])
         assert any(typing.get_args(m) == (str, typing.Any) for m in members), members
 
     def test_typed_merge_accepts_special_form_hints(self):
         # `Type[T]` alone rejects Optional[...] and Dict[str, int], which are
         # documented hints but not classes.
-        assert _hints(yaconfiglib.typed_merge)["cls"] is typing.Any
+        assert _hints(anycfg.typed_merge)["cls"] is typing.Any
         get_overloads = getattr(typing, "get_overloads", None)
         if get_overloads is not None:  # 3.11+
-            assert len(get_overloads(yaconfiglib.typed_merge)) == 3
+            assert len(get_overloads(anycfg.typed_merge)) == 3
 
     def test_hydrate_returns_the_class_type(self):
-        hints = _hints(yaconfiglib.hydrate)
+        hints = _hints(anycfg.hydrate)
         assert typing.get_origin(hints["cls"]) is type
         assert typing.get_args(hints["cls"]) == (hints["return"],)
 
     def test_opaque_preserves_the_class_type(self):
-        hints = _hints(yaconfiglib.opaque)
+        hints = _hints(anycfg.opaque)
         assert hints["return"] == hints["cls"]
         assert typing.get_origin(hints["cls"]) is type
 
     def test_merge_protocol_shape(self):
-        signature = inspect.signature(yaconfiglib.Merge.__call__)
+        signature = inspect.signature(anycfg.Merge.__call__)
         kinds = {name: p.kind for name, p in signature.parameters.items()}
         assert kinds["memo"] is inspect.Parameter.KEYWORD_ONLY
         assert inspect.Parameter.VAR_KEYWORD in kinds.values()
-        assert type(None) in _flatten_union(_hints(yaconfiglib.Merge.__call__)["memo"])
+        assert type(None) in _flatten_union(_hints(anycfg.Merge.__call__)["memo"])
 
 
 class TestTyped:
     def test_py_typed_is_shipped(self):
-        marker = importlib.resources.files("yaconfiglib") / "py.typed"
+        marker = importlib.resources.files("anycfg") / "py.typed"
         assert marker.is_file()
 
     def test_py_typed_sits_beside_the_package(self):
-        assert pathlib.Path(yaconfiglib.__file__).with_name("py.typed").is_file()
+        assert pathlib.Path(anycfg.__file__).with_name("py.typed").is_file()

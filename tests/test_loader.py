@@ -13,8 +13,8 @@ import sys
 
 import pytest
 
-import yaconfiglib
-from yaconfiglib import (
+import anycfg
+from anycfg import (
     BudgetExceededError,
     CommandsDisabledError,
     ConfigTypeError,
@@ -26,12 +26,12 @@ from yaconfiglib import (
     Policy,
     UnsupportedFormatError,
 )
-from yaconfiglib.sources import Data, Env, Text
+from anycfg.sources import Data, Env, Text
 
 from _extras import needs_toml, needs_yaml
 
 LF = chr(10)
-LOGGER = "yaconfiglib._loader"
+LOGGER = "anycfg._loader"
 
 
 def _write(path, text, encoding="utf-8"):
@@ -107,7 +107,7 @@ class TestConstruction:
             Loader(**{keyword: True})
 
     def test_construction_leaves_logging_alone(self):
-        loggers = [logging.getLogger(name) for name in ("yaconfiglib", LOGGER)]
+        loggers = [logging.getLogger(name) for name in ("anycfg", LOGGER)]
         before = [logger.level for logger in loggers]
         Loader()
         Loader(base_dir="anywhere", on_error=True)
@@ -374,7 +374,7 @@ class TestCollect:
         for name in ("api", "billing", "web"):
             _json(tmp_path / "services" / name / "config.json", {"service": name})
         loader = Loader(base_dir=tmp_path, collect="hash")
-        with caplog.at_level(logging.WARNING, logger="yaconfiglib"):
+        with caplog.at_level(logging.WARNING, logger="anycfg"):
             result = loader.load("services/*/config.json")
         assert result == {"config": {"service": "web"}}
         warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
@@ -389,7 +389,7 @@ class TestCollect:
             collect="hash",
             key=lambda name, document: pathlib.PurePath(name).parent.name,
         )
-        with caplog.at_level(logging.WARNING, logger="yaconfiglib"):
+        with caplog.at_level(logging.WARNING, logger="anycfg"):
             result = loader.load("services/*/config.json")
         assert result == {
             "api": {"service": "api"},
@@ -622,7 +622,7 @@ class TestOnError:
 
     def test_true_warns_naming_source_phase_and_type(self, tmp_path, caplog):
         _write(tmp_path / "bad.json", '{"a": }')
-        caplog.set_level(logging.WARNING, logger="yaconfiglib")
+        caplog.set_level(logging.WARNING, logger="anycfg")
         Loader(base_dir=tmp_path, on_error=True).load("bad.json")
         warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
         assert len(warnings) == 1
@@ -636,7 +636,7 @@ class TestOnError:
         # the error's type.
         _write(tmp_path / "bad.json", '{"token": "SECRETVALUE", "a": }')
         _write(tmp_path / "bad.ini", "[s]\nSECRETVALUE\n")
-        caplog.set_level(logging.DEBUG, logger="yaconfiglib")
+        caplog.set_level(logging.DEBUG, logger="anycfg")
         Loader(base_dir=tmp_path, on_error=True).load("bad.json", "bad.ini")
         warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
         assert len(warnings) == 2
@@ -669,14 +669,14 @@ class TestOnError:
 
     def test_predicate_skip_logs_debug_only(self, tmp_path, caplog):
         _write(tmp_path / "bad.json", '{"a": }')
-        caplog.set_level(logging.DEBUG, logger="yaconfiglib")
+        caplog.set_level(logging.DEBUG, logger="anycfg")
         Loader(base_dir=tmp_path, on_error=lambda event: True).load("bad.json")
         assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
         assert [r for r in caplog.records if "bad.json" in r.getMessage()]
 
     def test_declined_error_logs_no_warning(self, tmp_path, caplog):
         _write(tmp_path / "bad.json", '{"a": }')
-        caplog.set_level(logging.DEBUG, logger="yaconfiglib")
+        caplog.set_level(logging.DEBUG, logger="anycfg")
         with pytest.raises(ParseError):
             Loader(base_dir=tmp_path, on_error=lambda event: False).load("bad.json")
         assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
@@ -814,7 +814,7 @@ class TestFormatSelection:
             "b": 2,
             "c": 3,
         }
-        json_format = yaconfiglib.formats.get("json")
+        json_format = anycfg.formats.get("json")
         assert loader.load("a.txt", format=json_format) == {"a": 1}
 
     def test_format_reaches_streams(self):
@@ -838,7 +838,7 @@ class TestFormatSelection:
             base_dir=tmp_path, format_options={"json": {"parse_float": decimal.Decimal}}
         )
         # Basic interpolation of an undefined reference fails in the INI parser.
-        with pytest.raises(yaconfiglib.ConfigError):
+        with pytest.raises(anycfg.ConfigError):
             loader.load("a.ini")
         loader = Loader(
             base_dir=tmp_path, format_options={"ini": {"interpolation": None}}
@@ -1270,55 +1270,55 @@ class TestStreams:
 
 class TestLoaderEdges:
     def test_a_parsed_source_has_its_delete_markers_pruned(self):
-        class Parsed(yaconfiglib.sources.Source):
+        class Parsed(anycfg.sources.Source):
             name = "parsed"
 
             def read(self, context):
-                return yaconfiglib.sources.Payload(
-                    {"a": yaconfiglib.DELETE, "b": 1},
+                return anycfg.sources.Payload(
+                    {"a": anycfg.DELETE, "b": 1},
                     name="parsed",
                     identity="parsed",
                     parsed=True,
                 )
 
-        assert yaconfiglib.Loader().load(Parsed()) == {"b": 1}
+        assert anycfg.Loader().load(Parsed()) == {"b": 1}
 
     def test_per_call_policy_none_is_the_loaders(self):
-        loader = yaconfiglib.Loader(policy=yaconfiglib.Policy(strict=True))
+        loader = anycfg.Loader(policy=anycfg.Policy(strict=True))
         assert loader.load({"a": 1}, policy=None) == {"a": 1}
 
     def test_formats_takes_classes(self):
-        json_format = yaconfiglib.formats.get("json")
-        loader = yaconfiglib.Loader(formats=[json_format, "yaml"])
+        json_format = anycfg.formats.get("json")
+        loader = anycfg.Loader(formats=[json_format, "yaml"])
         assert loader.load({"a": 1}) == {"a": 1}
 
     @needs_yaml
     def test_a_format_registered_later_is_reachable_from_documents(self, tmp_path):
         (tmp_path / "a.laterfmt").write_text("x", encoding="utf-8")
         (tmp_path / "app.yaml").write_text("v: !include a.laterfmt", encoding="utf-8")
-        loader = yaconfiglib.Loader(base_dir=tmp_path)
+        loader = anycfg.Loader(base_dir=tmp_path)
 
-        class Later(yaconfiglib.formats.Format):
+        class Later(anycfg.formats.Format):
             name = "laterfmt"
             suffixes = (".laterfmt",)
 
             def loads(self, data, /, *, context=None, **options):
                 return {"later": data.strip()}
 
-        yaconfiglib.formats.register_format(Later)
+        anycfg.formats.register_format(Later)
         try:
             assert loader.load("app.yaml") == {"v": {"later": "x"}}
         finally:
-            yaconfiglib.formats.unregister_format("laterfmt")
+            anycfg.formats.unregister_format("laterfmt")
 
     def test_flatten_with_nothing_loaded_returns_the_default(self, tmp_path):
-        loader = yaconfiglib.Loader(base_dir=tmp_path)
+        loader = anycfg.Loader(base_dir=tmp_path)
         assert loader.load("*.json", flatten=True) is None
 
     def test_a_merge_failure_of_unnamed_data_names_it(self):
         def failing(a, b, *, memo=None, **options):
-            raise yaconfiglib.ConfigValueError("refused")
+            raise anycfg.ConfigValueError("refused")
 
-        with pytest.raises(yaconfiglib.ConfigValueError) as caught:
-            yaconfiglib.Loader(merge=failing).load({"a": 1}, {"b": 2})
+        with pytest.raises(anycfg.ConfigValueError) as caught:
+            anycfg.Loader(merge=failing).load({"a": 1}, {"b": 2})
         assert "while merging in-memory data" in str(caught.value)

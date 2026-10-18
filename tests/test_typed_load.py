@@ -15,10 +15,10 @@ import typing
 
 import pytest
 
-import yaconfiglib
-from yaconfiglib import Loader
-from yaconfiglib._scalar import ScalarText
-from yaconfiglib.sources import Text
+import anycfg
+from anycfg import Loader
+from anycfg._scalar import ScalarText
+from anycfg.sources import Text
 
 pytestmark = pytest.mark.usefixtures("needs_yaml")
 
@@ -84,42 +84,38 @@ class Holder:
 
 class TestReadValueFirst:
     def test_int_enum_from_a_yaml_integer(self):
-        assert yaconfiglib.loads("level: 2\nmode: 2\n", format="yaml", into=Levels) == (
+        assert anycfg.loads("level: 2\nmode: 2\n", format="yaml", into=Levels) == (
             Levels(Level.HIGH, Mode.SAFE)
         )
 
     def test_enum_round_trip(self, tmp_path):
         target = tmp_path / "e.yaml"
-        yaconfiglib.dump(Levels(Level.LOW, Mode.SAFE), str(target))
-        assert yaconfiglib.load(str(target), into=Levels) == Levels(
-            Level.LOW, Mode.SAFE
-        )
+        anycfg.dump(Levels(Level.LOW, Mode.SAFE), str(target))
+        assert anycfg.load(str(target), into=Levels) == Levels(Level.LOW, Mode.SAFE)
 
     def test_numbers_take_the_read_value(self):
-        numbers = yaconfiglib.loads(
+        numbers = anycfg.loads(
             "count: 1.0\nratio: 0x10\nexact: 0x10\n", format="yaml", into=Numbers
         )
         assert numbers == Numbers(1, 16.0, decimal.Decimal(16))
         assert type(numbers.count) is int
 
     def test_decimal_keeps_the_text(self):
-        numbers = yaconfiglib.loads("exact: 0.10\n", format="yaml", into=Numbers)
+        numbers = anycfg.loads("exact: 0.10\n", format="yaml", into=Numbers)
         assert str(numbers.exact) == "0.10"
 
     def test_a_flag_is_not_a_number(self):
-        with pytest.raises(yaconfiglib.ConfigValueError, match="'yes'.*int"):
-            yaconfiglib.loads("count: yes\n", format="yaml", into=Numbers)
+        with pytest.raises(anycfg.ConfigValueError, match="'yes'.*int"):
+            anycfg.loads("count: yes\n", format="yaml", into=Numbers)
 
     def test_union_falls_back_to_the_text(self):
-        assert yaconfiglib.loads("value: yes\n", format="yaml", into=Either) == (
+        assert anycfg.loads("value: yes\n", format="yaml", into=Either) == (
             Either("yes")
         )
-        assert yaconfiglib.loads("value: 80\n", format="yaml", into=Either) == (
-            Either(80)
-        )
+        assert anycfg.loads("value: 80\n", format="yaml", into=Either) == (Either(80))
 
     def test_newtype_literal_set_and_object(self):
-        kinds = yaconfiglib.loads(
+        kinds = anycfg.loads(
             "port: 80\nsize: 2\ntags: [1, 2]\nanything: [yes, 1.10]\n",
             format="yaml",
             into=Kinds,
@@ -130,15 +126,15 @@ class TestReadValueFirst:
         assert not any(isinstance(item, ScalarText) for item in kinds.anything)
 
     def test_literal_refuses_another_value(self):
-        with pytest.raises(yaconfiglib.ConfigValueError, match="not one of"):
-            yaconfiglib.loads(
+        with pytest.raises(anycfg.ConfigValueError, match="not one of"):
+            anycfg.loads(
                 "port: 1\nsize: 3\ntags: []\nanything: x\n", format="yaml", into=Kinds
             )
 
     def test_named_tuple_round_trip(self, tmp_path):
         target = tmp_path / "p.yaml"
-        yaconfiglib.dump(Located(Point("h", 1)), str(target))
-        assert yaconfiglib.load(str(target), into=Located) == Located(Point("h", 1))
+        anycfg.dump(Located(Point("h", 1)), str(target))
+        assert anycfg.load(str(target), into=Located) == Located(Point("h", 1))
 
 
 class TestIntoChangesNothingElse:
@@ -209,7 +205,7 @@ class TestPydantic:
             anything: typing.Any = None
             flags: typing.List[typing.Any] = []
 
-        model = yaconfiglib.loads(
+        model = anycfg.loads(
             "name: NO\nport: 0x10\nmeta: {count: 3}\nanything: 12\nflags: [yes, 2]\n",
             format="yaml",
             into=Model,
@@ -230,5 +226,5 @@ class TestPydantic:
             port: int
             debug: bool
 
-        model = yaconfiglib.loads("port: 80\ndebug: yes\n", format="yaml", into=Strict)
+        model = anycfg.loads("port: 80\ndebug: yes\n", format="yaml", into=Strict)
         assert (model.port, model.debug) == (80, True)

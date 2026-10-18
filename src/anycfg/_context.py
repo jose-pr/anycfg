@@ -39,9 +39,9 @@ class Policy:
     Attributes:
         allow_commands: Run command sources (``cmd://``, ``exec://``,
             ``sh://``, script files) instead of raising
-            :class:`~yaconfiglib.exceptions.CommandsDisabledError`.
+            :class:`~anycfg.exceptions.CommandsDisabledError`.
         allow_templates: Render template sources (``app.yaml.j2``) instead of
-            raising :class:`~yaconfiglib.exceptions.TemplatesDisabledError`.
+            raising :class:`~anycfg.exceptions.TemplatesDisabledError`.
         allow_includes: Honour ``!include``/``!load``.
         sandbox: Render templates and interpolate values in a sandbox that
             blocks Python internals. A template engine that cannot be sandboxed
@@ -50,7 +50,7 @@ class Policy:
         confine_to: Roots every local file read must fall inside: a sequence
             of absolute paths, one `os.pathsep`-separated string, a path,
             `True` for the loader's ``base_dir``, or `None`/`False` for none.
-            With `None` the ``YACONFIGLIB_CONFINE_TO`` environment variable is
+            With `None` the ``ANYCFG_CONFINE_TO`` environment variable is
             read instead.
         max_includes: Most includes one load may resolve.
         max_depth: Deepest nesting of includes.
@@ -156,7 +156,7 @@ class LoadContext:
         trail: Their names, for messages.
         keep_text: The load builds a type (``into=``): a format that resolves
             plain scalars by their text (YAML) keeps that text, as
-            ``yaconfiglib._scalar.ScalarText``, for the type to decide.
+            ``anycfg._scalar.ScalarText``, for the type to decide.
     """
 
     policy: Policy = dataclasses.field(default_factory=Policy)
@@ -181,7 +181,7 @@ class LoadContext:
         """
         if self._loader is None:
             raise ConfigValueError(
-                "includes are only available while a yaconfiglib Loader is loading"
+                "includes are only available while a anycfg Loader is loading"
             )
         return self._loader.include(self, (source,) + more, options)
 

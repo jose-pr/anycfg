@@ -3,7 +3,7 @@
 Built-in formats (``json``, ``yaml``, ``toml``, ``ini``, ``dotenv``) are always
 listed, whether or not their optional dependency is installed; using one whose
 dependency is missing raises naming the extra to install. Another distribution
-adds formats through the ``yaconfiglib.formats`` entry-point group, and code
+adds formats through the ``anycfg.formats`` entry-point group, and code
 adds one with :func:`register_format`.
 
 Selection is by explicit name first (``format="yaml"``, aliases included,
@@ -38,16 +38,16 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
-ENTRY_POINT_GROUP = "yaconfiglib.formats"
+ENTRY_POINT_GROUP = "anycfg.formats"
 
 #: Built-in formats, imported on first use. Their modules import nothing
 #: optional at import time, so every one of them is always listed.
 _BUILTINS = {
-    "json": "yaconfiglib.formats._json:JSONFormat",
-    "yaml": "yaconfiglib.formats._yaml:YAMLFormat",
-    "toml": "yaconfiglib.formats._toml:TOMLFormat",
-    "ini": "yaconfiglib.formats._ini:INIFormat",
-    "dotenv": "yaconfiglib.formats._dotenv:DotenvFormat",
+    "json": "anycfg.formats._json:JSONFormat",
+    "yaml": "anycfg.formats._yaml:YAMLFormat",
+    "toml": "anycfg.formats._toml:TOMLFormat",
+    "ini": "anycfg.formats._ini:INIFormat",
+    "dotenv": "anycfg.formats._dotenv:DotenvFormat",
 }
 
 #: Where a registration came from. A document can select only built-in and
@@ -192,7 +192,7 @@ def _ensure_loaded() -> None:
             _update(add_builtins)
             _state["builtins"] = True
         if not _state["entry_points"]:
-            # Set first: an entry point that imports yaconfiglib.formats while
+            # Set first: an entry point that imports anycfg.formats while
             # loading must not recurse into this loop.
             _state["entry_points"] = True
             for point in _entry_points():

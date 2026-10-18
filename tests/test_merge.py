@@ -10,10 +10,10 @@ import typing
 
 import pytest
 
-import yaconfiglib
-from yaconfiglib import DELETE, DotAccessibleDict, Loader
-from yaconfiglib import _merge
-from yaconfiglib._merge import deep, simple, substitute
+import anycfg
+from anycfg import DELETE, DotAccessibleDict, Loader
+from anycfg import _merge
+from anycfg._merge import deep, simple, substitute
 
 STRATEGIES = [simple, substitute, deep]
 STRATEGY_IDS = ["simple", "substitute", "deep"]
@@ -306,7 +306,7 @@ class TestNoneIsNoOpinion:
 
 class TestDelete:
     def test_delete_is_exported_and_a_singleton(self):
-        assert yaconfiglib.DELETE is DELETE
+        assert anycfg.DELETE is DELETE
         assert copy.copy(DELETE) is DELETE
         assert copy.deepcopy({"k": DELETE})["k"] is DELETE
         assert repr(DELETE) == "DELETE"
@@ -595,7 +595,7 @@ class TestMemo:
 
 class TestRegistry:
     def test_builtins_listed_sorted(self):
-        names = yaconfiglib.merge_strategies()
+        names = anycfg.merge_strategies()
         assert {"simple", "substitute", "deep"} <= set(names)
         assert names == sorted(names)
 
@@ -612,8 +612,8 @@ class TestRegistry:
         def right(a, b, *, memo=None, **options):
             return b
 
-        yaconfiglib.register_merge("Right", right)
-        assert "right" in yaconfiglib.merge_strategies()
+        anycfg.register_merge("Right", right)
+        assert "right" in anycfg.merge_strategies()
         assert _merge.resolve_merge("right") is right
         assert Loader(merge="right").load({"a": 1}, {"b": 2}) == {"b": 2}
         assert Loader().load({"a": 1}, {"b": 2}, merge="RIGHT") == {"b": 2}
@@ -624,10 +624,10 @@ class TestRegistry:
             return b
 
         with pytest.raises(ValueError, match="already registered"):
-            yaconfiglib.register_merge("deep", right)
+            anycfg.register_merge("deep", right)
         with pytest.raises(ValueError):
-            yaconfiglib.register_merge("DEEP", right)
-        yaconfiglib.register_merge("deep", right, replace=True)
+            anycfg.register_merge("DEEP", right)
+        anycfg.register_merge("deep", right, replace=True)
         assert _merge.resolve_merge("deep") is right
 
     def test_registry_isolation_restored(self):
@@ -667,8 +667,8 @@ class TestRegistry:
         assert Loader(merge=Last()).load({"a": 1}, {"b": 2}) == {"b": 2}
 
     def test_merge_protocol_is_exported(self):
-        assert yaconfiglib.Merge is _merge.Merge
-        assert "Merge" in yaconfiglib.__all__
+        assert anycfg.Merge is _merge.Merge
+        assert "Merge" in anycfg.__all__
 
     def test_merge_failure_carries_a_merge_frame(self):
         def broken(a, b, *, memo=None, **options):
@@ -779,7 +779,7 @@ class TestNamedTuples:
 
 class TestNullsAndInherit:
     BASE = {"a": 1, "b": 2, "c": 3}
-    OVER = {"a": None, "b": yaconfiglib.INHERIT, "d": yaconfiglib.INHERIT}
+    OVER = {"a": None, "b": anycfg.INHERIT, "d": anycfg.INHERIT}
 
     @pytest.mark.parametrize("strategy", ["simple", "substitute", "deep"])
     def test_null_keeps_by_default(self, strategy):
@@ -793,8 +793,8 @@ class TestNullsAndInherit:
     def test_nested_and_in_lists(self):
         base = {"db": {"host": "h", "port": 1}, "xs": [1]}
         over = {
-            "db": {"host": None, "port": yaconfiglib.INHERIT},
-            "xs": [2, yaconfiglib.INHERIT],
+            "db": {"host": None, "port": anycfg.INHERIT},
+            "xs": [2, anycfg.INHERIT],
         }
         loader = Loader(merge="deep", merge_options={"nulls": "replace"})
         assert loader.load(base, over) == {
@@ -803,24 +803,24 @@ class TestNullsAndInherit:
         }
 
     def test_a_whole_document_of_inherit_keeps_the_earlier_one(self):
-        assert deep({"a": 1}, yaconfiglib.INHERIT) == {"a": 1}
+        assert deep({"a": 1}, anycfg.INHERIT) == {"a": 1}
 
     def test_alone_it_is_pruned(self):
-        assert Loader().load({"a": 1, "b": yaconfiglib.INHERIT}) == {"a": 1}
+        assert Loader().load({"a": 1, "b": anycfg.INHERIT}) == {"a": 1}
 
     def test_unknown_nulls_choice(self):
-        with pytest.raises(yaconfiglib.ConfigValueError, match="nulls="):
+        with pytest.raises(anycfg.ConfigValueError, match="nulls="):
             Loader(merge_options={"nulls": "x"}).load({"a": 1}, {"a": 2})
 
     def test_survives_copy_and_pickle(self):
         import pickle
 
-        assert copy.deepcopy(yaconfiglib.INHERIT) is yaconfiglib.INHERIT
-        assert pickle.loads(pickle.dumps(yaconfiglib.INHERIT)) is yaconfiglib.INHERIT
+        assert copy.deepcopy(anycfg.INHERIT) is anycfg.INHERIT
+        assert pickle.loads(pickle.dumps(anycfg.INHERIT)) is anycfg.INHERIT
 
     @pytest.mark.usefixtures("needs_yaml")
     def test_yaml_tag(self):
-        from yaconfiglib.sources import Text
+        from anycfg.sources import Text
 
         loader = Loader(merge_options={"nulls": "replace"})
         result = loader.load(
@@ -830,4 +830,4 @@ class TestNullsAndInherit:
         assert result == {"a": None, "b": 2}
 
     def test_typed_merge_treats_it_as_no_opinion(self):
-        assert yaconfiglib.typed_merge(int, 1, yaconfiglib.INHERIT) == 1
+        assert anycfg.typed_merge(int, 1, anycfg.INHERIT) == 1

@@ -8,7 +8,7 @@ to parse or data already parsed.
 A **string** source written as ``<scheme>://...`` (or ``<scheme>+<fmt>://``)
 is looked up here. The built-in schemes are ``cmd``, ``exec`` and ``sh``, which
 run a command; another distribution adds schemes through the
-``yaconfiglib.sources`` entry-point group, and code with
+``anycfg.sources`` entry-point group, and code with
 :func:`register_scheme`. A document can name only built-in and code-registered
 schemes; an entry-point scheme needs the caller to allow it.
 """
@@ -43,16 +43,16 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
-ENTRY_POINT_GROUP = "yaconfiglib.sources"
+ENTRY_POINT_GROUP = "anycfg.sources"
 
 #: ``<scheme>[+<format>]://``. Only this spelling: a bare ``cmd:echo`` is a
 #: file name, and a drive letter (``C:\``) never matches.
 SCHEME_REGEX = re.compile(r"^([A-Za-z][A-Za-z0-9.\-]*?)(?:\+([A-Za-z0-9_.\-]+))?://")
 
 _BUILTINS = {
-    "cmd": "yaconfiglib.sources._command:Command",
-    "exec": "yaconfiglib.sources._command:Command",
-    "sh": "yaconfiglib.sources._command:Command",
+    "cmd": "anycfg.sources._command:Command",
+    "exec": "anycfg.sources._command:Command",
+    "sh": "anycfg.sources._command:Command",
 }
 
 _BUILTIN, _REGISTERED, _ENTRY_POINT = "builtin", "registered", "entry_point"

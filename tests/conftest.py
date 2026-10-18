@@ -1,4 +1,4 @@
-"""Shared pytest fixtures for yaconfiglib tests."""
+"""Shared pytest fixtures for anycfg tests."""
 
 import pathlib
 
@@ -15,25 +15,25 @@ def examples_dir():
 
 @pytest.fixture
 def needs_yaml():
-    """Skip unless PyYAML is installed (yaconfiglib[yaml])."""
+    """Skip unless PyYAML is installed (anycfg[yaml])."""
     pytest.importorskip("yaml")
 
 
 @pytest.fixture
 def needs_jinja2():
-    """Skip unless Jinja2 is installed (yaconfiglib[templates])."""
+    """Skip unless Jinja2 is installed (anycfg[templates])."""
     pytest.importorskip("jinja2")
 
 
 @pytest.fixture
 def needs_tplx():
-    """Skip unless tplx is installed (yaconfiglib[templates])."""
+    """Skip unless tplx is installed (anycfg[templates])."""
     pytest.importorskip("tplx")
 
 
 @pytest.fixture
 def needs_toml():
-    """Skip unless TOML can be read: tomllib (3.11+) or tomli (yaconfiglib[toml])."""
+    """Skip unless TOML can be read: tomllib (3.11+) or tomli (anycfg[toml])."""
     try:
         import tomllib  # noqa: F401
     except ImportError:
@@ -42,5 +42,5 @@ def needs_toml():
 
 @pytest.fixture
 def needs_toml_writer():
-    """Skip unless tomli-w is installed (yaconfiglib[toml])."""
+    """Skip unless tomli-w is installed (anycfg[toml])."""
     pytest.importorskip("tomli_w")

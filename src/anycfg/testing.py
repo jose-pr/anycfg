@@ -3,7 +3,7 @@
 Subclass :class:`FormatContract` in a pytest module and set the class
 attributes; pytest collects the inherited tests::
 
-    from yaconfiglib.testing import FormatContract
+    from anycfg.testing import FormatContract
 
     class TestMyFormat(FormatContract):
         format = MyFormat
@@ -25,7 +25,7 @@ from .formats import Format, capabilities
 __all__ = ["FormatContract", "SECRET"]
 
 #: Planted in malformed documents; it must never reach an error or a log.
-SECRET = "hunter2-yaconfiglib-secret"
+SECRET = "hunter2-anycfg-secret"
 
 
 class FormatContract:
@@ -60,20 +60,18 @@ class FormatContract:
     def test_ignores_a_byte_order_mark(self) -> None:
         if self.format.binary:
             return
-        import yaconfiglib
+        import anycfg
 
-        plain = yaconfiglib.loads(self.document, format=self.format)
-        marked = yaconfiglib.loads(
-            ("﻿" + self.document).encode("utf-8"), format=self.format
-        )
+        plain = anycfg.loads(self.document, format=self.format)
+        marked = anycfg.loads(("﻿" + self.document).encode("utf-8"), format=self.format)
         assert marked == plain
 
     def test_refuses_an_unknown_option(self) -> None:
         import pytest
-        import yaconfiglib
+        import anycfg
 
         with pytest.raises(TypeError):
-            yaconfiglib.loads(
+            anycfg.loads(
                 self.document, format=self.format, no_such_option_anywhere=True
             )
 
@@ -86,14 +84,14 @@ class FormatContract:
 
     def test_malformed_raises_parse_error_without_content(self, caplog) -> None:
         import pytest
-        import yaconfiglib
+        import anycfg
 
         if not self.malformed:
             pytest.skip("no malformed document given")
         text = self.malformed.replace("{secret}", SECRET)
         caplog.set_level(logging.DEBUG)
         with pytest.raises(ParseError) as caught:
-            yaconfiglib.loads(text, format=self.format)
+            anycfg.loads(text, format=self.format)
         error = caught.value
         seen = [str(error), repr(error), repr(error.args), repr(vars(error))]
         cause = error.__cause__ or error.__context__

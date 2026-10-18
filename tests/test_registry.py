@@ -1,4 +1,4 @@
-"""The format registry (`yaconfiglib.formats`) and the scheme registry (`yaconfiglib.sources`).
+"""The format registry (`anycfg.formats`) and the scheme registry (`anycfg.sources`).
 
 Both registries are process-global. Every test that changes one goes through a
 fixture that snapshots the registry's state and restores it afterwards, so the
@@ -13,9 +13,9 @@ import textwrap
 
 import pytest
 
-import yaconfiglib
-from yaconfiglib import formats, sources
-from yaconfiglib.formats import Format
+import anycfg
+from anycfg import formats, sources
+from anycfg.formats import Format
 
 BUILTIN_FORMATS = ["dotenv", "ini", "json", "toml", "yaml"]
 
@@ -25,9 +25,9 @@ BUILTIN_FORMATS = ["dotenv", "ini", "json", "toml", "yaml"]
 
 @pytest.fixture
 def format_registry():
-    """`yaconfiglib.formats`, restored to its state before the test."""
+    """`anycfg.formats`, restored to its state before the test."""
     formats.names()  # load the built-ins and entry points before the snapshot
-    registry = sys.modules["yaconfiglib.formats"]
+    registry = sys.modules["anycfg.formats"]
     with registry._lock:
         # The tables are replaced whole on every change, so keeping the
         # reference is a snapshot.
@@ -43,9 +43,9 @@ def format_registry():
 
 @pytest.fixture
 def scheme_registry():
-    """`yaconfiglib.sources`, restored to its state before the test."""
+    """`anycfg.sources`, restored to its state before the test."""
     sources.schemes()
-    registry = sys.modules["yaconfiglib.sources"]
+    registry = sys.modules["anycfg.sources"]
     with registry._lock:
         saved = (dict(registry._schemes), dict(registry._state))
     try:
@@ -74,10 +74,10 @@ def install_plugin(tmp_path, monkeypatch):
                 textwrap.dedent(source), encoding="utf-8"
             )
             added.append(module)
-        dist = root / "yaconfiglib_test_plugin-1.0.dist-info"
+        dist = root / "anycfg_test_plugin-1.0.dist-info"
         dist.mkdir(exist_ok=True)
         (dist / "METADATA").write_text(
-            "Metadata-Version: 2.1\nName: yaconfiglib-test-plugin\nVersion: 1.0\n",
+            "Metadata-Version: 2.1\nName: anycfg-test-plugin\nVersion: 1.0\n",
             encoding="utf-8",
         )
         lines = [f"[{group}]"] + [
@@ -93,12 +93,12 @@ def install_plugin(tmp_path, monkeypatch):
 
 
 def _reload_format_entry_points():
-    sys.modules["yaconfiglib.formats"]._state["entry_points"] = False
+    sys.modules["anycfg.formats"]._state["entry_points"] = False
     formats.names()
 
 
 def _reload_scheme_entry_points():
-    registry = sys.modules["yaconfiglib.sources"]
+    registry = sys.modules["anycfg.sources"]
     registry._schemes.clear()
     registry._state["loaded"] = False
     sources.schemes()
@@ -150,7 +150,7 @@ class TestFormatLookup:
         assert formats.get(asked).name == expected
 
     def test_get_unknown_lists_the_names(self):
-        with pytest.raises(yaconfiglib.UnsupportedFormatError) as caught:
+        with pytest.raises(anycfg.UnsupportedFormatError) as caught:
             formats.get("jsn")
         message = str(caught.value)
         assert "jsn" in message
@@ -188,7 +188,7 @@ class TestFormatLookup:
         assert formats.find_for_filename(filename) is None
 
     def test_for_filename_raises_naming_the_registered_formats(self):
-        with pytest.raises(yaconfiglib.UnsupportedFormatError) as caught:
+        with pytest.raises(anycfg.UnsupportedFormatError) as caught:
             formats.for_filename("plain.xyz")
         message = str(caught.value)
         assert "plain.xyz" in message and "format=" in message
@@ -196,8 +196,8 @@ class TestFormatLookup:
 
     def test_load_of_unclaimed_name_raises_before_opening(self, tmp_path):
         missing = tmp_path / "nope.xyz"
-        with pytest.raises(yaconfiglib.UnsupportedFormatError):
-            yaconfiglib.load(str(missing))
+        with pytest.raises(anycfg.UnsupportedFormatError):
+            anycfg.load(str(missing))
 
     def test_lookup_is_linear_in_the_name(self):
         name = "a" + ".x" * 50000 + ".json"
@@ -205,10 +205,10 @@ class TestFormatLookup:
 
     def test_dump_selects_by_target_name(self, tmp_path):
         target = tmp_path / "out.JSON"
-        yaconfiglib.dump({"a": 1}, str(target))
-        assert yaconfiglib.load(str(target)) == {"a": 1}
-        with pytest.raises(yaconfiglib.UnsupportedFormatError):
-            yaconfiglib.dump({"a": 1}, str(tmp_path / "out.xyz"))
+        anycfg.dump({"a": 1}, str(target))
+        assert anycfg.load(str(target)) == {"a": 1}
+        with pytest.raises(anycfg.UnsupportedFormatError):
+            anycfg.dump({"a": 1}, str(tmp_path / "out.xyz"))
 
 
 class TestCapabilities:
@@ -234,8 +234,8 @@ class TestCapabilities:
         assert formats.capabilities(Streams()) == {"load", "load_all", "dump"}
 
     def test_dumps_with_a_reader_only_format(self):
-        with pytest.raises(yaconfiglib.UnsupportedFormatError, match="cannot write"):
-            yaconfiglib.dumps({"a": 1}, format=_format("zzreader"))
+        with pytest.raises(anycfg.UnsupportedFormatError, match="cannot write"):
+            anycfg.dumps({"a": 1}, format=_format("zzreader"))
 
 
 # -- the format registry: registration -----------------------------------------
@@ -276,8 +276,8 @@ class TestRegisterFormat:
         assert format_registry.get("ZZALIAS") is cls
         source = tmp_path / "c.zz"
         source.write_text("hello", encoding="utf-8")
-        assert yaconfiglib.load(str(source))["data"] == "hello"
-        assert yaconfiglib.loads("x", format="zzalias")["format"] == "zzfmt"
+        assert anycfg.load(str(source))["data"] == "hello"
+        assert anycfg.loads("x", format="zzalias")["format"] == "zzfmt"
 
     def test_registering_the_same_class_again_is_harmless(self, format_registry):
         cls = _format("zzsame", [".zzsame"])
@@ -347,7 +347,7 @@ class TestRegisterFormat:
             _format("json", [".json"], aliases=["jsonish"]), replace=True
         )
         assert format_registry.get("json") is mine
-        assert yaconfiglib.loads("{}", format="json")["format"] == "json"
+        assert anycfg.loads("{}", format="json")["format"] == "json"
         assert format_registry.names().count("json") == 1
 
     @pytest.mark.parametrize(
@@ -384,7 +384,7 @@ class TestUnregisterFormat:
         assert format_registry.unregister_format("ZZG") is True
         assert "zzgone" not in format_registry.names()
         assert format_registry.find_for_filename("a.zzgone") is None
-        with pytest.raises(yaconfiglib.UnsupportedFormatError):
+        with pytest.raises(anycfg.UnsupportedFormatError):
             format_registry.get("zzg")
         assert format_registry.unregister_format("zzgone") is False
 
@@ -401,13 +401,13 @@ class TestUnregisterFormat:
 class TestAllowed:
     def test_get_refuses_a_name_outside_allowed(self):
         assert formats.get("json", allowed={"json"}).name == "json"
-        with pytest.raises(yaconfiglib.UnsupportedFormatError, match="formats="):
+        with pytest.raises(anycfg.UnsupportedFormatError, match="formats="):
             formats.get("yml", allowed={"json"})
 
     def test_for_filename_refuses_rather_than_skips(self):
-        with pytest.raises(yaconfiglib.UnsupportedFormatError):
+        with pytest.raises(anycfg.UnsupportedFormatError):
             formats.for_filename("a.yaml", allowed={"json"})
-        with pytest.raises(yaconfiglib.UnsupportedFormatError):
+        with pytest.raises(anycfg.UnsupportedFormatError):
             formats.find_for_filename(".env.prod", allowed=frozenset())
         assert formats.find_for_filename("a.xyz", allowed={"json"}) is None
 
@@ -417,8 +417,8 @@ class TestAllowed:
         assert "zzdoc" in format_registry.document_formats()
 
     def test_loader_formats_names_are_checked(self):
-        with pytest.raises(yaconfiglib.UnsupportedFormatError):
-            yaconfiglib.Loader(formats=["json", "no-such-format"])
+        with pytest.raises(anycfg.UnsupportedFormatError):
+            anycfg.Loader(formats=["json", "no-such-format"])
 
 
 # -- formats outside the registry ----------------------------------------------
@@ -428,47 +428,47 @@ class TestFormatClassesDirectly:
     def test_an_unregistered_class_works_as_format(self):
         cls = _format("zzloose")
         assert "zzloose" not in formats.names()
-        assert yaconfiglib.loads("text", format=cls)["data"] == "text"
+        assert anycfg.loads("text", format=cls)["data"] == "text"
 
     def test_options_are_checked_against_load_options(self):
         cls = _format("zzopts", load_options=frozenset({"flag"}))
-        assert yaconfiglib.loads("x", format=cls, flag=1)["options"] == {"flag": 1}
+        assert anycfg.loads("x", format=cls, flag=1)["options"] == {"flag": 1}
         with pytest.raises(TypeError, match="other"):
-            yaconfiglib.loads("x", format=cls, other=1)
+            anycfg.loads("x", format=cls, other=1)
 
     def test_dump_options_are_checked(self):
         def dumps(self, obj, /, **options):
             return repr((obj, options))
 
         cls = _format("zzdump", dump_options=frozenset({"pretty"}), dumps=dumps)
-        assert yaconfiglib.dumps(1, format=cls, pretty=True) == "(1, {'pretty': True})"
+        assert anycfg.dumps(1, format=cls, pretty=True) == "(1, {'pretty': True})"
         with pytest.raises(TypeError, match="ugly"):
-            yaconfiglib.dumps(1, format=cls, ugly=True)
+            anycfg.dumps(1, format=cls, ugly=True)
 
     def test_a_binary_format_receives_bytes(self, tmp_path):
         cls = _format("zzbin", binary=True)
         source = tmp_path / "blob.bin"
         source.write_bytes(b"\xff\x00")
-        assert yaconfiglib.load(str(source), format=cls)["data"] == b"\xff\x00"
-        assert yaconfiglib.loads(b"\xff", format=cls)["data"] == b"\xff"
+        assert anycfg.load(str(source), format=cls)["data"] == b"\xff\x00"
+        assert anycfg.loads(b"\xff", format=cls)["data"] == b"\xff"
 
     def test_a_text_format_receives_decoded_text(self, tmp_path):
         cls = _format("zztext")
         source = tmp_path / "t.txt"
         source.write_bytes(b"\xef\xbb\xbfcaf\xc3\xa9")
-        assert yaconfiglib.load(str(source), format=cls)["data"] == "café"
+        assert anycfg.load(str(source), format=cls)["data"] == "café"
 
     def test_format_must_be_a_name_or_a_format_class(self):
         with pytest.raises(TypeError):
-            yaconfiglib.loads("{}", format=42)
+            anycfg.loads("{}", format=42)
         with pytest.raises(TypeError):
-            yaconfiglib.loads("{}", format=dict)
+            anycfg.loads("{}", format=dict)
 
     def test_format_is_required_for_dumps_and_undeclared_loads(self):
-        with pytest.raises(yaconfiglib.UnsupportedFormatError):
-            yaconfiglib.loads("{}")
+        with pytest.raises(anycfg.UnsupportedFormatError):
+            anycfg.loads("{}")
         with pytest.raises(TypeError):
-            yaconfiglib.dumps({})
+            anycfg.dumps({})
 
     def test_repr_names_the_format(self):
         assert "json" in repr(formats.get("json")())
@@ -497,7 +497,7 @@ class TestClaimsName:
 # -- format entry points -------------------------------------------------------
 
 PLUGIN_FORMATS = """
-    from yaconfiglib.formats import Format
+    from anycfg.formats import Format
 
 
     class PlugFormat(Format):
@@ -544,9 +544,9 @@ PLUGIN_ENTRIES = {
 @pytest.fixture
 def plugin_formats(format_registry, install_plugin, caplog):
     install_plugin(
-        "yaconfiglib.formats", PLUGIN_ENTRIES, {"yacfg_test_plugfmt": PLUGIN_FORMATS}
+        "anycfg.formats", PLUGIN_ENTRIES, {"yacfg_test_plugfmt": PLUGIN_FORMATS}
     )
-    with caplog.at_level(logging.WARNING, logger="yaconfiglib.formats"):
+    with caplog.at_level(logging.WARNING, logger="anycfg.formats"):
         _reload_format_entry_points()
     return format_registry
 
@@ -556,11 +556,11 @@ class TestFormatEntryPoints:
         cls = plugin_formats.get("zzplug")
         assert cls.__name__ == "PlugFormat"
         assert plugin_formats.for_filename("x.zzplug") is cls
-        assert yaconfiglib.loads(" hi ", format="zzplug") == {"plug": "hi"}
+        assert anycfg.loads(" hi ", format="zzplug") == {"plug": "hi"}
 
     def test_a_plugin_cannot_take_a_builtin_name(self, plugin_formats):
-        assert plugin_formats.get("json").__module__ == "yaconfiglib.formats._json"
-        assert plugin_formats.get("yaml").__module__ == "yaconfiglib.formats._yaml"
+        assert plugin_formats.get("json").__module__ == "anycfg.formats._json"
+        assert plugin_formats.get("yaml").__module__ == "anycfg.formats._yaml"
         assert "zzalias" not in plugin_formats.names()
         assert plugin_formats.find_for_filename("a.zzjson") is None
 
@@ -580,16 +580,16 @@ class TestFormatEntryPoints:
     def test_a_plugin_is_not_a_document_format(self, plugin_formats):
         assert "zzplug" not in plugin_formats.document_formats()
         allowed = plugin_formats.document_formats()
-        with pytest.raises(yaconfiglib.UnsupportedFormatError):
+        with pytest.raises(anycfg.UnsupportedFormatError):
             plugin_formats.get("zzplug", allowed=allowed)
-        with pytest.raises(yaconfiglib.UnsupportedFormatError):
+        with pytest.raises(anycfg.UnsupportedFormatError):
             plugin_formats.for_filename("x.zzplug", allowed=allowed)
 
     def test_the_caller_may_load_a_plugin_format(self, plugin_formats, tmp_path):
         source = tmp_path / "c.zzplug"
         source.write_text("top\n", encoding="utf-8")
-        assert yaconfiglib.load(str(source)) == {"plug": "top"}
-        assert yaconfiglib.Loader().load(str(source)) == {"plug": "top"}
+        assert anycfg.load(str(source)) == {"plug": "top"}
+        assert anycfg.Loader().load(str(source)) == {"plug": "top"}
 
     @pytest.mark.usefixtures("needs_yaml")
     def test_a_document_reaches_a_plugin_only_when_named(
@@ -598,9 +598,9 @@ class TestFormatEntryPoints:
         (tmp_path / "c.zzplug").write_text("inner\n", encoding="utf-8")
         main = tmp_path / "main.yaml"
         main.write_text("x: !include c.zzplug\n", encoding="utf-8")
-        with pytest.raises(yaconfiglib.UnsupportedFormatError, match="formats="):
-            yaconfiglib.Loader().load(str(main))
-        loader = yaconfiglib.Loader(formats=["yaml", "zzplug"])
+        with pytest.raises(anycfg.UnsupportedFormatError, match="formats="):
+            anycfg.Loader().load(str(main))
+        loader = anycfg.Loader(formats=["yaml", "zzplug"])
         assert loader.load(str(main)) == {"x": {"plug": "inner"}}
 
     @pytest.mark.usefixtures("needs_yaml")
@@ -608,14 +608,14 @@ class TestFormatEntryPoints:
         (tmp_path / "c.json").write_text('{"a": 1}', encoding="utf-8")
         main = tmp_path / "main.yaml"
         main.write_text("x: !include c.json\n", encoding="utf-8")
-        assert yaconfiglib.Loader().load(str(main)) == {"x": {"a": 1}}
-        with pytest.raises(yaconfiglib.UnsupportedFormatError):
-            yaconfiglib.Loader(formats=["yaml"]).load(str(main))
+        assert anycfg.Loader().load(str(main)) == {"x": {"a": 1}}
+        with pytest.raises(anycfg.UnsupportedFormatError):
+            anycfg.Loader(formats=["yaml"]).load(str(main))
 
     def test_entry_points_are_read_once(self, format_registry, install_plugin):
         format_registry.names()
         install_plugin(
-            "yaconfiglib.formats",
+            "anycfg.formats",
             {"zzplug": "yacfg_test_plugfmt:PlugFormat"},
             {"yacfg_test_plugfmt": PLUGIN_FORMATS},
         )
@@ -694,7 +694,7 @@ class TestRegisterScheme:
 
     def test_a_registered_scheme_loads(self, scheme_registry):
         scheme_registry.register_scheme("zzdata", _data_factory)
-        loader = yaconfiglib.Loader()
+        loader = anycfg.Loader()
         assert loader.load("zzdata://a", {"b": 1}) == {"from": "zzdata://a", "b": 1}
 
     @pytest.mark.usefixtures("needs_yaml")
@@ -704,7 +704,7 @@ class TestRegisterScheme:
         scheme_registry.register_scheme("zzdata", _data_factory)
         main = tmp_path / "main.yaml"
         main.write_text("x: !include 'zzdata://inner'\n", encoding="utf-8")
-        assert yaconfiglib.load(str(main)) == {"x": {"from": "zzdata://inner"}}
+        assert anycfg.load(str(main)) == {"x": {"from": "zzdata://inner"}}
 
     def test_conflict_raises(self, scheme_registry):
         scheme_registry.register_scheme("zzdata", _data_factory)
@@ -731,7 +731,7 @@ class TestRegisterScheme:
 
 
 PLUGIN_SOURCES = """
-    from yaconfiglib.sources import Data
+    from anycfg.sources import Data
 
 
     def factory(text):
@@ -752,9 +752,9 @@ PLUGIN_SCHEMES = {
 @pytest.fixture
 def plugin_schemes(scheme_registry, install_plugin, caplog):
     install_plugin(
-        "yaconfiglib.sources", PLUGIN_SCHEMES, {"yacfg_test_plugsrc": PLUGIN_SOURCES}
+        "anycfg.sources", PLUGIN_SCHEMES, {"yacfg_test_plugsrc": PLUGIN_SOURCES}
     )
-    with caplog.at_level(logging.WARNING, logger="yaconfiglib.sources"):
+    with caplog.at_level(logging.WARNING, logger="anycfg.sources"):
         _reload_scheme_entry_points()
     return scheme_registry
 
@@ -763,7 +763,7 @@ class TestSchemeEntryPoints:
     def test_a_plugin_scheme_resolves(self, plugin_schemes):
         assert "zzplug" in plugin_schemes.schemes()
         assert plugin_schemes.from_text("zzplug://x").data == {"plugin": "zzplug://x"}
-        assert yaconfiglib.Loader().load("zzplug://x") == {"plugin": "zzplug://x"}
+        assert anycfg.Loader().load("zzplug://x") == {"plugin": "zzplug://x"}
 
     def test_allow_plugins_false_hides_it(self, plugin_schemes):
         assert plugin_schemes.from_text("zzplug://x", allow_plugins=False) is None
@@ -782,8 +782,8 @@ class TestSchemeEntryPoints:
     def test_a_document_cannot_reach_a_plugin_scheme(self, plugin_schemes, tmp_path):
         main = tmp_path / "main.yaml"
         main.write_text("x: !include 'zzplug://inner'\n", encoding="utf-8")
-        with pytest.raises((yaconfiglib.ConfigError, OSError)):
-            yaconfiglib.load(str(main))
+        with pytest.raises((anycfg.ConfigError, OSError)):
+            anycfg.load(str(main))
 
 
 class TestReplaceTakesOnlyWhatCollides:
@@ -799,7 +799,7 @@ class TestReplaceTakesOnlyWhatCollides:
         assert "ini" in format_registry.names()
         assert format_registry.get("cfg") is Cfg
         assert format_registry.for_filename("a.ini").name == "ini"
-        assert yaconfiglib.loads("[s]\nk = v\n", format="ini") == {"s": {"k": "v"}}
+        assert anycfg.loads("[s]\nk = v\n", format="ini") == {"s": {"k": "v"}}
 
     def test_taking_the_name_replaces_the_format(self, format_registry):
         class Json(Format):
@@ -810,7 +810,7 @@ class TestReplaceTakesOnlyWhatCollides:
                 return "mine"
 
         format_registry.register_format(Json, replace=True)
-        assert yaconfiglib.loads("{}", format="json") == "mine"
+        assert anycfg.loads("{}", format="json") == "mine"
 
 
 class TestConcurrentReads:

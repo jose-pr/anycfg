@@ -22,7 +22,7 @@ from .exceptions import ConfigTypeError
 #: Where `Policy(confine_to=None)` looks for roots instead. Read only when the
 #: setting is None: a variable that could widen an explicit in-code allowlist
 #: would be an escalation for anyone able to set the environment.
-CONFINE_TO_ENV = "YACONFIGLIB_CONFINE_TO"
+CONFINE_TO_ENV = "ANYCFG_CONFINE_TO"
 
 #: Windows extended-length prefixes. `os.path.commonpath` compares components
 #: literally, so `\\?\C:\srv\conf\a.yaml` against the root `C:\srv\conf` would
@@ -118,7 +118,7 @@ def resolve_roots(
     absolute: `abspath` would quietly turn a typo or a stray space into a root
     under the working directory.
 
-    When *confine_to* is `None`, ``YACONFIGLIB_CONFINE_TO`` is read by the same
+    When *confine_to* is `None`, ``ANYCFG_CONFINE_TO`` is read by the same
     rules. An unset variable means no confinement; an empty one is an empty
     allowlist.
     """

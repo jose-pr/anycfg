@@ -4,9 +4,9 @@ import collections
 
 import pytest
 
-import yaconfiglib
-from yaconfiglib import DotAccessibleDict, Loader
-from yaconfiglib._dotaccess import to_dot_access
+import anycfg
+from anycfg import DotAccessibleDict, Loader
+from anycfg._dotaccess import to_dot_access
 
 
 def _load(data, **settings):
@@ -364,8 +364,8 @@ class TestAttributeProtocol:
         assert type(dict(config)) is dict
 
     def test_exported_from_the_package_root(self):
-        assert yaconfiglib.DotAccessibleDict is DotAccessibleDict
-        assert "DotAccessibleDict" in yaconfiglib.__all__
+        assert anycfg.DotAccessibleDict is DotAccessibleDict
+        assert "DotAccessibleDict" in anycfg.__all__
 
 
 class TestDig:
@@ -376,7 +376,7 @@ class TestDig:
     }
 
     def test_keys_are_used_as_given(self):
-        from yaconfiglib import dig
+        from anycfg import dig
 
         assert dig(self.DATA, "db", "hosts", 1, "port") == 2
         assert dig(self.DATA, "db", "hosts", -1, "port") == 2
@@ -384,14 +384,14 @@ class TestDig:
         assert dig(self.DATA) is self.DATA
 
     def test_a_miss_is_none(self):
-        from yaconfiglib import dig
+        from anycfg import dig
 
         assert dig(self.DATA, "nope", "x") is None
         assert dig(self.DATA, "none", "x") is None
         assert dig(self.DATA, "db", "hosts", 9) is None
 
     def test_digging_into_a_value_raises(self):
-        from yaconfiglib import ConfigTypeError, dig
+        from anycfg import ConfigTypeError, dig
 
         with pytest.raises(ConfigTypeError, match="step 2"):
             dig(self.DATA, "text", "x")
@@ -403,13 +403,13 @@ class TestDig:
     def test_never_grows_a_defaultdict(self):
         import collections
 
-        from yaconfiglib import dig
+        from anycfg import dig
 
         data = collections.defaultdict(dict)
         assert dig(data, "x") is None and "x" not in data
 
     def test_as_a_method_on_wrapped_results(self):
-        from yaconfiglib import Loader
+        from anycfg import Loader
 
         wrapped = Loader(wrap=True).load(self.DATA)
         assert wrapped.dig("db", "hosts", 0, "port") == 1
@@ -419,25 +419,25 @@ class TestDigDefault:
     DATA = {"db": {"port": None, "hosts": [1]}, "text": "x"}
 
     def test_a_miss_gives_the_default(self):
-        from yaconfiglib import dig
+        from anycfg import dig
 
         assert dig(self.DATA, "db", "user", default="root") == "root"
         assert dig(self.DATA, "db", "hosts", 5, default=0) == 0
         assert dig(self.DATA, "nope", "deeper", default="d") == "d"
 
     def test_a_stored_none_at_the_last_key_is_returned(self):
-        from yaconfiglib import dig
+        from anycfg import dig
 
         assert dig(self.DATA, "db", "port", default=5432) is None
         assert dig(self.DATA, "db", "port", "x", default=5432) == 5432
 
     def test_digging_into_a_value_still_raises(self):
-        from yaconfiglib import ConfigTypeError, dig
+        from anycfg import ConfigTypeError, dig
 
         with pytest.raises(ConfigTypeError):
             dig(self.DATA, "text", "x", default="d")
 
     def test_on_wrapped_results(self):
-        from yaconfiglib import Loader
+        from anycfg import Loader
 
         assert Loader(wrap=True).load(self.DATA).dig("db", "user", default="u") == "u"

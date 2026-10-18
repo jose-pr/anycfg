@@ -217,7 +217,7 @@ class DotAccessibleDict(dict):
         return default
 
     def dig(self, *keys: typing.Any, default: typing.Any = None) -> typing.Any:
-        """:func:`yaconfiglib.dig` on this mapping: keys as given, a miss is *default*."""
+        """:func:`anycfg.dig` on this mapping: keys as given, a miss is *default*."""
         return dig(self, *keys, default=default)
 
     def _dig(

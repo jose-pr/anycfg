@@ -259,7 +259,7 @@ def _hint_missing_templates(name: str) -> None:
     ):
         raise MissingDependencyError(
             f"{name} looks like a template, and template files need the "
-            '"templates" extra: pip install "yaconfiglib[templates]"'
+            '"templates" extra: pip install "anycfg[templates]"'
         )
 
 
@@ -934,14 +934,14 @@ class Loader:
         base_dir: The directory relative path sources resolve against, and
             includes inside in-memory content. `None` means the working
             directory. A pathapi ``Path`` source is never joined to it.
-        policy: The :class:`~yaconfiglib.Policy`; untrusted by default. A list
+        policy: The :class:`~anycfg.Policy`; untrusted by default. A list
             or tuple of `Policy` mixin classes (``[policies.LocalPathsOnly,
             policies.AllowedSuffixes.using(suffixes={".yaml"})]``) is applied
             to the default policy in that order.
         encoding: The codec bytes are decoded with (strict; one BOM ignored),
             and the default for includes.
         merge: A strategy name (``"simple"``, ``"substitute"``, ``"deep"``, or
-            one added with :func:`~yaconfiglib.register_merge`) or a callable
+            one added with :func:`~anycfg.register_merge`) or a callable
             ``(a, b, *, memo=None, **options) -> merged``.
         merge_options: Keywords every merge call receives (``mergelists``).
         collect: Instead of merging: ``"last"`` keeps the last document,
@@ -953,9 +953,9 @@ class Loader:
         interpolate: Render the template text in the merged document's
             strings, once, after merging: `True` with Jinja, a tplx engine's
             name or class (``"liquid"``, ``"envsubst"``) with that engine,
-            ``"vars"`` with :class:`~yaconfiglib.VarsInterpolator` (``${a.b}``
+            ``"vars"`` with :class:`~anycfg.VarsInterpolator` (``${a.b}``
             references; needs no extra), or an
-            :class:`~yaconfiglib.Interpolator` object. Engines are sandboxed
+            :class:`~anycfg.Interpolator` object. Engines are sandboxed
             and strict as the policy says. `False` (the default) is off.
         inject_env: Give templates and interpolation a read-only ``env``
             snapshot of the environment.
@@ -1063,7 +1063,7 @@ class Loader:
 
     @property
     def policy(self) -> Policy:
-        """The loader's default :class:`~yaconfiglib.Policy`."""
+        """The loader's default :class:`~anycfg.Policy`."""
         return self._defaults.policy
 
     @property
@@ -1104,14 +1104,14 @@ class Loader:
 
         Args:
             *sources: Paths, glob patterns, ``cmd://`` strings, pathapi paths,
-                file objects, mappings, :class:`~yaconfiglib.sources.Source`
+                file objects, mappings, :class:`~anycfg.sources.Source`
                 objects, or nested lists of any of these; ``None`` and ``""``
                 are skipped.
             format: Read every source as this format (a name or a
-                :class:`~yaconfiglib.formats.Format` class), instead of by its
+                :class:`~anycfg.formats.Format` class), instead of by its
                 file name.
             into: Build this type from the result (see
-                :func:`~yaconfiglib.hydrate`).
+                :func:`~anycfg.hydrate`).
             default: Returned when no source loads — nothing matched, or every
                 one failed under ``on_error``. Never merged with a document.
             flatten: Flatten a mapping of mappings, or a list of lists, by one

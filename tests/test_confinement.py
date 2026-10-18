@@ -18,8 +18,8 @@ import zipfile
 
 import pytest
 
-import yaconfiglib
-from yaconfiglib import (
+import anycfg
+from anycfg import (
     ConfigError,
     ConfigTypeError,
     ConfinementError,
@@ -28,15 +28,15 @@ from yaconfiglib import (
     PolicyError,
     sources,
 )
-from yaconfiglib import _confine
+from anycfg import _confine
 
-ENV = "YACONFIGLIB_CONFINE_TO"
+ENV = "ANYCFG_CONFINE_TO"
 WIN = sys.platform == "win32"
 
 
 @pytest.fixture(autouse=True)
 def _no_confinement_from_the_environment(monkeypatch):
-    # A developer's own YACONFIGLIB_CONFINE_TO must not change these results.
+    # A developer's own ANYCFG_CONFINE_TO must not change these results.
     monkeypatch.delenv(ENV, raising=False)
 
 
@@ -200,7 +200,7 @@ class TestConfinement:
     def test_module_level_load_is_confined(self, tmp_path):
         conf = _tree(tmp_path)
         with pytest.raises(ConfinementError):
-            yaconfiglib.load(
+            anycfg.load(
                 str(tmp_path / "secret.json"), policy=Policy(confine_to=[str(conf)])
             )
 
@@ -578,7 +578,7 @@ class TestRootForms:
 
 
 # ---------------------------------------------------------------------------
-# YACONFIGLIB_CONFINE_TO
+# ANYCFG_CONFINE_TO
 # ---------------------------------------------------------------------------
 
 
@@ -651,15 +651,15 @@ class TestEnvironmentVariable:
     def test_import_never_fails_on_a_relative_value(self, tmp_path):
         # A bad value must not break importing the package; the first load
         # that consults it raises instead.
-        package_root = str(pathlib.Path(yaconfiglib.__file__).resolve().parent.parent)
+        package_root = str(pathlib.Path(anycfg.__file__).resolve().parent.parent)
         code = (
             "import sys\n"
             f"sys.path.insert(0, {package_root!r})\n"
-            "import yaconfiglib\n"
+            "import anycfg\n"
             "print('imported')\n"
             "try:\n"
-            "    yaconfiglib.loads('{}', format='json')\n"
-            "except yaconfiglib.ConfigTypeError:\n"
+            "    anycfg.loads('{}', format='json')\n"
+            "except anycfg.ConfigTypeError:\n"
             "    print('ConfigTypeError')\n"
         )
         environ = dict(os.environ)

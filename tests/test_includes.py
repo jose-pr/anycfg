@@ -7,8 +7,8 @@ import sys
 
 import pytest
 
-import yaconfiglib
-from yaconfiglib import (
+import anycfg
+from anycfg import (
     BudgetExceededError,
     CommandsDisabledError,
     ConfigError,
@@ -21,15 +21,15 @@ from yaconfiglib import (
     PolicyError,
     UnsupportedFormatError,
 )
-from yaconfiglib import formats as formats_registry
-from yaconfiglib.formats import Format
-from yaconfiglib.sources import Text
+from anycfg import formats as formats_registry
+from anycfg.formats import Format
+from anycfg.sources import Text
 
 from _extras import needs_jinja2, needs_toml
 
 pytestmark = pytest.mark.usefixtures("needs_yaml")
 
-LOGGER = "yaconfiglib"
+LOGGER = "anycfg"
 
 
 def _write(path, text, encoding="utf-8"):
@@ -58,66 +58,64 @@ class TestForms:
     def test_scalar(self, tmp_path):
         _write(tmp_path / "db.yaml", "host: h\n")
         _write(tmp_path / "app.yaml", "db: !include db.yaml\n")
-        assert yaconfiglib.load(str(tmp_path / "app.yaml")) == {"db": {"host": "h"}}
+        assert anycfg.load(str(tmp_path / "app.yaml")) == {"db": {"host": "h"}}
 
     def test_load_tag_is_the_same(self, tmp_path):
         _write(tmp_path / "db.yaml", "host: h\n")
         _write(tmp_path / "app.yaml", "db: !load db.yaml\n")
-        assert yaconfiglib.load(str(tmp_path / "app.yaml")) == {"db": {"host": "h"}}
+        assert anycfg.load(str(tmp_path / "app.yaml")) == {"db": {"host": "h"}}
 
     def test_sequence_merged_in_order(self, tmp_path):
         _write(tmp_path / "base.yaml", "a: 1\nshared: base\n")
         _write(tmp_path / "local.yaml", "b: 2\nshared: local\n")
         _write(tmp_path / "app.yaml", "all: !include [base.yaml, local.yaml]\n")
-        assert yaconfiglib.load(str(tmp_path / "app.yaml")) == {
+        assert anycfg.load(str(tmp_path / "app.yaml")) == {
             "all": {"a": 1, "b": 2, "shared": "local"}
         }
 
     def test_mapping(self, tmp_path):
         _write(tmp_path / "x.yaml", "a: 1\n")
         _write(tmp_path / "app.yaml", "opt: !include {pathname: x.yaml}\n")
-        assert yaconfiglib.load(str(tmp_path / "app.yaml")) == {"opt": {"a": 1}}
+        assert anycfg.load(str(tmp_path / "app.yaml")) == {"opt": {"a": 1}}
 
     def test_mapping_with_a_list_of_paths(self, tmp_path):
         _write(tmp_path / "a.yaml", "a: 1\n")
         _write(tmp_path / "b.yaml", "b: 2\n")
         _write(tmp_path / "app.yaml", "o: !include {pathname: [a.yaml, b.yaml]}\n")
-        assert yaconfiglib.load(str(tmp_path / "app.yaml")) == {"o": {"a": 1, "b": 2}}
+        assert anycfg.load(str(tmp_path / "app.yaml")) == {"o": {"a": 1, "b": 2}}
 
     def test_block_mapping(self, tmp_path):
         _write(tmp_path / "x.yaml", "a: 1\n")
         _write(
             tmp_path / "app.yaml", "opt: !include\n  pathname: x.yaml\n  default: {}\n"
         )
-        assert yaconfiglib.load(str(tmp_path / "app.yaml")) == {"opt": {"a": 1}}
+        assert anycfg.load(str(tmp_path / "app.yaml")) == {"opt": {"a": 1}}
 
     def test_mapping_without_pathname(self, tmp_path):
         _write(tmp_path / "app.yaml", "child: !include {encoding: utf-8}\n")
         with pytest.raises(ParseError, match="pathname") as caught:
-            yaconfiglib.load(str(tmp_path / "app.yaml"))
+            anycfg.load(str(tmp_path / "app.yaml"))
         assert caught.value.lineno == 1
 
     def test_empty_sequence(self, tmp_path):
         _write(tmp_path / "app.yaml", "child: !include []\n")
         with pytest.raises(ParseError, match="at least one"):
-            yaconfiglib.load(str(tmp_path / "app.yaml"))
+            anycfg.load(str(tmp_path / "app.yaml"))
 
     def test_include_at_the_top_level(self, tmp_path):
         _write(tmp_path / "x.yaml", "a: 1\n")
         _write(tmp_path / "app.yaml", "!include x.yaml\n")
-        assert yaconfiglib.load(str(tmp_path / "app.yaml")) == {"a": 1}
+        assert anycfg.load(str(tmp_path / "app.yaml")) == {"a": 1}
 
     def test_include_inside_a_list(self, tmp_path):
         _write(tmp_path / "x.yaml", "a: 1\n")
         _write(tmp_path / "app.yaml", "items:\n  - !include x.yaml\n  - plain\n")
-        assert yaconfiglib.load(str(tmp_path / "app.yaml")) == {
-            "items": [{"a": 1}, "plain"]
-        }
+        assert anycfg.load(str(tmp_path / "app.yaml")) == {"items": [{"a": 1}, "plain"]}
 
     def test_same_file_included_twice_is_not_a_cycle(self, tmp_path):
         _write(tmp_path / "x.yaml", "a: 1\n")
         _write(tmp_path / "app.yaml", "p: !include x.yaml\nq: !include x.yaml\n")
-        assert yaconfiglib.load(str(tmp_path / "app.yaml")) == {
+        assert anycfg.load(str(tmp_path / "app.yaml")) == {
             "p": {"a": 1},
             "q": {"a": 1},
         }
@@ -133,7 +131,7 @@ class TestForms:
         import yaml
 
         target = _write(tmp_path / "t.yaml", "a: 1\n")
-        yaconfiglib.loads("a: 1\n", format="yaml")
+        anycfg.loads("a: 1\n", format="yaml")
         assert "!include" not in yaml.SafeLoader.yaml_constructors
         with pytest.raises(yaml.constructor.ConstructorError):
             yaml.safe_load(f"x: !include {_quote(target.as_posix())}")
@@ -142,9 +140,7 @@ class TestForms:
         _write(tmp_path / "x.yaml", "a: 1\n")
         _write(tmp_path / "app.yaml", "x: !include x.yaml\n")
         with pytest.raises(PolicyError):
-            yaconfiglib.load(
-                str(tmp_path / "app.yaml"), policy=Policy(allow_includes=False)
-            )
+            anycfg.load(str(tmp_path / "app.yaml"), policy=Policy(allow_includes=False))
 
 
 # ---------------------------------------------------------------------------
@@ -166,7 +162,7 @@ class TestResolution:
     def test_relative_to_the_including_file(self, tmp_path, monkeypatch):
         conf, elsewhere = self._tree(tmp_path)
         monkeypatch.chdir(elsewhere)
-        assert yaconfiglib.load(str(conf / "app.yaml")) == {"db": {"host": "from-conf"}}
+        assert anycfg.load(str(conf / "app.yaml")) == {"db": {"host": "from-conf"}}
         assert Loader(base_dir=tmp_path).load("conf/app.yaml") == {
             "db": {"host": "from-conf"}
         }
@@ -208,7 +204,7 @@ class TestResolution:
     def test_parent_directory_reference(self, tmp_path):
         _write(tmp_path / "shared" / "db.json", '{"host": "shared"}')
         _write(tmp_path / "conf" / "app.yaml", "db: !include ../shared/db.json\n")
-        assert yaconfiglib.load(str(tmp_path / "conf" / "app.yaml")) == {
+        assert anycfg.load(str(tmp_path / "conf" / "app.yaml")) == {
             "db": {"host": "shared"}
         }
 
@@ -217,9 +213,7 @@ class TestResolution:
         other = _write(tmp_path / "other.json", '{"host": "from-other"}')
         _write(conf / "app.yaml", f"db: !include {_quote(str(other))}\n")
         monkeypatch.chdir(elsewhere)
-        assert yaconfiglib.load(str(conf / "app.yaml")) == {
-            "db": {"host": "from-other"}
-        }
+        assert anycfg.load(str(conf / "app.yaml")) == {"db": {"host": "from-other"}}
 
     def test_relative_base_dir(self, tmp_path, monkeypatch):
         conf, _elsewhere = self._tree(tmp_path)
@@ -247,7 +241,7 @@ class TestResolution:
     def test_loads_resolves_against_the_working_directory(self, tmp_path, monkeypatch):
         conf, _elsewhere = self._tree(tmp_path)
         monkeypatch.chdir(conf)
-        assert yaconfiglib.loads("d: !include db.json\n", format="yaml") == {
+        assert anycfg.loads("d: !include db.json\n", format="yaml") == {
             "d": {"host": "from-conf"}
         }
 
@@ -272,38 +266,36 @@ class TestOptions:
             tmp_path / "app.yaml",
             "opt: !include {pathname: 'none-*.yaml', default: {fallback: true}}\n",
         )
-        assert yaconfiglib.load(str(tmp_path / "app.yaml")) == {
-            "opt": {"fallback": True}
-        }
+        assert anycfg.load(str(tmp_path / "app.yaml")) == {"opt": {"fallback": True}}
 
     def test_default_is_not_merged(self, tmp_path):
         _write(tmp_path / "x.yaml", "a: 1\n")
         _write(
             tmp_path / "app.yaml", "opt: !include {pathname: x.yaml, default: {d: 1}}\n"
         )
-        assert yaconfiglib.load(str(tmp_path / "app.yaml")) == {"opt": {"a": 1}}
+        assert anycfg.load(str(tmp_path / "app.yaml")) == {"opt": {"a": 1}}
 
     def test_no_match_without_default_is_none(self, tmp_path):
         _write(tmp_path / "app.yaml", "opt: !include 'none-*.yaml'\n")
-        assert yaconfiglib.load(str(tmp_path / "app.yaml")) == {"opt": None}
+        assert anycfg.load(str(tmp_path / "app.yaml")) == {"opt": None}
 
     def test_missing_file_without_glob_raises(self, tmp_path):
         _write(
             tmp_path / "app.yaml", "opt: !include {pathname: none.yaml, default: {}}\n"
         )
         with pytest.raises(FileNotFoundError):
-            yaconfiglib.load(str(tmp_path / "app.yaml"))
+            anycfg.load(str(tmp_path / "app.yaml"))
 
     def test_format(self, tmp_path):
         _write(tmp_path / "x.txt", '{"k": 2}')
         _write(tmp_path / "app.yaml", "t: !include {pathname: x.txt, format: json}\n")
-        assert yaconfiglib.load(str(tmp_path / "app.yaml")) == {"t": {"k": 2}}
+        assert anycfg.load(str(tmp_path / "app.yaml")) == {"t": {"k": 2}}
 
     def test_unknown_format(self, tmp_path):
         _write(tmp_path / "x.txt", "{}")
         _write(tmp_path / "app.yaml", "t: !include {pathname: x.txt, format: nope}\n")
         with pytest.raises(UnsupportedFormatError):
-            yaconfiglib.load(str(tmp_path / "app.yaml"))
+            anycfg.load(str(tmp_path / "app.yaml"))
 
     def test_merge_name(self, tmp_path):
         _write(tmp_path / "a.yaml", "db: {host: h, port: 1}\n")
@@ -313,7 +305,7 @@ class TestOptions:
             "simple: !include [a.yaml, b.yaml]\n"
             "deep: !include {pathname: [a.yaml, b.yaml], merge: deep}\n",
         )
-        assert yaconfiglib.load(str(tmp_path / "app.yaml")) == {
+        assert anycfg.load(str(tmp_path / "app.yaml")) == {
             "simple": {"db": {"port": 2}},
             "deep": {"db": {"host": "h", "port": 2}},
         }
@@ -338,13 +330,13 @@ class TestOptions:
         _write(tmp_path / "x.yaml", "a: 1\n")
         _write(tmp_path / "app.yaml", "o: !include {pathname: x.yaml, merge: [deep]}\n")
         with pytest.raises(ConfigTypeError, match="merge"):
-            yaconfiglib.load(str(tmp_path / "app.yaml"))
+            anycfg.load(str(tmp_path / "app.yaml"))
 
     def test_unknown_merge_name(self, tmp_path):
         _write(tmp_path / "x.yaml", "a: 1\n")
         _write(tmp_path / "app.yaml", "o: !include {pathname: x.yaml, merge: nope}\n")
         with pytest.raises(ValueError, match="nope"):
-            yaconfiglib.load(str(tmp_path / "app.yaml"))
+            anycfg.load(str(tmp_path / "app.yaml"))
 
     def test_merge_options(self, tmp_path):
         _write(tmp_path / "a.yaml", "items:\n  - {name: api, enabled: false}\n")
@@ -355,7 +347,7 @@ class TestOptions:
             "merged: !include {pathname: [a.yaml, b.yaml], merge: deep,"
             " merge_options: {mergelists: true}}\n",
         )
-        result = yaconfiglib.load(str(tmp_path / "app.yaml"))
+        result = anycfg.load(str(tmp_path / "app.yaml"))
         assert result["merged"] == {"items": [{"name": "api", "enabled": True}]}
         assert result["plain"] == {
             "items": [
@@ -371,7 +363,7 @@ class TestOptions:
             "o: !include {pathname: x.yaml, merge_options: [1]}\n",
         )
         with pytest.raises(ConfigTypeError):
-            yaconfiglib.load(str(tmp_path / "app.yaml"))
+            anycfg.load(str(tmp_path / "app.yaml"))
 
     def test_flatten(self, tmp_path):
         _write(tmp_path / "parts" / "a.yaml", "x: {a: 1}\ny: {b: 2}\n")
@@ -379,13 +371,13 @@ class TestOptions:
             tmp_path / "app.yaml",
             "o: !include {pathname: parts/a.yaml, flatten: true}\n",
         )
-        assert yaconfiglib.load(str(tmp_path / "app.yaml")) == {"o": {"a": 1, "b": 2}}
+        assert anycfg.load(str(tmp_path / "app.yaml")) == {"o": {"a": 1, "b": 2}}
 
     def test_flatten_non_mapping_member(self, tmp_path):
         _write(tmp_path / "a.yaml", "x: 1\n")
         _write(tmp_path / "app.yaml", "o: !include {pathname: a.yaml, flatten: true}\n")
         with pytest.raises(ConfigTypeError):
-            yaconfiglib.load(str(tmp_path / "app.yaml"))
+            anycfg.load(str(tmp_path / "app.yaml"))
 
     def test_recursive(self, tmp_path):
         _write(tmp_path / "sub" / "y.yaml", "e: 1\n")
@@ -395,7 +387,7 @@ class TestOptions:
             "flat: !include 'sub/**/*.yaml'\n"
             "rec: !include {pathname: 'sub/**/*.yaml', recursive: true}\n",
         )
-        assert yaconfiglib.load(str(tmp_path / "app.yaml")) == {
+        assert anycfg.load(str(tmp_path / "app.yaml")) == {
             "flat": {"d": 1},
             "rec": {"d": 1, "e": 1},
         }
@@ -429,7 +421,7 @@ class TestOptions:
             f"x: !include {{pathname: victim.yaml, {key}: {value}}}\n",
         )
         with caplog.at_level(logging.WARNING, logger=LOGGER):
-            result = yaconfiglib.load(str(tmp_path / "app.yaml"))
+            result = anycfg.load(str(tmp_path / "app.yaml"))
         assert result == {"x": {"a": 1}}
         assert victim.exists()
         warnings = [
@@ -445,7 +437,7 @@ class TestOptions:
             " merge: deep, merge_options: {}, recursive: false, format: yaml}\n",
         )
         with caplog.at_level(logging.WARNING, logger=LOGGER):
-            assert yaconfiglib.load(str(tmp_path / "app.yaml")) == {"x": {"a": 1}}
+            assert anycfg.load(str(tmp_path / "app.yaml")) == {"x": {"a": 1}}
         assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
 
     def test_a_dropped_key_cannot_enable_commands(self, tmp_path):
@@ -460,7 +452,7 @@ class TestOptions:
             " allow_commands: true}\n",
         )
         with pytest.raises(CommandsDisabledError):
-            yaconfiglib.load(str(tmp_path / "app.yaml"))
+            anycfg.load(str(tmp_path / "app.yaml"))
         assert not marker.exists()
 
 
@@ -487,7 +479,7 @@ class TestEncoding:
         if entry_point == "loader_call":
             result = Loader().load(main, encoding="cp1252")
         elif entry_point == "module_load":
-            result = yaconfiglib.load(main, encoding="cp1252")
+            result = anycfg.load(main, encoding="cp1252")
         else:
             (result,) = Loader().load_all(main, encoding="cp1252")
         assert result == expected
@@ -508,7 +500,7 @@ class TestEncoding:
         self._chain(tmp_path)
         _write(tmp_path / "main.yaml", "a: !include sub.yaml\n")
         with pytest.raises(ParseError, match="leaf.yaml"):
-            yaconfiglib.load(str(tmp_path / "main.yaml"))
+            anycfg.load(str(tmp_path / "main.yaml"))
 
     def test_include_encoding_is_inherited_by_its_includes(self, tmp_path):
         _write(tmp_path / "leaf.yaml", f"c: {self.CAFE}\n", "cp1252")
@@ -517,7 +509,7 @@ class TestEncoding:
             tmp_path / "main.yaml",
             "a: !include {pathname: sub.yaml, encoding: cp1252}\n",
         )
-        assert yaconfiglib.load(str(tmp_path / "main.yaml")) == {
+        assert anycfg.load(str(tmp_path / "main.yaml")) == {
             "a": {"b": {"c": self.CAFE}}
         }
 
@@ -556,7 +548,7 @@ class TestEncoding:
     def test_bom_in_an_included_file(self, tmp_path):
         (tmp_path / "sub.yaml").write_bytes(chr(0xFEFF).encode("utf-8") + b"b: 1\n")
         _write(tmp_path / "main.yaml", "a: !include sub.yaml\n")
-        assert yaconfiglib.load(str(tmp_path / "main.yaml")) == {"a": {"b": 1}}
+        assert anycfg.load(str(tmp_path / "main.yaml")) == {"a": {"b": 1}}
 
 
 # ---------------------------------------------------------------------------
@@ -580,14 +572,14 @@ class TestGlobs:
         _write(tmp_path / "parts" / "20.yaml", "v: second\n")
         _write(tmp_path / "parts" / "10.yaml", "v: first\n")
         _write(tmp_path / "app.yaml", 'v: !include "parts/*.yaml"\n')
-        assert yaconfiglib.load(str(tmp_path / "app.yaml")) == {"v": {"v": "second"}}
+        assert anycfg.load(str(tmp_path / "app.yaml")) == {"v": {"v": "second"}}
 
     def test_glob_of_mixed_formats(self, tmp_path):
         _write(tmp_path / "parts" / "a.json", '{"a": 1}')
         _write(tmp_path / "parts" / "b.yaml", "b: 2\n")
         _write(tmp_path / "parts" / "c.env", "C=3\n")
         _write(tmp_path / "app.yaml", 'all: !include "parts/*"\n')
-        assert yaconfiglib.load(str(tmp_path / "app.yaml")) == {
+        assert anycfg.load(str(tmp_path / "app.yaml")) == {
             "all": {"a": 1, "b": 2, "C": "3"}
         }
 
@@ -595,7 +587,7 @@ class TestGlobs:
         _write(tmp_path / "a.yaml", "a: 1\n")
         _write(tmp_path / "app.yaml", 'all: !include "*.yaml"\n')
         with pytest.raises(ConfigValueError, match="include cycle"):
-            yaconfiglib.load(str(tmp_path / "app.yaml"))
+            anycfg.load(str(tmp_path / "app.yaml"))
 
 
 # ---------------------------------------------------------------------------
@@ -607,7 +599,7 @@ class TestCycles:
     def test_direct(self, tmp_path):
         _write(tmp_path / "self.yaml", "x: !include self.yaml\n")
         with pytest.raises(ConfigValueError, match="include cycle"):
-            yaconfiglib.load(str(tmp_path / "self.yaml"))
+            anycfg.load(str(tmp_path / "self.yaml"))
 
     def test_indirect_names_the_chain(self, tmp_path):
         _write(tmp_path / "a.yaml", "x: !include b.yaml\n")
@@ -628,34 +620,34 @@ class TestCycles:
     def test_via_parent_directory_spelling(self, tmp_path):
         _write(tmp_path / "conf" / "self.yaml", "x: !include ../conf/self.yaml\n")
         with pytest.raises(ConfigValueError, match="include cycle"):
-            yaconfiglib.load(str(tmp_path / "conf" / "self.yaml"))
+            anycfg.load(str(tmp_path / "conf" / "self.yaml"))
 
     def test_via_dot_spelling(self, tmp_path):
         _write(tmp_path / "a.yaml", "x: !include ./b.yaml\n")
         _write(tmp_path / "b.yaml", "y: !include ./sub/../a.yaml\n")
         with pytest.raises(ConfigValueError, match="include cycle"):
-            yaconfiglib.load(str(tmp_path / "a.yaml"))
+            anycfg.load(str(tmp_path / "a.yaml"))
 
     def test_three_files(self, tmp_path):
         _write(tmp_path / "a.yaml", "x: !include b.yaml\n")
         _write(tmp_path / "b.yaml", "y: !include c.yaml\n")
         _write(tmp_path / "c.yaml", "z: !include a.yaml\n")
         with pytest.raises(ConfigValueError, match="include cycle"):
-            yaconfiglib.load(str(tmp_path / "a.yaml"))
+            anycfg.load(str(tmp_path / "a.yaml"))
 
     def test_include_budget(self, tmp_path):
         _write(tmp_path / "x.yaml", "a: 1\n")
         _write(tmp_path / "app.yaml", "p: !include x.yaml\nq: !include x.yaml\n")
         with pytest.raises(BudgetExceededError, match="max_includes"):
-            yaconfiglib.load(str(tmp_path / "app.yaml"), policy=Policy(max_includes=1))
+            anycfg.load(str(tmp_path / "app.yaml"), policy=Policy(max_includes=1))
 
     def test_depth_budget(self, tmp_path):
         _write(tmp_path / "a.yaml", "x: !include b.yaml\n")
         _write(tmp_path / "b.yaml", "y: !include c.yaml\n")
         _write(tmp_path / "c.yaml", "z: 1\n")
-        assert yaconfiglib.load(str(tmp_path / "a.yaml"), policy=Policy(max_depth=3))
+        assert anycfg.load(str(tmp_path / "a.yaml"), policy=Policy(max_depth=3))
         with pytest.raises(BudgetExceededError, match="max_depth"):
-            yaconfiglib.load(str(tmp_path / "a.yaml"), policy=Policy(max_depth=2))
+            anycfg.load(str(tmp_path / "a.yaml"), policy=Policy(max_depth=2))
 
 
 # ---------------------------------------------------------------------------
@@ -668,7 +660,7 @@ class TestErrorContext:
         parent = _write(tmp_path / "parent.yaml", "a: 1\nchild: !include child.yaml\n")
         child = _write(tmp_path / "child.yaml", "b: [unclosed\n")
         with pytest.raises(ParseError) as caught:
-            yaconfiglib.load(str(parent))
+            anycfg.load(str(parent))
         error = caught.value
         assert error.path == str(child)
         message = str(error)
@@ -678,7 +670,7 @@ class TestErrorContext:
         parent = _write(tmp_path / "parent.yaml", "secrets: !include secrets.json\n")
         _write(tmp_path / "secrets.json", '{"a": }')
         with pytest.raises(ParseError) as caught:
-            yaconfiglib.load(str(parent))
+            anycfg.load(str(parent))
         error = caught.value
         assert type(error) is ParseError
         assert error.config_source.endswith("secrets.json")
@@ -692,7 +684,7 @@ class TestErrorContext:
         mid = _write(tmp_path / "mid.yaml", "x: 1\nleaf: !include leaf.yaml\n")
         _write(tmp_path / "leaf.yaml", "b: [unclosed\n")
         with pytest.raises(ParseError) as caught:
-            yaconfiglib.load(str(top))
+            anycfg.load(str(top))
         error = caught.value
         assert [(f.kind, f.source, f.line) for f in error.config_frames] == [
             ("include", str(mid), 2),
@@ -709,7 +701,7 @@ class TestErrorContext:
     def test_missing_include_names_the_including_file(self, tmp_path):
         parent = _write(tmp_path / "parent.yaml", "missing: !include nope/x.yaml\n")
         with pytest.raises(FileNotFoundError) as caught:
-            yaconfiglib.load(str(parent))
+            anycfg.load(str(parent))
         assert "parent.yaml" in str(caught.value)
 
     def test_in_memory_include_site(self, tmp_path):
@@ -746,19 +738,19 @@ class TestScope:
         _write(tmp_path / "app.yaml", "base: &b {x: 1}\nchild: !include child.yaml\n")
         _write(tmp_path / "child.yaml", "y: *b\n")
         with pytest.raises(ParseError, match="alias"):
-            yaconfiglib.load(str(tmp_path / "app.yaml"))
+            anycfg.load(str(tmp_path / "app.yaml"))
 
     def test_anchors_inside_an_include_work(self, tmp_path):
         _write(tmp_path / "child.yaml", "a: &x {k: 1}\nb: *x\n")
         _write(tmp_path / "app.yaml", "c: !include child.yaml\n")
-        assert yaconfiglib.load(str(tmp_path / "app.yaml")) == {
+        assert anycfg.load(str(tmp_path / "app.yaml")) == {
             "c": {"a": {"k": 1}, "b": {"k": 1}}
         }
 
     def test_included_templates_stay_raw_without_interpolate(self, tmp_path):
         _write(tmp_path / "svc.yaml", 'url: "http://{{ host }}/api"\n')
         _write(tmp_path / "app.yaml", "host: example.com\nsvc: !include svc.yaml\n")
-        assert yaconfiglib.load(str(tmp_path / "app.yaml"))["svc"] == {
+        assert anycfg.load(str(tmp_path / "app.yaml"))["svc"] == {
             "url": "http://{{ host }}/api"
         }
 
@@ -822,7 +814,7 @@ class TestCommands:
             tmp_path / "app.yaml", f"x: !include {_quote('cmd+json://' + command)}\n"
         )
         with pytest.raises(CommandsDisabledError):
-            yaconfiglib.load(str(tmp_path / "app.yaml"))
+            anycfg.load(str(tmp_path / "app.yaml"))
         with pytest.raises(CommandsDisabledError):
             Loader(policy=Policy.trusted()).load(
                 str(tmp_path / "app.yaml"), policy=Policy()
@@ -862,7 +854,7 @@ class TestCommands:
             name = "gen.json.sh"
         _write(tmp_path / "app.yaml", f"s: !include {name}\n")
         with pytest.raises(ConfigError):
-            yaconfiglib.load(str(tmp_path / "app.yaml"))
+            anycfg.load(str(tmp_path / "app.yaml"))
         assert not marker.exists()
 
 
@@ -882,7 +874,7 @@ class TestNonYamlIncludes:
             "j: !include x.json\ni: !include x.ini\ne: !include x.env\n"
             "c: !include x.cfg\n",
         )
-        assert yaconfiglib.load(str(tmp_path / "app.yaml")) == {
+        assert anycfg.load(str(tmp_path / "app.yaml")) == {
             "j": {"k": 1},
             "i": {"s": {"k": "v"}},
             "e": {"K": "v"},
@@ -893,27 +885,23 @@ class TestNonYamlIncludes:
     def test_toml(self, tmp_path):
         _write(tmp_path / "db.toml", 'host = "from-toml"\n')
         _write(tmp_path / "app.yaml", "db: !include db.toml\n")
-        assert yaconfiglib.load(str(tmp_path / "app.yaml")) == {
-            "db": {"host": "from-toml"}
-        }
+        assert anycfg.load(str(tmp_path / "app.yaml")) == {"db": {"host": "from-toml"}}
 
     def test_env_yaml_name_is_yaml(self, tmp_path):
         _write(tmp_path / "app.env.yaml", "a: 1\n")
         _write(tmp_path / "main.yaml", "inc: !include app.env.yaml\n")
-        assert yaconfiglib.load(str(tmp_path / "main.yaml")) == {"inc": {"a": 1}}
+        assert anycfg.load(str(tmp_path / "main.yaml")) == {"inc": {"a": 1}}
 
     def test_dotenv_stage_name(self, tmp_path):
         _write(tmp_path / ".env.production", "MODE=prod\n")
         _write(tmp_path / "main.yaml", "env: !include .env.production\n")
-        assert yaconfiglib.load(str(tmp_path / "main.yaml")) == {
-            "env": {"MODE": "prod"}
-        }
+        assert anycfg.load(str(tmp_path / "main.yaml")) == {"env": {"MODE": "prod"}}
 
     def test_unclaimed_name(self, tmp_path):
         _write(tmp_path / "notes.txt", "x")
         _write(tmp_path / "main.yaml", "n: !include notes.txt\n")
         with pytest.raises(UnsupportedFormatError):
-            yaconfiglib.load(str(tmp_path / "main.yaml"))
+            anycfg.load(str(tmp_path / "main.yaml"))
 
 
 class _EntryPointFormat(Format):
@@ -1038,5 +1026,5 @@ class TestMalformedIncludes:
     def test_raises_a_config_error(self, tmp_path, include):
         (tmp_path / "a.yaml").write_text("k: 1\n", encoding="utf-8")
         (tmp_path / "app.yaml").write_text(f"x: {include}\n", encoding="utf-8")
-        with pytest.raises(yaconfiglib.ConfigError):
-            yaconfiglib.Loader(base_dir=tmp_path).load("app.yaml")
+        with pytest.raises(anycfg.ConfigError):
+            anycfg.Loader(base_dir=tmp_path).load("app.yaml")

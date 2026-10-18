@@ -20,11 +20,11 @@ from pathlib import Path as StdlibPath
 # Add src to sys.path so the benchmark can run from a checkout.
 sys.path.insert(0, str(StdlibPath(__file__).parent.parent / "src"))
 
-from yaconfiglib import DotAccessibleDict, Loader, TemplateInterpolator
-from yaconfiglib._merge import deep
-from yaconfiglib._paths import has_glob_pattern, resolve
-from yaconfiglib._templating import interpolate_document
-from yaconfiglib.sources import Env, Text
+from anycfg import DotAccessibleDict, Loader, TemplateInterpolator
+from anycfg._merge import deep
+from anycfg._paths import has_glob_pattern, resolve
+from anycfg._templating import interpolate_document
+from anycfg.sources import Env, Text
 
 
 def parse_sources(sources, base_dir):
@@ -482,8 +482,8 @@ def collect_rows(command: str) -> list[tuple[str, BenchmarkRows]]:
 
 
 def cli(argv: list[str] | None = None) -> None:
-    logging.getLogger("yaconfiglib.utils.source").setLevel(logging.ERROR)
-    parser = argparse.ArgumentParser(description="Run yaconfiglib benchmarks.")
+    logging.getLogger("anycfg.utils.source").setLevel(logging.ERROR)
+    parser = argparse.ArgumentParser(description="Run anycfg benchmarks.")
     parser.add_argument(
         "command",
         nargs="?",

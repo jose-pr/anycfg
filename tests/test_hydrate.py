@@ -14,8 +14,8 @@ from dataclasses import dataclass, field
 
 import pytest
 
-import yaconfiglib
-from yaconfiglib import (
+import anycfg
+from anycfg import (
     ConfigTypeError,
     ConfigValueError,
     Loader,
@@ -365,17 +365,17 @@ class TestHydrate:
             "opaque",
             "TypedNamespace",
         ):
-            assert name in yaconfiglib.__all__
-        assert yaconfiglib.hydrate is hydrate
+            assert name in anycfg.__all__
+        assert anycfg.hydrate is hydrate
 
 
 class TestLoadInto:
     def test_load_into(self, tmp_path):
         (tmp_path / "db.json").write_text('{"host": "h", "port": "6"}', "utf-8")
-        assert yaconfiglib.load(tmp_path / "db.json", into=DB) == DB("h", 6)
+        assert anycfg.load(tmp_path / "db.json", into=DB) == DB("h", 6)
 
     def test_loads_into(self):
-        assert yaconfiglib.loads('{"host": "h"}', format="json", into=DB) == DB("h")
+        assert anycfg.loads('{"host": "h"}', format="json", into=DB) == DB("h")
 
     def test_loader_load_into_merges_layers_first(self):
         result = Loader(merge="deep").load(
@@ -403,12 +403,12 @@ class TestLoadInto:
 
     def test_non_mapping_document_names_the_model_and_type(self):
         with pytest.raises(ConfigTypeError) as caught:
-            yaconfiglib.loads("[1, 2]", format="json", into=Inner)
+            anycfg.loads("[1, 2]", format="json", into=Inner)
         assert "Inner" in str(caught.value) and "list" in str(caught.value)
 
     def test_nested_missing_field_names_the_path(self):
         with pytest.raises(TypeError) as caught:
-            yaconfiglib.loads('{"db": {"prot": 1}}', format="json", into=Outer)
+            anycfg.loads('{"db": {"prot": 1}}', format="json", into=Outer)
         error = caught.value
         assert error.config_key == ("db",)
         assert "(Outer)" in str(error)

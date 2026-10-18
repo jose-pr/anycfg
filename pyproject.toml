@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "yaconfiglib"
+name = "anycfg"
 version = "0.14.0"
 authors = [{ name = "Jose A" }]
 description = "Another Config lib for python, basically load config/yaml/toml/... files and add some features like relative import and templating."
@@ -33,23 +33,23 @@ toml = ["tomli>=2.0,<3; python_version < '3.11'", "tomli-w>=1.0,<2"]
 # 0.2: eval takes a whole value and keeps one expression's type,
 # Template.is_template, and a sandbox that bounds what a value may allocate.
 templates = ["tplx[jinja]>=0.2.0,<0.3"]
-all = ["yaconfiglib[yaml,toml,templates]"]
-dev = ["yaconfiglib[all]", "pytest", "build", "hatchling", "twine", "black"]
+all = ["anycfg[yaml,toml,templates]"]
+dev = ["anycfg[all]", "pytest", "build", "hatchling", "twine", "black"]
 docs = ["mkdocs", "mkdocs-material", "mkdocstrings[python]"]
 
 [project.urls]
-Homepage = "https://github.com/jose-pr/yaconfiglib/"
-Documentation = "https://jose-pr.github.io/yaconfiglib/"
-Issues = "https://github.com/jose-pr/yaconfiglib/issues"
+Homepage = "https://github.com/jose-pr/anycfg/"
+Documentation = "https://jose-pr.github.io/anycfg/"
+Issues = "https://github.com/jose-pr/anycfg/issues"
 
 
 # Ship the consumer-facing docs inside the installed package, so they are
 # readable from site-packages via importlib.resources without the repo.
-# src/yaconfiglib/AGENTS.md is included automatically by living in the package
+# src/anycfg/AGENTS.md is included automatically by living in the package
 # dir. The repo-root AGENTS.md is contributor orientation and is excluded from
 # both artifacts (see the sdist exclude below; the wheel only packs src/).
 [tool.hatch.build.targets.wheel.force-include]
-"README.md" = "yaconfiglib/README.md"
+"README.md" = "anycfg/README.md"
 
 # Each target needs its OWN exclude list: hatchling reads
 # tool.hatch.build.targets.<target>.exclude instead of tool.hatch.build.exclude
@@ -58,7 +58,7 @@ Issues = "https://github.com/jose-pr/yaconfiglib/issues"
 exclude = ["/.*", "/AGENTS.md", "/benchmarks", "*.local.*"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/yaconfiglib"]
+packages = ["src/anycfg"]
 exclude = ["*.local.*"]
 
 [tool.pytest.ini_options]

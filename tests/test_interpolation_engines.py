@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from yaconfiglib import (
+from anycfg import (
     CommandsDisabledError,
     Loader,
     Policy,
@@ -12,7 +12,7 @@ from yaconfiglib import (
     TemplatesDisabledError,
     VarsInterpolator,
 )
-from yaconfiglib.sources import Text
+from anycfg.sources import Text
 
 
 class TestVars:

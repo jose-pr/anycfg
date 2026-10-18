@@ -1,7 +1,7 @@
 # examples/advanced.yaml, loaded by run_advanced.py.
 
 # 1. Plain values.
-app_name: "Yaconfiglib Demo"
+app_name: "Anycfg Demo"
 version: "1.0.0"
 
 # 2. Interpolation: rendered once the whole document is loaded, when the

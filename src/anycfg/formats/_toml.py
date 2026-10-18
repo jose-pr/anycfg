@@ -28,7 +28,7 @@ def _reader() -> _ty.Any:
     except ImportError:
         raise MissingDependencyError(
             'TOML on Python < 3.11 needs the "toml" extra: '
-            'pip install "yaconfiglib[toml]"'
+            'pip install "anycfg[toml]"'
         ) from None
     return tomli
 
@@ -38,7 +38,7 @@ def _writer() -> _ty.Any:
         import tomli_w
     except ImportError:
         raise MissingDependencyError(
-            'writing TOML needs the "toml" extra: pip install "yaconfiglib[toml]"'
+            'writing TOML needs the "toml" extra: pip install "anycfg[toml]"'
         ) from None
     return tomli_w
 

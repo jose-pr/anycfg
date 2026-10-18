@@ -18,10 +18,10 @@ import typing
 
 import pytest
 
-import yaconfiglib
-import yaconfiglib.exceptions as exceptions_module
+import anycfg
+import anycfg.exceptions as exceptions_module
 from _extras import needs_jinja2, needs_toml, needs_yaml
-from yaconfiglib import (
+from anycfg import (
     BudgetExceededError,
     CommandError,
     CommandsDisabledError,
@@ -41,7 +41,7 @@ from yaconfiglib import (
     UnsupportedFormatError,
     sources,
 )
-from yaconfiglib.testing import SECRET
+from anycfg.testing import SECRET
 
 HIERARCHY = [
     (ConfigError, (Exception,)),
@@ -110,9 +110,9 @@ class TestHierarchy:
     )
     def test_every_class_is_a_config_error_exported_twice(self, cls):
         assert issubclass(cls, ConfigError)
-        assert getattr(yaconfiglib, cls.__name__) is cls
+        assert getattr(anycfg, cls.__name__) is cls
         assert getattr(exceptions_module, cls.__name__) is cls
-        assert cls.__name__ in yaconfiglib.__all__
+        assert cls.__name__ in anycfg.__all__
         assert cls.__name__ in exceptions_module.__all__
 
     def test_policy_errors_are_os_errors(self):
@@ -124,7 +124,7 @@ class TestHierarchy:
         assert frame.line is None
         assert ErrorFrame("include", "a.yaml", 3) == ("include", "a.yaml", 3)
         assert ErrorFrame._fields == ("kind", "source", "line")
-        assert yaconfiglib.ErrorFrame is exceptions_module.ErrorFrame
+        assert anycfg.ErrorFrame is exceptions_module.ErrorFrame
 
 
 # ---------------------------------------------------------------------------
@@ -169,7 +169,7 @@ class TestParseError:
         write(tmp_path, "top.yaml", "a: 1\nchild: !include child.yaml\n")
         write(tmp_path, "child.yaml", "b: [unclosed\n")
         with pytest.raises(ParseError) as caught:
-            yaconfiglib.load(str(tmp_path / "top.yaml"))
+            anycfg.load(str(tmp_path / "top.yaml"))
         copy = pickle.loads(pickle.dumps(caught.value))
         assert copy.config_frames == caught.value.config_frames
         assert str(copy) == str(caught.value)
@@ -177,15 +177,15 @@ class TestParseError:
     @pytest.mark.usefixtures("needs_yaml")
     def test_position_is_one_based(self):
         with pytest.raises(ParseError) as caught:
-            yaconfiglib.loads("a: 1\nb: [x\nc: 2\n", format="yaml")
+            anycfg.loads("a: 1\nb: [x\nc: 2\n", format="yaml")
         assert caught.value.lineno >= 2
         with pytest.raises(ParseError) as caught:
-            yaconfiglib.loads('{"a": }', format="json")
+            anycfg.loads('{"a": }', format="json")
         assert (caught.value.lineno, caught.value.colno) == (1, 7)
 
     def test_never_chains_the_parsers_error(self):
         with pytest.raises(ParseError) as caught:
-            yaconfiglib.loads('{"a": }', format="json")
+            anycfg.loads('{"a": }', format="json")
         assert caught.value.__cause__ is None
         assert caught.value.__context__ is None
 
@@ -193,7 +193,7 @@ class TestParseError:
         source = tmp_path / "wide.json"
         source.write_bytes('{"a": 1}'.encode("utf-16"))
         with pytest.raises(ParseError) as caught:
-            yaconfiglib.load(str(source))
+            anycfg.load(str(source))
         assert "byte 0" in str(caught.value)
         assert "encoding" in str(caught.value)
         assert caught.value.path == str(source)
@@ -349,7 +349,7 @@ class TestContextRendering:
         mid = write(tmp_path, "mid.yaml", "x: 1\ny: 2\nleaf: !include leaf.yaml\n")
         leaf = write(tmp_path, "leaf.yaml", "b: [unclosed\n")
         with pytest.raises(ParseError) as caught:
-            yaconfiglib.load(str(top))
+            anycfg.load(str(top))
         error = caught.value
         assert error.config_source == str(leaf)
         assert error.config_frames == (
@@ -401,7 +401,7 @@ class TestContextRendering:
         parent = write(tmp_path, "parent.yaml", "secrets: !include secrets.json\n")
         child = write(tmp_path, "secrets.json", '{"a": }\n')
         with pytest.raises(ParseError) as caught:
-            yaconfiglib.load(str(parent))
+            anycfg.load(str(parent))
         assert caught.value.path == str(child)
         assert caught.value.config_frames[0] == ErrorFrame("include", str(parent), 1)
         assert f"included from {parent}, line 1" in str(caught.value)
@@ -453,7 +453,7 @@ class TestOSErrorIsNotWrapped:
     def test_missing_file(self, tmp_path):
         source = tmp_path / "nope.json"
         with pytest.raises(FileNotFoundError) as caught:
-            yaconfiglib.load(str(source))
+            anycfg.load(str(source))
         error = caught.value
         assert type(error) is FileNotFoundError
         assert not isinstance(error, ConfigError)
@@ -464,7 +464,7 @@ class TestOSErrorIsNotWrapped:
     def test_missing_include_names_the_including_file(self, tmp_path):
         parent = write(tmp_path, "parent.yaml", "missing: !include nope/x.yaml\n")
         with pytest.raises(FileNotFoundError) as caught:
-            yaconfiglib.load(str(parent))
+            anycfg.load(str(parent))
         error = caught.value
         assert type(error) is FileNotFoundError
         assert error.errno is not None
@@ -546,7 +546,7 @@ LOAD_FAILURES = [
         _write_and_load("a.yaml", "a: 1\na: 2\n"), id="yaml-duplicate", marks=needs_yaml
     ),
     pytest.param(
-        lambda p: yaconfiglib.load(str(write(p, "a.yaml", "a: 1\n---\nb: 2\n"))),
+        lambda p: anycfg.load(str(write(p, "a.yaml", "a: 1\n---\nb: 2\n"))),
         id="yaml-multi-document",
         marks=needs_yaml,
     ),
@@ -632,9 +632,7 @@ LOAD_FAILURES = [
     ),
     pytest.param(_hydrate, id="hydrate"),
     pytest.param(
-        lambda p: yaconfiglib.loads(
-            "not an assignment\n", format="dotenv", strict=True
-        ),
+        lambda p: anycfg.loads("not an assignment\n", format="dotenv", strict=True),
         id="dotenv-strict",
     ),
 ]
@@ -667,7 +665,7 @@ class TestSpecificTypes:
     def test_unsupported_format_lists_the_names_before_opening(self, tmp_path):
         source = tmp_path / "plain.xyz"  # never created
         with pytest.raises(UnsupportedFormatError) as caught:
-            yaconfiglib.load(str(source))
+            anycfg.load(str(source))
         message = str(caught.value)
         assert "plain.xyz" in message
         assert "json" in message and "ini" in message
@@ -685,7 +683,7 @@ class TestSpecificTypes:
     ):
         parent = write(tmp_path, "parent.yaml", "a: 1\n" + text)
         with pytest.raises(ParseError) as caught:
-            yaconfiglib.load(str(parent))
+            anycfg.load(str(parent))
         assert words in str(caught.value)
         assert caught.value.lineno == 2
         assert caught.value.path == str(parent)
@@ -693,18 +691,18 @@ class TestSpecificTypes:
     def test_missing_extra_is_a_missing_dependency_error(self, tmp_path):
         source = write(tmp_path, "a.yaml", "a: 1\n")
         package_root = os.path.dirname(
-            os.path.dirname(os.path.abspath(yaconfiglib.__file__))
+            os.path.dirname(os.path.abspath(anycfg.__file__))
         )
         code = (
             "import sys\n"
             f"sys.path.insert(0, {package_root!r})\n"
             "sys.modules['yaml'] = None\n"
-            "import yaconfiglib\n"
+            "import anycfg\n"
             "try:\n"
-            f"    yaconfiglib.load({str(source)!r})\n"
-            "except (yaconfiglib.ConfigError, OSError) as error:\n"
+            f"    anycfg.load({str(source)!r})\n"
+            "except (anycfg.ConfigError, OSError) as error:\n"
             "    print(type(error).__name__, isinstance(error, ImportError),\n"
-            "          isinstance(error, yaconfiglib.UnsupportedFormatError), error)\n"
+            "          isinstance(error, anycfg.UnsupportedFormatError), error)\n"
         )
         done = subprocess.run(
             [sys.executable, "-c", code], capture_output=True, text=True, timeout=60
@@ -712,7 +710,7 @@ class TestSpecificTypes:
         assert "MissingDependencyError True True" in done.stdout, (
             done.stdout + done.stderr
         )
-        assert "yaconfiglib[yaml]" in done.stdout
+        assert "anycfg[yaml]" in done.stdout
 
 
 class TestWrongArgumentsArePlainErrors:
@@ -727,9 +725,9 @@ class TestWrongArgumentsArePlainErrors:
             pytest.param(lambda: Loader(on_error="yes"), TypeError, id="on_error"),
             pytest.param(lambda: Loader().load(), TypeError, id="no-sources"),
             pytest.param(lambda: Loader().load({"a": 1}, bogus=1), TypeError, id="kw"),
-            pytest.param(lambda: yaconfiglib.load(None), TypeError, id="load-none"),
-            pytest.param(lambda: yaconfiglib.load(""), ValueError, id="load-empty"),
-            pytest.param(lambda: yaconfiglib.load(b"{}"), TypeError, id="load-bytes"),
+            pytest.param(lambda: anycfg.load(None), TypeError, id="load-none"),
+            pytest.param(lambda: anycfg.load(""), ValueError, id="load-empty"),
+            pytest.param(lambda: anycfg.load(b"{}"), TypeError, id="load-bytes"),
         ],
     )
     def test_not_config_errors(self, call, expected):
@@ -769,8 +767,8 @@ def test_no_document_text_in_a_parse_error(tmp_path, caplog, format_name, templa
     source = write(tmp_path, "doc" + suffix, text)
     caplog.set_level(logging.DEBUG)
     for attempt in (
-        lambda: yaconfiglib.loads(text, format=format_name),
-        lambda: yaconfiglib.load(str(source)),
+        lambda: anycfg.loads(text, format=format_name),
+        lambda: anycfg.load(str(source)),
     ):
         with pytest.raises(ParseError) as caught:
             attempt()
@@ -785,10 +783,10 @@ def test_no_document_text_in_a_parse_error(tmp_path, caplog, format_name, templa
 def test_no_document_text_from_a_strict_dotenv_line(caplog):
     caplog.set_level(logging.DEBUG)
     with pytest.raises(ParseError) as caught:
-        yaconfiglib.loads(f"{SECRET}\n", format="dotenv", strict=True)
+        anycfg.loads(f"{SECRET}\n", format="dotenv", strict=True)
     assert caught.value.lineno == 1
     assert not [said for said in everything_said(caught.value) if SECRET in said]
-    yaconfiglib.loads(f"{SECRET}\n", format="dotenv")
+    anycfg.loads(f"{SECRET}\n", format="dotenv")
     assert not [r for r in caplog.records if SECRET in r.getMessage()]
 
 

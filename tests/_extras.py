@@ -14,16 +14,14 @@ def _has(module: str) -> bool:
     return importlib.util.find_spec(module) is not None
 
 
-needs_yaml = pytest.mark.skipif(not _has("yaml"), reason="requires yaconfiglib[yaml]")
+needs_yaml = pytest.mark.skipif(not _has("yaml"), reason="requires anycfg[yaml]")
 needs_jinja2 = pytest.mark.skipif(
-    not _has("jinja2"), reason="requires yaconfiglib[templates]"
+    not _has("jinja2"), reason="requires anycfg[templates]"
 )
-needs_tplx = pytest.mark.skipif(
-    not _has("tplx"), reason="requires yaconfiglib[templates]"
-)
+needs_tplx = pytest.mark.skipif(not _has("tplx"), reason="requires anycfg[templates]")
 needs_toml = pytest.mark.skipif(
-    not (_has("tomllib") or _has("tomli")), reason="requires yaconfiglib[toml]"
+    not (_has("tomllib") or _has("tomli")), reason="requires anycfg[toml]"
 )
 needs_toml_writer = pytest.mark.skipif(
-    not _has("tomli_w"), reason="requires yaconfiglib[toml]"
+    not _has("tomli_w"), reason="requires anycfg[toml]"
 )

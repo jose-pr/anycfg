@@ -158,9 +158,9 @@ async def aload(
     into: _ty.Any = None,
     **options: _ty.Any,
 ) -> _ty.Any:
-    """:func:`~yaconfiglib.load`, awaitable, and able to read an async source.
+    """:func:`~anycfg.load`, awaitable, and able to read an async source.
 
-    *source* is anything :func:`~yaconfiglib.load` takes, or an async stream: an
+    *source* is anything :func:`~anycfg.load` takes, or an async stream: an
     async iterable of `str`/`bytes` chunks (``response.aiter_bytes()``) or an
     object with ``async def read()`` (aiofiles, `asyncio.StreamReader`). An
     async source is read whole first, stopping past ``max_bytes``; its format
@@ -203,7 +203,7 @@ async def aload_all(
     into: _ty.Any = None,
     **options: _ty.Any,
 ) -> _ty.AsyncIterator[_ty.Any]:
-    """:func:`~yaconfiglib.load_all` as an async iterator; sources as :func:`aload`."""
+    """:func:`~anycfg.load_all` as an async iterator; sources as :func:`aload`."""
     from ._api import _check_location, load_all
 
     _check_location(source, "aload_all", allow_async=True)
@@ -238,9 +238,9 @@ async def adump(
     encoding: str = "utf-8",
     **options: _ty.Any,
 ) -> None:
-    """:func:`~yaconfiglib.dump`, awaitable, and able to write an async target.
+    """:func:`~anycfg.dump`, awaitable, and able to write an async target.
 
-    *target* is anything :func:`~yaconfiglib.dump` takes (written in a worker
+    *target* is anything :func:`~anycfg.dump` takes (written in a worker
     thread), or an async writer: an ``async def write()`` (aiofiles; given `str`,
     else bytes in *encoding*) or a writer with ``write()`` and
     ``async def drain()`` (`asyncio.StreamWriter`; given bytes). *obj* is

@@ -2,17 +2,17 @@
 
 One document::
 
-    config = yaconfiglib.load("app.yaml")          # format from the suffix
-    data = yaconfiglib.loads(text, format="toml")
-    yaconfiglib.dump(config, "app.json")           # written as JSON
+    config = anycfg.load("app.yaml")          # format from the suffix
+    data = anycfg.loads(text, format="toml")
+    anycfg.dump(config, "app.json")           # written as JSON
 
 Layers::
 
-    loader = yaconfiglib.Loader(merge="deep")
+    loader = anycfg.Loader(merge="deep")
     config = loader.load("base.yaml", "conf.d/*.yaml", "local.toml")
 
-Formats live in :mod:`yaconfiglib.formats`, sources that are not files (commands,
-the environment, Python data, in-memory text) in :mod:`yaconfiglib.sources`.
+Formats live in :mod:`anycfg.formats`, sources that are not files (commands,
+the environment, Python data, in-memory text) in :mod:`anycfg.sources`.
 What a load may do beyond parsing is its :class:`Policy`, untrusted by default.
 """
 
@@ -56,7 +56,7 @@ from .exceptions import (
 )
 
 try:
-    __version__ = _version("yaconfiglib")
+    __version__ = _version("anycfg")
 except _PackageNotFoundError:  # pragma: no cover - a never-installed source tree
     __version__ = "0.0.0"
 

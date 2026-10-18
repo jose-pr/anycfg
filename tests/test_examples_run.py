@@ -10,33 +10,33 @@ import sys
 
 import pytest
 
-import yaconfiglib
+import anycfg
 
 #: The untrusted-configuration checklist recipe, meant to be copied into the
 #: security guide verbatim. The test below executes this exact text.
 UNTRUSTED_CHECKLIST_SNIPPET = '''\
-import yaconfiglib
+import anycfg
 
 def load_untrusted(conf_dir, name):
     """Load configuration someone else wrote: parsing and includes, nothing more."""
     # The untrusted posture is the default: no commands, no template files,
     # and interpolation runs sandboxed.
-    policy = yaconfiglib.Policy.untrusted(
+    policy = anycfg.Policy.untrusted(
         confine_to=True,        # every file read stays under conf_dir
         max_includes=100,       # bound what one document can pull in
         max_bytes=1024 * 1024,
     )
     # inject_env stays off, so a document cannot read os.environ.
-    loader = yaconfiglib.Loader(base_dir=conf_dir, policy=policy, interpolate=True)
+    loader = anycfg.Loader(base_dir=conf_dir, policy=policy, interpolate=True)
     return loader.load(name)
 
 # One clause catches every refusal and every malformed document:
-#     except (yaconfiglib.ConfigError, OSError) as error: ...
+#     except (anycfg.ConfigError, OSError) as error: ...
 '''
 
 
 def _package_root():
-    return os.path.dirname(os.path.dirname(os.path.abspath(yaconfiglib.__file__)))
+    return os.path.dirname(os.path.dirname(os.path.abspath(anycfg.__file__)))
 
 
 @pytest.mark.usefixtures("needs_yaml", "needs_jinja2")
@@ -100,7 +100,7 @@ def test_advanced_example_output(examples_dir, tmp_path):
         timeout=120,
     )
     output = json.loads(done.stdout)
-    assert output["welcome_message"] == "Welcome to Yaconfiglib Demo v1.0.0"
+    assert output["welcome_message"] == "Welcome to Anycfg Demo v1.0.0"
     assert output["editor_settings"]["python.testing.pytestEnabled"] is True
     assert output["merged"] == {"include": {"me": True, "local": True}}
     assert output["optional"] == {"enabled": False}
@@ -142,10 +142,10 @@ class TestUntrustedChecklist:
     def test_include_outside_the_directory_is_refused(self, load_untrusted, conf):
         secret = (conf.parent / "secret.yaml").as_posix()
         self.write(conf, f"stolen: !include '{secret}'\n")
-        with pytest.raises(yaconfiglib.ConfinementError):
+        with pytest.raises(anycfg.ConfinementError):
             load_untrusted(str(conf), "app.yaml")
         self.write(conf, "stolen: !include ../secret.yaml\n")
-        with pytest.raises(yaconfiglib.ConfinementError):
+        with pytest.raises(anycfg.ConfinementError):
             load_untrusted(str(conf), "app.yaml")
 
     def test_command_is_refused(self, load_untrusted, conf, tmp_path):
@@ -157,30 +157,30 @@ class TestUntrustedChecklist:
         )
         command = f'cmd+json://"{sys.executable}" "{script.as_posix()}"'
         self.write(conf, f"x: !include '{command}'\n")
-        with pytest.raises(yaconfiglib.CommandsDisabledError):
+        with pytest.raises(anycfg.CommandsDisabledError):
             load_untrusted(str(conf), "app.yaml")
         assert not marker.exists()
 
     def test_template_file_is_refused(self, load_untrusted, conf):
         (conf / "t.yaml.j2").write_text("v: {{ 1 }}\n", encoding="utf-8")
         self.write(conf, "x: !include t.yaml.j2\n")
-        with pytest.raises(yaconfiglib.TemplatesDisabledError):
+        with pytest.raises(anycfg.TemplatesDisabledError):
             load_untrusted(str(conf), "app.yaml")
 
     def test_interpolation_is_sandboxed(self, load_untrusted, conf):
         self.write(conf, "x: \"{{ ''.__class__.__mro__ }}\"\n")
-        with pytest.raises(yaconfiglib.TemplateError):
+        with pytest.raises(anycfg.TemplateError):
             load_untrusted(str(conf), "app.yaml")
 
     def test_environment_is_not_in_scope(self, load_untrusted, conf, monkeypatch):
         monkeypatch.setenv("YACFG_CHECKLIST_SECRET", "from-environment")
         self.write(conf, "x: '{{ env.YACFG_CHECKLIST_SECRET }}'\n")
-        with pytest.raises(yaconfiglib.TemplateError):
+        with pytest.raises(anycfg.TemplateError):
             load_untrusted(str(conf), "app.yaml")
 
     def test_include_budget_is_bounded(self, load_untrusted, conf):
         self.write(conf, "".join(f"k{n}: !include extra.yaml\n" for n in range(101)))
-        with pytest.raises(yaconfiglib.BudgetExceededError):
+        with pytest.raises(anycfg.BudgetExceededError):
             load_untrusted(str(conf), "app.yaml")
 
     def test_one_clause_catches_every_refusal(self, load_untrusted, conf):
@@ -191,5 +191,5 @@ class TestUntrustedChecklist:
             "x: !include missing.yaml\n",
         ):
             self.write(conf, text)
-            with pytest.raises((yaconfiglib.ConfigError, OSError)):
+            with pytest.raises((anycfg.ConfigError, OSError)):
                 load_untrusted(str(conf), "app.yaml")

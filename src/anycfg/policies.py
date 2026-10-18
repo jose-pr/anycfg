@@ -5,7 +5,7 @@ Each mixin narrows one hook and then asks the next class in line
 ``check_path``, a command every ``check_command``. Their settings are class
 attributes, set on the combined class::
 
-    from yaconfiglib import Loader, policies
+    from anycfg import Loader, policies
 
     class Production(policies.LocalPathsOnly, policies.AllowedSuffixes,
                      policies.AllowedCommands):

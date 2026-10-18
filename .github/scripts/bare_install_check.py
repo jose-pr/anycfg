@@ -12,7 +12,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-import yaconfiglib
+import anycfg
 
 OPTIONAL = {"yaml", "jinja2", "tplx", "tomli", "tomli_w", "markupsafe"}
 
@@ -20,26 +20,26 @@ OPTIONAL = {"yaml", "jinja2", "tplx", "tomli", "tomli_w", "markupsafe"}
 def main() -> int:
     imported = OPTIONAL & {name.split(".")[0] for name in sys.modules}
     if imported:
-        print(f"import yaconfiglib imported optional modules: {sorted(imported)}")
+        print(f"import anycfg imported optional modules: {sorted(imported)}")
         return 1
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         (root / "a.json").write_text('{"a": 1}', encoding="utf-8")
         (root / "b.ini").write_text("[s]\nk = v\n", encoding="utf-8")
         (root / ".env").write_text("K=v\n", encoding="utf-8")
-        loader = yaconfiglib.Loader(base_dir=root)
+        loader = anycfg.Loader(base_dir=root)
         result = loader.load("a.json", "b.ini", ".env")
         assert result == {"a": 1, "s": {"k": "v"}, "K": "v"}, result
-        yaconfiglib.dump(result, root / "out.json")
+        anycfg.dump(result, root / "out.json")
         assert json.loads((root / "out.json").read_text(encoding="utf-8")) == result
         try:
-            yaconfiglib.loads("a: 1", format="yaml")
-        except yaconfiglib.MissingDependencyError as error:
-            assert "yaconfiglib[yaml]" in str(error), error
+            anycfg.loads("a: 1", format="yaml")
+        except anycfg.MissingDependencyError as error:
+            assert "anycfg[yaml]" in str(error), error
         else:
             print("YAML loaded without PyYAML installed")
             return 1
-    print("bare install OK:", yaconfiglib.__version__)
+    print("bare install OK:", anycfg.__version__)
     return 0
 
 

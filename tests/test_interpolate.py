@@ -19,8 +19,8 @@ import time
 
 import pytest
 
-import yaconfiglib
-from yaconfiglib import (
+import anycfg
+from anycfg import (
     ConfigError,
     ConfigValueError,
     TemplateInterpolator,
@@ -30,7 +30,7 @@ from yaconfiglib import (
     TemplateError,
     sources,
 )
-from yaconfiglib._templating import interpolate_document
+from anycfg._templating import interpolate_document
 
 pytestmark = pytest.mark.usefixtures("needs_jinja2")
 
@@ -184,7 +184,7 @@ class TestSharedInterpolator:
         assert failures == []
 
     def test_loader_reuses_the_default_interpolator(self):
-        from yaconfiglib._templating import default_interpolator
+        from anycfg._templating import default_interpolator
 
         assert default_interpolator("jinja", True, False) is default_interpolator(
             "jinja", True, False
@@ -452,7 +452,7 @@ class TestLoaderInterpolation:
             "log_path": "{{ base }}/logs",
             "base": "/srv",
         }
-        caplog.set_level(logging.WARNING, logger="yaconfiglib")
+        caplog.set_level(logging.WARNING, logger="anycfg")
         result = render(document, on_error=True)
         assert result == {
             "database": {"host": "db.internal", "password": "p{% raw", "port": 5432},
@@ -762,21 +762,19 @@ def test_missing_jinja2_names_the_extra(tmp_path):
 
     ``interpolate="vars"`` needs neither tplx nor Jinja2.
     """
-    package_root = os.path.dirname(
-        os.path.dirname(os.path.abspath(yaconfiglib.__file__))
-    )
+    package_root = os.path.dirname(os.path.dirname(os.path.abspath(anycfg.__file__)))
     code = (
         "import sys\n"
         f"sys.path.insert(0, {package_root!r})\n"
         "sys.modules['jinja2'] = None\n"
         "sys.modules['tplx'] = None\n"
-        "import yaconfiglib\n"
+        "import anycfg\n"
         "try:\n"
-        "    loader = yaconfiglib.Loader(interpolate=True, on_error=True)\n"
+        "    loader = anycfg.Loader(interpolate=True, on_error=True)\n"
         "    print('RESULT', loader.load({'a': '{{ 1 }}'}))\n"
-        "except yaconfiglib.MissingDependencyError as error:\n"
+        "except anycfg.MissingDependencyError as error:\n"
         "    print('MISSING', isinstance(error, ImportError), error)\n"
-        "plain = yaconfiglib.Loader(interpolate='vars')\n"
+        "plain = anycfg.Loader(interpolate='vars')\n"
         "print('VARS', plain.load({'a': 1, 'b': '${a}'}))\n"
     )
     done = subprocess.run(
@@ -787,7 +785,7 @@ def test_missing_jinja2_names_the_extra(tmp_path):
         timeout=60,
     )
     assert "MISSING True" in done.stdout, done.stdout + done.stderr
-    assert "yaconfiglib[templates]" in done.stdout
+    assert "anycfg[templates]" in done.stdout
     assert "RESULT" not in done.stdout
     assert "VARS {'a': 1, 'b': 1}" in done.stdout
 

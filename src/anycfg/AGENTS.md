@@ -1,24 +1,24 @@
-# `yaconfiglib` — public API header
+# `anycfg` — public API header
 
-Header-file-style reference for the `yaconfiglib` package: every public export with
+Header-file-style reference for the `anycfg` package: every public export with
 its signature, arguments, contract and gotchas, so the package can be used without
 reading its source. It ships inside the package and is self-contained. Development
-documentation lives with the source at <https://github.com/jose-pr/yaconfiglib>.
+documentation lives with the source at <https://github.com/jose-pr/anycfg>.
 
-Everything public is importable from `yaconfiglib`, `yaconfiglib.formats`,
-`yaconfiglib.sources`, `yaconfiglib.policies`, `yaconfiglib.exceptions` (also re-exported at the root) and
-`yaconfiglib.testing`. Every other module starts with `_` and is private.
+Everything public is importable from `anycfg`, `anycfg.formats`,
+`anycfg.sources`, `anycfg.policies`, `anycfg.exceptions` (also re-exported at the root) and
+`anycfg.testing`. Every other module starts with `_` and is private.
 
-`pip install yaconfiglib` brings pathapi, the path layer. Extras: `yaml` (PyYAML 6),
+`pip install anycfg` brings pathapi, the path layer. Extras: `yaml` (PyYAML 6),
 `toml` (`tomli` below Python 3.11, and `tomli-w` to write), `templates`
 (`tplx[jinja]` 0.2+: template files and engine interpolation; other engines need
-their own tplx extra; `interpolate="vars"` needs none), `all`. `import yaconfiglib`
+their own tplx extra; `interpolate="vars"` needs none), `all`. `import anycfg`
 imports none of them; a feature whose extra is missing raises
 `MissingDependencyError` naming it when used.
 
-`yaconfiglib.__version__` is the installed distribution's version.
+`anycfg.__version__` is the installed distribution's version.
 
-## One document (`import yaconfiglib`)
+## One document (`import anycfg`)
 
 The standard Python serialization API, as `json`, `tomllib` and `pickle` spell
 it: `loads` takes **content**, `load` takes a **location**. A `str` given to `load`
@@ -26,7 +26,7 @@ is always a path, never content. Each has an awaitable twin (see "Async").
 
 - **`load(source, /, *, format=None, encoding="utf-8", policy=None, into=None, **options) -> Any`**
   — one document from a path (`str`, `os.PathLike`), a pathapi `Path`, an open file
-  (anything with `read()`), or a `yaconfiglib.sources.Source`. The format is
+  (anything with `read()`), or a `anycfg.sources.Source`. The format is
   `format=` (a name or a `Format` class), else the one the file name's suffix selects;
   when neither decides, `UnsupportedFormatError` is raised **before the file is
   opened**. A multi-document source (YAML `---`) raises `ParseError`; use `load_all`.
@@ -95,7 +95,7 @@ pointing here.
   the others, nested lists included. `aload_all` checks its arguments when called.
   A confinement refusal of an async source is offered to `on_error`.
 
-## Loader (`yaconfiglib.Loader`)
+## Loader (`anycfg.Loader`)
 
 `Loader(*, base_dir=None, policy=None, encoding="utf-8", merge="simple",
 merge_options=None, collect=None, key=None, recursive=False, bound_loops=True,
@@ -171,7 +171,7 @@ Accepted by `Loader.load`/`load_all`, possibly nested in lists or tuples:
   When `name` is a real file it is checked against confinement and is the origin of
   relative includes.
 - a mapping — Python data (wrapped in `sources.Data`, deep-copied).
-- a `yaconfiglib.sources.Source`.
+- a `anycfg.sources.Source`.
 - `None` and `""` — skipped, so an optional layer can be passed unconditionally.
 - `bytes` — `TypeError` (content belongs in `loads` or `sources.Text`).
 - A file with a script suffix (`.sh`, `.bat`, `.cmd`, `.ps1`) is a **command** (see
@@ -211,7 +211,7 @@ a")`, detected by the **canonical** path, so `../conf/self.yaml` cannot dodge it
 Each included document is its own YAML anchor scope. Includes are not interpolated on
 their own: the merged top-level document is.
 
-## Policy (`yaconfiglib.Policy`)
+## Policy (`anycfg.Policy`)
 
 `Policy(allow_commands=False, allow_templates=False, allow_includes=True,
 sandbox=True, strict=False, confine_to=None, max_includes=1000, max_depth=64,
@@ -234,7 +234,7 @@ fields allowed the action, so a subclass can only narrow; a falsy answer refuses
   class, once `allow_templates` and the sandbox allow it; refusal
   `TemplatesDisabledError`.
 
-**`yaconfiglib.policies`** holds mixins that stack by inheritance, each calling
+**`anycfg.policies`** holds mixins that stack by inheritance, each calling
 `super()`: `LocalPathsOnly` (only `LocalPath`/`MemPath`), `AllowedSuffixes`
 (`suffixes = {".yaml", ...}`, case-insensitive), `AllowedCommands`
 (`commands = {...}`, exact text), `AllowedEngines` (`engines = {"jinja"}` by
@@ -265,7 +265,7 @@ policy of the load that reached them. Refusals are `PolicyError` subclasses (als
   `os.pathsep`-separated string, a single path, `True` (= the loader's `base_dir`, or
   the working directory), `False`/`None` (off). Each root must be absolute
   (`ConfigTypeError` otherwise; empty entries are dropped, so `[""]` is an empty
-  allowlist that refuses everything). With `None`, `YACONFIGLIB_CONFINE_TO` is read by
+  allowlist that refuses everything). With `None`, `ANYCFG_CONFINE_TO` is read by
   the same rules (unset = off, empty = refuse everything); an explicit value ignores
   it. The comparison is `commonpath` over `normcase(abspath(...))` with `\\?\`
   stripped; symlinks are not resolved. A non-local pathapi `Path` is refused while
@@ -279,7 +279,7 @@ policy of the load that reached them. Refusals are `PolicyError` subclasses (als
   is not an `io` stream is called once with `read()`.
 - `command_timeout` — seconds before a command and its children are killed.
 
-## Formats (`yaconfiglib.formats`)
+## Formats (`anycfg.formats`)
 
 - **`Format`** — base class. Class attributes `name` (lower-case), `aliases`,
   `suffixes` (lower-case, with the dot), `priority`, `load_options`,
@@ -311,7 +311,7 @@ policy of the load that reached them. Refusals are `PolicyError` subclasses (als
   `claims_document`, highest priority first; the first claim names the format and a
   leading `#!` line is removed; a `#!` line no format claims still gives its name
   (the lookup then refuses it, listing the registered ones).
-- Entry-point group **`yaconfiglib.formats`**: `name = "pkg.module:FormatClass"`.
+- Entry-point group **`anycfg.formats`**: `name = "pkg.module:FormatClass"`.
   Read lazily; an entry point cannot take a built-in name; a broken one is logged
   and skipped. Its formats are not reachable from documents unless named in
   `Loader(formats=...)` (names or `Format` classes). A format registered in code
@@ -334,7 +334,7 @@ Built-in formats and their dialects:
   `1_000` and `1:30` stay strings; merge keys still work. Any other value is
   `ConfigValueError`.
   **Duplicate keys raise** (a `<<:` merge key may still be overridden). Tags:
-  `!include`, `!load`, `!delete`. Tags live on yaconfiglib's own `SafeLoader`
+  `!include`, `!load`, `!delete`. Tags live on anycfg's own `SafeLoader`
   subclass, so a plain `yaml.safe_load` never resolves them. `loads_all` reads `---`
   streams. `dumps` is `SafeDumper`-based: mappings, sequences, scalars, dates, sets;
   `dict`/`list` subclasses as plain ones, `tuple` as a list, an `Enum` member as its
@@ -368,7 +368,7 @@ Built-in formats and their dialects:
   callable `(text) -> value` decides. `dumps` writes flat string values,
   double-quoted and escaped.
 
-## Sources (`yaconfiglib.sources`)
+## Sources (`anycfg.sources`)
 
 - **`Source`** — base class: `read(context) -> Payload`, `name` property,
   `executes: ClassVar[bool]` (an executing source is refused unless
@@ -413,10 +413,10 @@ Built-in formats and their dialects:
 - **`register_scheme(scheme, factory, *, replace=False)`**,
   **`unregister_scheme(scheme)`**, **`schemes()`**, **`from_text(text, *,
   allow_plugins=True) -> Optional[Source]`**, `SCHEME_REGEX`. Entry-point group
-  **`yaconfiglib.sources`**: `scheme = "pkg.module:factory"`, where
+  **`anycfg.sources`**: `scheme = "pkg.module:factory"`, where
   `factory(text) -> Source`; not reachable from documents.
 
-## Load context (`yaconfiglib.LoadContext`)
+## Load context (`anycfg.LoadContext`)
 
 Frozen; what a format or source sees. `policy`, `encoding`, `origin` (the path the
 current document came from, or `None`), `name`, `chain`/`trail` (identities/names
@@ -424,7 +424,7 @@ of the documents being loaded). **`include(source, *more, **options)`** loads th
 the active loader — `ConfigValueError` without one (a direct `Format.loads` call).
 **`derive(**changes)`**.
 
-## Merging (`yaconfiglib`)
+## Merging (`anycfg`)
 
 - **`DELETE`** — set a key to it in an overriding document to remove the key
   (YAML: `key: !delete`); markers left in a result are pruned.
@@ -450,7 +450,7 @@ the active loader — `ConfigValueError` without one (a direct `Format.loads` ca
 - **`register_merge(name, strategy, *, replace=False)`**, **`merge_strategies()`**,
   **`Merge`** (a `typing.Protocol` for the callable).
 
-## Typed results (`yaconfiglib.hydrate`, `yaconfiglib.typed_merge`)
+## Typed results (`anycfg.hydrate`, `anycfg.typed_merge`)
 
 - **`hydrate(cls, data, *, extra="ignore") -> cls`** — what `load(..., into=cls)`
   uses. A dataclass, a namespace, a mapping type (a `TypedDict` included), a Pydantic
@@ -520,7 +520,7 @@ the active loader — `ConfigValueError` without one (a direct `Format.loads` ca
   at construction; merged into without calling `__init__`, so each value is parsed
   once.
 
-## Nested values (`yaconfiglib.dig`, `yaconfiglib.DotAccessibleDict`)
+## Nested values (`anycfg.dig`, `anycfg.DotAccessibleDict`)
 
 Results are plain `dict`/`list` by default; `wrap=True` gives dot access.
 
@@ -551,7 +551,7 @@ value time: after every source is loaded and merged, the strings of the result t
 hold the engine's syntax are rendered, once, with the document's string keys as the
 scope (`env`, a read-only `os.environ` snapshot, too with `inject_env=True`).
 `Loader.load` interpolates the merged document, `Loader.load_all` each document;
-includes are not interpolated on their own, and the top-level `yaconfiglib.load()`
+includes are not interpolated on their own, and the top-level `anycfg.load()`
 never interpolates. **Template files** (next section) are chosen by file suffix and
 rendered whole before parsing.
 
@@ -625,7 +625,7 @@ nothing and a trusted one looks next to itself. An engine whose tplx extra is mi
 raises `MissingDependencyError`. Errors are `TemplateError`; a parse error in the
 rendered text carries a `render` frame.
 
-## Exceptions (`yaconfiglib.exceptions`, re-exported at the root)
+## Exceptions (`anycfg.exceptions`, re-exported at the root)
 
 - **`ConfigError`** — base. Catch `(ConfigError, OSError)` for every load failure;
   an `OSError` from reading a file is not wrapped.
@@ -654,7 +654,7 @@ rendered text carries a `render` frame.
   from <src>; while merging <src>; at <a.b[0]> (<Model>)]`. A wrong argument raises a
   plain `TypeError`/`ValueError`.
 
-## Testing a format (`yaconfiglib.testing`)
+## Testing a format (`anycfg.testing`)
 
 - **`FormatContract`** — subclass it in a pytest module and set the class attributes
   `format` (the `Format` subclass), `document` (a small valid document, text),
@@ -670,7 +670,7 @@ rendered text carries a `render` frame.
 
 ## Environment variables
 
-- `YACONFIGLIB_CONFINE_TO` — confinement roots, read only when a load's
+- `ANYCFG_CONFINE_TO` — confinement roots, read only when a load's
   `Policy.confine_to` is `None`, by the same rules (an `os.pathsep`-separated list of
   absolute paths). Unset means no confinement; set but empty refuses every local read.
   A relative root raises `ConfigTypeError` when a load runs, never at import.
@@ -689,4 +689,4 @@ rendered text carries a `render` frame.
 - Includes are on by default but not confined. For a document you did not write,
   set `Policy(confine_to=...)` and keep the default sandbox.
 - `Loader.load` merges every document of a multi-document YAML file in order;
-  `yaconfiglib.load` refuses one with `ParseError` (use `load_all`).
+  `anycfg.load` refuses one with `ParseError` (use `load_all`).

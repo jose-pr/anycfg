@@ -50,7 +50,7 @@ def _yaml() -> _ty.Any:
         import yaml
     except ImportError:
         raise MissingDependencyError(
-            'YAML needs the "yaml" extra: pip install "yaconfiglib[yaml]"'
+            'YAML needs the "yaml" extra: pip install "anycfg[yaml]"'
         ) from None
     return yaml
 
@@ -89,12 +89,12 @@ def _include_call(loader: _ty.Any, node: _ty.Any) -> tuple:
 
 def _construct_include(loader: _ty.Any, node: _ty.Any) -> object:
     yaml = _yaml()
-    context = getattr(loader, "_yaconfiglib_context", None)
+    context = getattr(loader, "_anycfg_context", None)
     if context is None or context._loader is None:
         raise yaml.constructor.ConstructorError(
             None,
             None,
-            "!include/!load are only available while a yaconfiglib Loader is loading",
+            "!include/!load are only available while a anycfg Loader is loading",
             node.start_mark,
         )
     sources, options = _include_call(loader, node)
@@ -113,7 +113,7 @@ def _construct_delete(loader: _ty.Any, node: _ty.Any) -> object:
     """``!delete``: remove this key from the merged result."""
     from .._merge import DELETE
 
-    context = getattr(loader, "_yaconfiglib_context", None)
+    context = getattr(loader, "_anycfg_context", None)
     state = getattr(context, "_state", None)
     if state is not None:
         state.deletes = True
@@ -124,7 +124,7 @@ def _construct_inherit(loader: _ty.Any, node: _ty.Any) -> object:
     """``!inherit``: keep this key's earlier value when merged over another."""
     from .._merge import INHERIT
 
-    context = getattr(loader, "_yaconfiglib_context", None)
+    context = getattr(loader, "_anycfg_context", None)
     state = getattr(context, "_state", None)
     if state is not None:
         state.deletes = True  # a marker to prune if nothing replaces it
@@ -132,7 +132,7 @@ def _construct_inherit(loader: _ty.Any, node: _ty.Any) -> object:
 
 
 def _classes_for() -> "_ty.Tuple[type, type]":
-    """yaconfiglib's own SafeLoader and SafeDumper subclasses, built on first use.
+    """anycfg's own SafeLoader and SafeDumper subclasses, built on first use.
 
     Tags and representers are registered on these subclasses only, so a plain
     ``yaml.safe_load`` elsewhere in the process never resolves ``!include`` and
@@ -145,7 +145,7 @@ def _classes_for() -> "_ty.Tuple[type, type]":
         merge_tag = "tag:yaml.org,2002:merge"
 
         class _Loader(yaml.SafeLoader):
-            _yaconfiglib_keep_text = False
+            _anycfg_keep_text = False
 
             def construct_mapping(self, node, deep=False):
                 if isinstance(node, yaml.nodes.MappingNode):
@@ -172,7 +172,7 @@ def _classes_for() -> "_ty.Tuple[type, type]":
                             )
                         seen.add(key)
                 mapping = super().construct_mapping(node, deep=deep)
-                if self._yaconfiglib_keep_text:
+                if self._anycfg_keep_text:
                     # Keys stay what YAML read them as: no type steers a key.
                     mapping = {
                         (key.value if isinstance(key, ScalarText) else key): value
@@ -184,7 +184,7 @@ def _classes_for() -> "_ty.Tuple[type, type]":
                 try:
                     value = super().construct_object(node, deep=deep)
                     if (
-                        self._yaconfiglib_keep_text
+                        self._anycfg_keep_text
                         and type(value) in _TEXT_KEPT
                         and isinstance(node, yaml.nodes.ScalarNode)
                         and node.style is None
@@ -197,7 +197,7 @@ def _classes_for() -> "_ty.Tuple[type, type]":
                     raise  # an include's own failure, already attributed
                 except (ValueError, KeyError, AttributeError, TypeError, OverflowError):
                     if not node.tag.startswith("tag:yaml.org,2002:"):
-                        raise  # yaconfiglib's own tags report for themselves
+                        raise  # anycfg's own tags report for themselves
                     # A scalar its tag cannot hold (`2020-13-45`, `!!int x`).
                     # PyYAML's own message quotes the value, so it is not kept.
                     raise yaml.constructor.ConstructorError(
@@ -359,8 +359,8 @@ class YAMLFormat(Format):
             failure = _parse_error(error, path)
         else:
             parser.name = path or "<string>"
-            parser._yaconfiglib_context = context
-            parser._yaconfiglib_keep_text = bool(context and context.keep_text)
+            parser._anycfg_context = context
+            parser._anycfg_keep_text = bool(context and context.keep_text)
             return parser
         raise failure
 

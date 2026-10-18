@@ -8,14 +8,14 @@ import sys
 import pytest
 from pathapi import LocalPath
 
-from yaconfiglib import (
+from anycfg import (
     CommandsDisabledError,
     ConfinementError,
     Loader,
     Policy,
     TemplatesDisabledError,
 )
-from yaconfiglib.sources import Command
+from anycfg.sources import Command
 
 
 def _json(path, text='{"a": 1}'):
@@ -125,7 +125,7 @@ class TestMixins:
     def test_local_paths_only(self, tmp_path):
         from pathapi.mempath import MemPath
 
-        from yaconfiglib import policies
+        from anycfg import policies
 
         _json(tmp_path / "a.json")
         policy = policies.LocalPathsOnly()
@@ -138,7 +138,7 @@ class TestMixins:
         assert not policy.check_path(Remote())
 
     def test_stacked_mixins_must_all_agree(self, tmp_path):
-        from yaconfiglib import policies
+        from anycfg import policies
 
         class Strict(policies.LocalPathsOnly, policies.AllowedSuffixes):
             suffixes = {".JSON"}
@@ -151,7 +151,7 @@ class TestMixins:
             loader.load("b.txt", format="json")
 
     def test_compose_builds_the_same_class(self, tmp_path):
-        from yaconfiglib import policies
+        from anycfg import policies
 
         Composed = policies.compose(
             policies.AllowedSuffixes, policies.AllowedCommands, suffixes={".json"}
@@ -163,7 +163,7 @@ class TestMixins:
         assert Loader(base_dir=tmp_path, policy=Composed()).load("a.json") == {"a": 1}
 
     def test_compose_refuses_unknown_settings_and_non_policies(self):
-        from yaconfiglib import policies
+        from anycfg import policies
 
         with pytest.raises(TypeError, match="unknown setting"):
             policies.compose(policies.AllowedSuffixes, commands={"x"})
@@ -171,7 +171,7 @@ class TestMixins:
             policies.compose(object)
 
     def test_allowed_commands(self):
-        from yaconfiglib import policies
+        from anycfg import policies
 
         command = f'"{sys.executable}" -c "print(2)"'
         Only = policies.compose(policies.AllowedCommands, commands={command})
@@ -188,7 +188,7 @@ class TestMixins:
 
     @pytest.mark.usefixtures("needs_yaml", "needs_tplx")
     def test_allowed_engines(self, tmp_path):
-        from yaconfiglib import policies
+        from anycfg import policies
 
         (tmp_path / "a.yaml.j2").write_text("a: {{ 2 }}\n", encoding="utf-8")
         (tmp_path / "b.yaml.liquid").write_text("b: 1\n", encoding="utf-8")
@@ -201,7 +201,7 @@ class TestMixins:
 
 class TestMixinList:
     def test_a_list_of_mixins_is_applied_to_the_default_policy(self, tmp_path):
-        from yaconfiglib import policies
+        from anycfg import policies
 
         _json(tmp_path / "a.json")
         _json(tmp_path / "b.txt")
@@ -220,7 +220,7 @@ class TestMixinList:
             loader.load("b.txt", format="json")
 
     def test_in_order(self):
-        from yaconfiglib import policies
+        from anycfg import policies
 
         calls = []
 
@@ -238,18 +238,18 @@ class TestMixinList:
         assert calls == ["first", "second"]
 
     def test_top_level_functions_and_per_call(self, tmp_path):
-        import yaconfiglib
-        from yaconfiglib import policies
+        import anycfg
+        from anycfg import policies
 
         _json(tmp_path / "b.txt")
         only_json = [policies.AllowedSuffixes.using(suffixes={".json"})]
         with pytest.raises(ConfinementError):
-            yaconfiglib.load(str(tmp_path / "b.txt"), format="json", policy=only_json)
+            anycfg.load(str(tmp_path / "b.txt"), format="json", policy=only_json)
         with pytest.raises(ConfinementError):
             Loader(base_dir=tmp_path).load("b.txt", format="json", policy=only_json)
 
     def test_using_refuses_an_unknown_setting(self):
-        from yaconfiglib import policies
+        from anycfg import policies
 
         with pytest.raises(TypeError, match="unknown setting"):
             policies.AllowedSuffixes.using(commands={"x"})

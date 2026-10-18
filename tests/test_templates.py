@@ -15,9 +15,9 @@ import sys
 
 import pytest
 
-import yaconfiglib
+import anycfg
 from _extras import needs_tplx, needs_yaml
-from yaconfiglib import (
+from anycfg import (
     CommandsDisabledError,
     ConfigError,
     Loader,
@@ -63,11 +63,11 @@ class TestRefusedByDefault:
     def test_module_load_refuses(self, tmp_path):
         source = write(tmp_path, "app.json.j2", '{"v": {{ 1 + 1 }}}')
         with pytest.raises(TemplatesDisabledError):
-            yaconfiglib.load(str(source))
+            anycfg.load(str(source))
 
     def test_module_load_renders_with_the_policy(self, tmp_path):
         source = write(tmp_path, "app.json.j2", '{"v": {{ 1 + 1 }}}')
-        assert yaconfiglib.load(str(source), policy=SANDBOXED) == {"v": 2}
+        assert anycfg.load(str(source), policy=SANDBOXED) == {"v": 2}
 
     @pytest.mark.usefixtures("needs_yaml")
     def test_include_of_a_template_follows_the_loading_policy(self, tmp_path):
@@ -168,7 +168,7 @@ class TestSandboxed:
     def test_without_tplx_a_template_names_the_extra(self, tmp_path):
         write(tmp_path, "app.json.j2", '{"v": {{ 1 + 1 }}}')
         package_root = os.path.dirname(
-            os.path.dirname(os.path.abspath(yaconfiglib.__file__))
+            os.path.dirname(os.path.abspath(anycfg.__file__))
         )
         code = (
             "import sys\n"
@@ -177,20 +177,20 @@ class TestSandboxed:
             "import importlib.util\n"
             "importlib.util.find_spec = lambda name, *a: None if name == 'tplx' "
             "else __import__('importlib').machinery.PathFinder.find_spec(name)\n"
-            "import yaconfiglib\n"
-            "loader = yaconfiglib.Loader(\n"
+            "import anycfg\n"
+            "loader = anycfg.Loader(\n"
             f"    base_dir={str(tmp_path)!r},\n"
-            "    policy=yaconfiglib.Policy(allow_templates=True),\n"
+            "    policy=anycfg.Policy(allow_templates=True),\n"
             ")\n"
             "try:\n"
             "    loader.load('app.json.j2')\n"
-            "except yaconfiglib.MissingDependencyError as error:\n"
+            "except anycfg.MissingDependencyError as error:\n"
             "    print('MISSING', error)\n"
         )
         done = subprocess.run(
             [sys.executable, "-c", code], capture_output=True, text=True, timeout=60
         )
-        assert "MISSING" in done.stdout and "yaconfiglib[templates]" in done.stdout, (
+        assert "MISSING" in done.stdout and "anycfg[templates]" in done.stdout, (
             done.stdout + done.stderr
         )
 

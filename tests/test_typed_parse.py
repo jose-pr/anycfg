@@ -12,10 +12,10 @@ import typing
 
 import pytest
 
-import yaconfiglib
-from yaconfiglib import Loader, dehydrate, hydrate
-from yaconfiglib._scalar import ScalarText, resolved
-from yaconfiglib.sources import Text
+import anycfg
+from anycfg import Loader, dehydrate, hydrate
+from anycfg._scalar import ScalarText, resolved
+from anycfg.sources import Text
 
 pytestmark = pytest.mark.usefixtures("needs_yaml")
 
@@ -134,50 +134,46 @@ DOC = (
 
 class TestTypeSteersScalars:
     def test_str_fields_keep_the_text_as_written(self):
-        app = yaconfiglib.loads(DOC, format="yaml", into=App)
+        app = anycfg.loads(DOC, format="yaml", into=App)
         assert app.country == "NO"
         assert app.version == "1.10"
         assert app.mode == "0755"
         assert type(app.country) is str
 
     def test_typed_fields_use_the_read_value_or_parse_the_text(self):
-        app = yaconfiglib.loads(DOC, format="yaml", into=App)
+        app = anycfg.loads(DOC, format="yaml", into=App)
         assert app.debug is True
         assert app.when == datetime.date(2024, 1, 2)
         assert app.color is Color.RED
         assert app.ratio == decimal.Decimal("0.10")
 
     def test_untyped_values_are_what_the_format_read(self):
-        app = yaconfiglib.loads(DOC, format="yaml", into=App)
+        app = anycfg.loads(DOC, format="yaml", into=App)
         assert app.extra == {"flag": True, "n": 1.1}
         assert app.anything is True
         assert not any(isinstance(v, ScalarText) for v in app.extra.values())
 
     def test_a_union_picks_by_the_read_value(self):
-        app = yaconfiglib.loads(DOC, format="yaml", into=App)
+        app = anycfg.loads(DOC, format="yaml", into=App)
         assert app.either == 7 and type(app.either) is int
 
     def test_without_into_values_are_what_the_format_read(self):
-        data = yaconfiglib.loads(DOC, format="yaml")
+        data = anycfg.loads(DOC, format="yaml")
         assert data["country"] is False
         assert data["version"] == 1.1
         assert not isinstance(data["version"], ScalarText)
 
     def test_keys_are_never_text_kept(self):
 
-        holder = yaconfiglib.loads(
-            "table: {2: a, yes: b}\n", format="yaml", into=Holder
-        )
+        holder = anycfg.loads("table: {2: a, yes: b}\n", format="yaml", into=Holder)
         assert set(holder.table) == {2, True}
         assert not any(isinstance(key, ScalarText) for key in holder.table)
 
     def test_duplicate_keys_compare_as_read(self):
         # `yes` and `true` are one key to YAML, kept text or not.
         for into in (None, Holder):
-            with pytest.raises(yaconfiglib.ParseError, match="duplicate key"):
-                yaconfiglib.loads(
-                    "table: {yes: 1, true: 2}\n", format="yaml", into=into
-                )
+            with pytest.raises(anycfg.ParseError, match="duplicate key"):
+                anycfg.loads("table: {yes: 1, true: 2}\n", format="yaml", into=into)
 
     def test_loader_into_and_includes(self, tmp_path):
         (tmp_path / "inc.yaml").write_text("version: 2.10\n", encoding="utf-8")
@@ -190,9 +186,7 @@ class TestTypeSteersScalars:
 
     def test_typed_dict_target(self):
 
-        result = yaconfiglib.loads(
-            "port: '80'\nname: NO\n", format="yaml", into=Settings
-        )
+        result = anycfg.loads("port: '80'\nname: NO\n", format="yaml", into=Settings)
         assert result == {"port": 80, "name": "NO"}
 
     def test_interpolation_sees_read_values(self):
@@ -206,18 +200,18 @@ class TestTypeSteersScalars:
 class TestHooks:
     def test_load_hook_gets_the_text_written(self):
         Version.seen.clear()
-        pkg = yaconfiglib.loads("version: 1.10\n", format="yaml", into=Pkg)
+        pkg = anycfg.loads("version: 1.10\n", format="yaml", into=Pkg)
         assert Version.seen == ["1.10"] and type(Version.seen[0]) is str
         assert pkg.version.text == "1.10"
 
     def test_load_hook_gets_plain_data_for_a_mapping(self):
-        conf = yaconfiglib.loads(
+        conf = anycfg.loads(
             "api: {host: h, tls: yes}\n", format="yaml", into=EndpointConf
         )
         assert conf.api == ("endpoint", {"host": "h", "tls": True})
 
     def test_load_hook_layers_merge_first(self):
-        merged = yaconfiglib.typed_merge(Endpoint, {"a": 1}, {"b": 2})
+        merged = anycfg.typed_merge(Endpoint, {"a": 1}, {"b": 2})
         assert merged == ("endpoint", {"a": 1, "b": 2})
 
     def test_load_hook_through_optional(self):
@@ -225,15 +219,15 @@ class TestHooks:
         assert hydrate(OptionalPort, {"port": "81"}).port == Port(81)
 
     def test_dump_hook_and_round_trip(self, tmp_path):
-        app = yaconfiglib.loads(DOC, format="yaml", into=App)
+        app = anycfg.loads(DOC, format="yaml", into=App)
         target = tmp_path / "out.yaml"
-        yaconfiglib.dump(app, str(target))
-        again = yaconfiglib.load(str(target), into=App)
+        anycfg.dump(app, str(target))
+        again = anycfg.load(str(target), into=App)
         assert again == app
 
     def test_dumps_dataclass_as_json(self):
-        app = yaconfiglib.loads(DOC, format="yaml", into=App)
-        text = yaconfiglib.dumps(
+        app = anycfg.loads(DOC, format="yaml", into=App)
+        text = anycfg.dumps(
             dataclasses.replace(app, when=None, ratio=None), format="json"
         )
         assert '"port": 8080' in text and '"color": "red"' in text

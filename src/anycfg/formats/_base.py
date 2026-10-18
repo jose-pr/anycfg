@@ -19,7 +19,7 @@ class Format:
 
     Subclass it, set the class attributes, override :meth:`loads` and any of the
     optional methods, then register the class with
-    :func:`yaconfiglib.formats.register_format` (or the ``yaconfiglib.formats``
+    :func:`anycfg.formats.register_format` (or the ``anycfg.formats``
     entry-point group).
 
     Class attributes:
@@ -38,7 +38,7 @@ class Format:
     is. A format holds no state, so one instance serves every load.
 
     Errors: a malformed document raises
-    :class:`~yaconfiglib.exceptions.ParseError`, translated from the parser's
+    :class:`~anycfg.exceptions.ParseError`, translated from the parser's
     own error and raised **after** the ``except`` block, so neither
     ``__cause__`` nor ``__context__`` keeps the parser's error (which may hold
     the document), and carrying no document text itself.
@@ -95,7 +95,7 @@ class Format:
     def dumps(self, obj: _ty.Any, /, **options: _ty.Any) -> str:
         """Serialize *obj*. Override for a format that can write.
 
-        Raises :class:`~yaconfiglib.exceptions.ConfigTypeError` for a value the
+        Raises :class:`~anycfg.exceptions.ConfigTypeError` for a value the
         format cannot represent, before anything is written.
         """
         raise NotImplementedError

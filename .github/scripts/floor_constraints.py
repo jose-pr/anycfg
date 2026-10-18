@@ -6,7 +6,7 @@ Reads the *installed* metadata of the distribution, so `pyproject.toml` stays
 the single source of the bounds — a hand-written pin in a workflow drifts, and
 pip silently upgrades past it. Requirements whose marker does not hold for the
 running interpreter or for one of the named extras are skipped, as are
-self-references (a `yaconfiglib[jinja2]`-style alias extra).
+self-references (a `anycfg[jinja2]`-style alias extra).
 
 Exits 1 naming every kept requirement that declares no lower bound: an
 unbounded dependency has no floor to test, which is the defect this guards
@@ -53,7 +53,7 @@ def _floor(requirement: Requirement) -> "str | None":
 
 def main(argv: "list[str] | None" = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--dist", default="yaconfiglib", help="distribution to read")
+    parser.add_argument("--dist", default="anycfg", help="distribution to read")
     parser.add_argument("extras", nargs="*", help="extras to include")
     args = parser.parse_args(argv)
 

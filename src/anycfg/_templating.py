@@ -67,7 +67,7 @@ def _tplx() -> _ty.Any:
     except ImportError:
         raise MissingDependencyError(
             'templates and interpolation need the "templates" extra: '
-            'pip install "yaconfiglib[templates]"'
+            'pip install "anycfg[templates]"'
         ) from None
     return tplx
 
@@ -76,7 +76,7 @@ def _nowhere() -> _ty.Any:
     """A template root that holds no file, so a template can include nothing."""
     from pathapi.mempath import MemPath
 
-    return MemPath("yaconfiglib-no-includes")
+    return MemPath("anycfg-no-includes")
 
 
 def _plain(value: _ty.Any, memo: "_ty.Optional[dict]" = None) -> _ty.Any:
@@ -171,7 +171,7 @@ class TemplateInterpolator:
         except tplx.EngineUnavailableError as error:
             hint = (
                 '; Jinja comes with the "templates" extra: '
-                'pip install "yaconfiglib[templates]"'
+                'pip install "anycfg[templates]"'
                 if _engine_name(engine) in ("jinja", "j2", "jinja2")
                 else ""
             )

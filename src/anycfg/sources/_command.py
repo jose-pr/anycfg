@@ -185,7 +185,7 @@ class Command(Source):
     ``command_timeout`` unless *timeout* is given), after which it and its
     child processes are killed. Output is decoded strictly with *encoding*
     (the load's encoding by default). A non-zero exit raises
-    :class:`~yaconfiglib.exceptions.CommandError`, whose message carries the
+    :class:`~anycfg.exceptions.CommandError`, whose message carries the
     tail of stderr and never stdout.
     """
 

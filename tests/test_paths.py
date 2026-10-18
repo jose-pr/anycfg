@@ -13,7 +13,7 @@ import types
 
 import pytest
 
-from yaconfiglib import (
+from anycfg import (
     CommandsDisabledError,
     LoadEvent,
     Loader,
@@ -21,9 +21,9 @@ from yaconfiglib import (
     UnsupportedFormatError,
     sources,
 )
-from yaconfiglib.sources import Data, Payload, Source
+from anycfg.sources import Data, Payload, Source
 
-PATHS_LOGGER = "yaconfiglib._paths"
+PATHS_LOGGER = "anycfg._paths"
 
 
 def _write(path, data):
@@ -520,7 +520,7 @@ class TestUnlistableDirectories:
 
     def test_on_error_true_skips_only_that_directory(self, locked_tree, caplog):
         loader = Loader(base_dir=str(locked_tree), on_error=True)
-        with caplog.at_level(logging.WARNING, logger="yaconfiglib"):
+        with caplog.at_level(logging.WARNING, logger="anycfg"):
             assert loader.load("lock/**/*.json", recursive=True) == {"a": 1}
         (warning,) = [r for r in caplog.records if r.levelno == logging.WARNING]
         assert "locked" in warning.getMessage()

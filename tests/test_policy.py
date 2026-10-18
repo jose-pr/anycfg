@@ -9,8 +9,8 @@ import time
 
 import pytest
 
-import yaconfiglib
-from yaconfiglib import (
+import anycfg
+from anycfg import (
     BudgetExceededError,
     CommandsDisabledError,
     CommandTimeoutError,
@@ -557,12 +557,12 @@ class TestTextCodecsOnly:
 
     @pytest.mark.parametrize("codec", ["zlib_codec", "base64_codec", "hex_codec"])
     def test_loads_refuses_a_non_text_codec(self, codec):
-        with pytest.raises(yaconfiglib.ConfigValueError, match="not a text encoding"):
-            yaconfiglib.loads(b"{}", format="json", encoding=codec)
+        with pytest.raises(anycfg.ConfigValueError, match="not a text encoding"):
+            anycfg.loads(b"{}", format="json", encoding=codec)
 
     def test_loader_refuses_a_non_text_codec(self):
-        with pytest.raises(yaconfiglib.ConfigValueError, match="not a text encoding"):
-            yaconfiglib.Loader(encoding="zlib_codec")
+        with pytest.raises(anycfg.ConfigValueError, match="not a text encoding"):
+            anycfg.Loader(encoding="zlib_codec")
 
     @pytest.mark.usefixtures("needs_yaml")
     def test_an_include_cannot_name_a_decompressing_codec(self, tmp_path):
@@ -575,13 +575,13 @@ class TestTextCodecsOnly:
             "x: !include {pathname: bomb.json, encoding: zlib_codec}\n",
             encoding="utf-8",
         )
-        loader = yaconfiglib.Loader(base_dir=tmp_path, policy=Policy(max_bytes=4096))
-        with pytest.raises(yaconfiglib.ConfigValueError, match="not a text encoding"):
+        loader = anycfg.Loader(base_dir=tmp_path, policy=Policy(max_bytes=4096))
+        with pytest.raises(anycfg.ConfigValueError, match="not a text encoding"):
             loader.load("app.yaml")
 
     def test_unknown_codec(self):
-        with pytest.raises(yaconfiglib.ConfigValueError, match="unknown encoding"):
-            yaconfiglib.loads(b"{}", format="json", encoding="no-such-codec")
+        with pytest.raises(anycfg.ConfigValueError, match="unknown encoding"):
+            anycfg.loads(b"{}", format="json", encoding="no-such-codec")
 
 
 class TestBudgetStopsTheRead:
@@ -600,9 +600,7 @@ class TestBudgetStopsTheRead:
 
         stream = Counting(b"[" + b"0," * 5_000_000 + b"0]")
         with pytest.raises(BudgetExceededError):
-            yaconfiglib.Loader(policy=Policy(max_bytes=100_000)).load(
-                stream, format="json"
-            )
+            anycfg.Loader(policy=Policy(max_bytes=100_000)).load(stream, format="json")
         assert Counting.served < 300_000
 
     def test_a_file_is_read_in_chunks(self, tmp_path, monkeypatch):
@@ -631,7 +629,7 @@ class TestBudgetStopsTheRead:
             return Spy()
 
         monkeypatch.setattr(LocalPath, "open", spying_open)
-        loader = yaconfiglib.Loader(base_dir=tmp_path, policy=Policy(max_bytes=100_000))
+        loader = anycfg.Loader(base_dir=tmp_path, policy=Policy(max_bytes=100_000))
         with pytest.raises(BudgetExceededError):
             loader.load("big.json")
         assert sum(served) < 300_000

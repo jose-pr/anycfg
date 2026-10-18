@@ -1,4 +1,4 @@
-"""What yaconfiglib does, runnable from any directory.
+"""What anycfg does, runnable from any directory.
 
     python examples/example.py
 
@@ -11,7 +11,7 @@ import json
 import logging
 from pathlib import Path
 
-import yaconfiglib
+import anycfg
 
 HERE = Path(__file__).resolve().parent
 
@@ -26,7 +26,7 @@ def layered_load():
     `log_dir` follows the root `hiera.yaml` set, and so does the INI value
     that refers to it.
     """
-    loader = yaconfiglib.Loader(base_dir=HERE, merge="deep", interpolate=True)
+    loader = anycfg.Loader(base_dir=HERE, merge="deep", interpolate=True)
     return loader.load("layered.yaml", "hiera.yaml")
 
 
@@ -36,8 +36,8 @@ def template_file():
     Templates are off by default; `allow_templates` turns them on, and the
     default sandbox keeps the template away from Python internals and files.
     """
-    loader = yaconfiglib.Loader(
-        base_dir=HERE, policy=yaconfiglib.Policy(allow_templates=True)
+    loader = anycfg.Loader(
+        base_dir=HERE, policy=anycfg.Policy(allow_templates=True)
     )
     return loader.load("jinja.yaml.j2")
 
@@ -62,7 +62,7 @@ def typed_load():
     `server.port` is the string "8443" in `hiera.yaml`; the model says `int`,
     so it arrives as an int. Keys the model does not declare are dropped.
     """
-    loader = yaconfiglib.Loader(base_dir=HERE, merge="deep", interpolate=True)
+    loader = anycfg.Loader(base_dir=HERE, merge="deep", interpolate=True)
     return loader.load("layered.yaml", "hiera.yaml", into=AppConfig)
 
 
@@ -71,7 +71,7 @@ def typed_merge_demo():
 
     A `None` is "no opinion": it does not override an earlier value.
     """
-    return yaconfiglib.typed_merge(
+    return anycfg.typed_merge(
         Server,
         Server(host="localhost", port=8080),
         {"host": "example.com", "port": "443"},

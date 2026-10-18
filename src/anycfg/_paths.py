@@ -7,8 +7,8 @@ Accepted, possibly nested in lists and tuples:
   ``<scheme>://...``, a registered source scheme (``cmd://``);
 * a pathapi ``Path`` — used exactly as given, never joined to ``base_dir``;
 * an open file object (anything with a callable ``read``);
-* a :class:`~yaconfiglib.sources.Source`, or a mapping, which becomes a
-  :class:`~yaconfiglib.sources.Data` source;
+* a :class:`~anycfg.sources.Source`, or a mapping, which becomes a
+  :class:`~anycfg.sources.Data` source;
 * ``None`` and ``""``, which are skipped, so an optional layer can be passed
   unconditionally.
 
@@ -72,7 +72,7 @@ def _flatten(
         if is_async_source(source):
             raise TypeError(
                 f"a {type(source).__name__} is read asynchronously; use "
-                "await yaconfiglib.aload(...) or await Loader().aload(...)"
+                "await anycfg.aload(...) or await Loader().aload(...)"
             )
         if isinstance(source, Source) or is_stream(source):
             yield source
@@ -83,7 +83,7 @@ def _flatten(
         if isinstance(source, (bytes, bytearray)):
             raise TypeError(
                 "a bytes source is content, not a location; use "
-                "yaconfiglib.loads(data, format=...) or pass a file object"
+                "anycfg.loads(data, format=...) or pass a file object"
             )
         if isinstance(source, str):
             found = _sources.from_text(source, allow_plugins=allow_plugins)
@@ -102,7 +102,7 @@ def _flatten(
             continue
         raise TypeError(
             f"cannot load a {type(source).__name__} source; pass a path, a file "
-            "object, a mapping or a yaconfiglib.sources.Source"
+            "object, a mapping or a anycfg.sources.Source"
         )
 
 
