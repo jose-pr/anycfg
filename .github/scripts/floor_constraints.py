@@ -6,7 +6,7 @@ Reads the *installed* metadata of the distribution, so `pyproject.toml` stays
 the single source of the bounds — a hand-written pin in a workflow drifts, and
 pip silently upgrades past it. Requirements whose marker does not hold for the
 running interpreter or for one of the named extras are skipped, as are
-self-references (a `anycfg[jinja2]`-style alias extra).
+self-references (an `anycfg[jinja2]`-style alias extra).
 
 Exits 1 naming every kept requirement that declares no lower bound: an
 unbounded dependency has no floor to test, which is the defect this guards

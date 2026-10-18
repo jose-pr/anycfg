@@ -94,7 +94,7 @@ def _construct_include(loader: _ty.Any, node: _ty.Any) -> object:
         raise yaml.constructor.ConstructorError(
             None,
             None,
-            "!include/!load are only available while a anycfg Loader is loading",
+            "!include/!load are only available while an anycfg Loader is loading",
             node.start_mark,
         )
     sources, options = _include_call(loader, node)

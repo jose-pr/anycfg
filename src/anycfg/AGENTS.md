@@ -26,7 +26,7 @@ is always a path, never content. Each has an awaitable twin (see "Async").
 
 - **`load(source, /, *, format=None, encoding="utf-8", policy=None, into=None, **options) -> Any`**
   — one document from a path (`str`, `os.PathLike`), a pathapi `Path`, an open file
-  (anything with `read()`), or a `anycfg.sources.Source`. The format is
+  (anything with `read()`), or an `anycfg.sources.Source`. The format is
   `format=` (a name or a `Format` class), else the one the file name's suffix selects;
   when neither decides, `UnsupportedFormatError` is raised **before the file is
   opened**. A multi-document source (YAML `---`) raises `ParseError`; use `load_all`.
@@ -171,7 +171,7 @@ Accepted by `Loader.load`/`load_all`, possibly nested in lists or tuples:
   When `name` is a real file it is checked against confinement and is the origin of
   relative includes.
 - a mapping — Python data (wrapped in `sources.Data`, deep-copied).
-- a `anycfg.sources.Source`.
+- an `anycfg.sources.Source`.
 - `None` and `""` — skipped, so an optional layer can be passed unconditionally.
 - `bytes` — `TypeError` (content belongs in `loads` or `sources.Text`).
 - A file with a script suffix (`.sh`, `.bat`, `.cmd`, `.ps1`) is a **command** (see

@@ -102,7 +102,7 @@ def _flatten(
             continue
         raise TypeError(
             f"cannot load a {type(source).__name__} source; pass a path, a file "
-            "object, a mapping or a anycfg.sources.Source"
+            "object, a mapping or an anycfg.sources.Source"
         )
 
 

@@ -181,7 +181,7 @@ class LoadContext:
         """
         if self._loader is None:
             raise ConfigValueError(
-                "includes are only available while a anycfg Loader is loading"
+                "includes are only available while an anycfg Loader is loading"
             )
         return self._loader.include(self, (source,) + more, options)
 
