@@ -1,6 +1,6 @@
 # Exceptions
 
-`yaconfiglib.exceptions`, every name also importable from `yaconfiglib`.
+`anycfg.exceptions`, every name also importable from `anycfg`.
 
 Every condition the library reports is a `ConfigError`, and each class also
 inherits the builtin exception for the same condition — `ParseError` is a
@@ -11,11 +11,11 @@ an alias) but never a value, a line or a snippet. An `OSError` from reading a
 file is raised as itself, so one clause covers every load failure:
 
 ```python
-import yaconfiglib
+import anycfg
 
 try:
-    config = yaconfiglib.load("app.yaml")
-except (yaconfiglib.ConfigError, OSError) as error:
+    config = anycfg.load("app.yaml")
+except (anycfg.ConfigError, OSError) as error:
     ...
 ```
 
@@ -26,38 +26,38 @@ happened: `config_source` (the failing source), `config_frames` (an
 `[in <source>; included from <file>, line <n>; at <a.b[0]> (<Model>)]`. A wrong
 argument to a function raises a plain `TypeError` or `ValueError`.
 
-::: yaconfiglib.exceptions.ConfigError
+::: anycfg.exceptions.ConfigError
 
-::: yaconfiglib.exceptions.ParseError
+::: anycfg.exceptions.ParseError
 
-::: yaconfiglib.exceptions.ConfigValueError
+::: anycfg.exceptions.ConfigValueError
 
-::: yaconfiglib.exceptions.ConfigTypeError
+::: anycfg.exceptions.ConfigTypeError
 
-::: yaconfiglib.exceptions.TemplateError
+::: anycfg.exceptions.TemplateError
 
-::: yaconfiglib.exceptions.UnsupportedFormatError
+::: anycfg.exceptions.UnsupportedFormatError
 
-::: yaconfiglib.exceptions.MissingDependencyError
+::: anycfg.exceptions.MissingDependencyError
 
 ## Policy refusals
 
-::: yaconfiglib.exceptions.PolicyError
+::: anycfg.exceptions.PolicyError
 
-::: yaconfiglib.exceptions.CommandsDisabledError
+::: anycfg.exceptions.CommandsDisabledError
 
-::: yaconfiglib.exceptions.TemplatesDisabledError
+::: anycfg.exceptions.TemplatesDisabledError
 
-::: yaconfiglib.exceptions.ConfinementError
+::: anycfg.exceptions.ConfinementError
 
-::: yaconfiglib.exceptions.BudgetExceededError
+::: anycfg.exceptions.BudgetExceededError
 
 ## Commands
 
-::: yaconfiglib.exceptions.CommandError
+::: anycfg.exceptions.CommandError
 
-::: yaconfiglib.exceptions.CommandTimeoutError
+::: anycfg.exceptions.CommandTimeoutError
 
 ## Context
 
-::: yaconfiglib.exceptions.ErrorFrame
+::: anycfg.exceptions.ErrorFrame

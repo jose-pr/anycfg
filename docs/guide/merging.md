@@ -6,7 +6,7 @@ is what makes layered configuration work: defaults, then an environment, then
 local overrides.
 
 ```python
-from yaconfiglib import Loader
+from anycfg import Loader
 
 loader = Loader(merge="deep")
 config = loader.load("base.yaml", "production.yaml", "local.yaml")
@@ -96,7 +96,7 @@ source is deep-copied when read, so your own objects are never reached.
 **`None` in an overriding document means "no opinion"**: the earlier value is
 kept, in every strategy. A key the earlier documents did not have gets `None`.
 
-To **remove** a key, set it to `yaconfiglib.DELETE` — in YAML, the `!delete`
+To **remove** a key, set it to `anycfg.DELETE` — in YAML, the `!delete`
 tag:
 
 ```yaml
@@ -106,7 +106,7 @@ debug: ~             # keeps base.yaml's `debug`
 ```
 
 ```python
-from yaconfiglib import DELETE, Loader
+from anycfg import DELETE, Loader
 
 print(Loader().load({"cache": {"size": 10}, "debug": True}, {"cache": DELETE, "debug": None}))
 # {'debug': True}
@@ -118,7 +118,7 @@ had — are pruned, so they never reach your code.
 ### Making `None` a value: `nulls="replace"` and `INHERIT`
 
 When `None` should *set* a key, pass the merge option `nulls="replace"`. "No
-opinion" is then said explicitly with `yaconfiglib.INHERIT` — `!inherit` in
+opinion" is then said explicitly with `anycfg.INHERIT` — `!inherit` in
 YAML — which keeps the earlier value in either mode (a key no earlier document
 set is left out):
 
@@ -205,7 +205,7 @@ By default the first failure raises. `on_error=` decides otherwise:
   it.
 
 ```python
-from yaconfiglib import LoadEvent, Loader
+from anycfg import LoadEvent, Loader
 
 def skip_missing(event: LoadEvent) -> bool:
     return isinstance(event.error, FileNotFoundError)
@@ -235,7 +235,7 @@ which is also what lets a document select it from an include's `merge:` key:
 ```python
 from collections.abc import Mapping
 
-from yaconfiglib import Loader, register_merge
+from anycfg import Loader, register_merge
 
 
 def concat(a, b, *, memo=None, **options):
@@ -265,7 +265,7 @@ passed as `**options`.
 
 `register_merge` raises `ValueError` for a name that is taken, unless
 `replace=True`; `merge_strategies()` lists the names. The built-in strategies'
-protocol is `yaconfiglib.Merge`.
+protocol is `anycfg.Merge`.
 
 ## Typed merge
 
@@ -277,7 +277,7 @@ field, each field through its own annotation. It is what
 import dataclasses
 from typing import List
 
-from yaconfiglib import typed_merge
+from anycfg import typed_merge
 
 
 @dataclasses.dataclass
@@ -376,7 +376,7 @@ packaged as the `OpaqueMerge` mixin and the `opaque` decorator:
 import argparse
 import ipaddress
 
-from yaconfiglib import OpaqueMerge, opaque
+from anycfg import OpaqueMerge, opaque
 
 
 class Zone(OpaqueMerge, argparse.Namespace):
@@ -396,7 +396,7 @@ as it is collected. `TypedNamespace`, an `argparse.Namespace`, applies the same
 hooks at construction, so a built instance is already normalized:
 
 ```python
-from yaconfiglib import TypedNamespace, typed_merge
+from anycfg import TypedNamespace, typed_merge
 
 
 class ServerConfig(TypedNamespace):

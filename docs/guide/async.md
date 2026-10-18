@@ -23,13 +23,13 @@ They take the same arguments and return the same results. What they add is the
 import asyncio
 
 import httpx
-import yaconfiglib
+import anycfg
 
 
 async def main():
     async with httpx.AsyncClient() as client:
         async with client.stream("GET", "https://example.org/app.json") as response:
-            return await yaconfiglib.aload(response.aiter_bytes(), format="json")
+            return await anycfg.aload(response.aiter_bytes(), format="json")
 
 
 config = asyncio.run(main())
@@ -74,12 +74,12 @@ drained.
 
 ## Chunks without async
 
-`yaconfiglib.sources.Chunks` loads a **sync** iterable of chunks — a
+`anycfg.sources.Chunks` loads a **sync** iterable of chunks — a
 `requests` response's `iter_content()`, a generator — with the same early stop:
 
 ```python
-from yaconfiglib import Loader
-from yaconfiglib.sources import Chunks
+from anycfg import Loader
+from anycfg.sources import Chunks
 
 config = Loader().load(Chunks(response.iter_content(65536), format="json"))
 ```

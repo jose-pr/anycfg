@@ -8,7 +8,7 @@ untyped mapping.
 ```python
 import dataclasses
 
-import yaconfiglib
+import anycfg
 
 
 @dataclasses.dataclass
@@ -17,16 +17,16 @@ class Database:
     port: int = 5432
 
 
-db = yaconfiglib.load("db.json", into=Database)
+db = anycfg.load("db.json", into=Database)
 ```
 
 `into=` is accepted by `load()`, `loads()`, `load_all()`, `loads_all()`,
 `Loader.load()` and `Loader.load_all()` (the last three apply it to each
 document). The same engine is
-available on its own as `yaconfiglib.hydrate(cls, data)`:
+available on its own as `anycfg.hydrate(cls, data)`:
 
 ```python
-from yaconfiglib import hydrate
+from anycfg import hydrate
 
 print(hydrate(Database, {"host": "db", "port": "6432"}))   # Database(host='db', port=6432)
 ```
@@ -44,7 +44,7 @@ import dataclasses
 import datetime
 from typing import Any
 
-import yaconfiglib
+import anycfg
 
 document = """
 country: NO
@@ -68,7 +68,7 @@ class Release:
     extra: Any = None
 
 
-print(yaconfiglib.loads(document, format="yaml", into=Release))
+print(anycfg.loads(document, format="yaml", into=Release))
 # Release(country='NO', version='1.10', mode='0755', enabled=True, port=8080, released=datetime.date(2024, 1, 2), extra=True)
 ```
 
@@ -92,7 +92,7 @@ duplicate-key check see the values YAML read**, exactly as without `into=`, so
 adding `into=` never changes which document wins or what an include does.
 
 **Without `into=`, nothing changes**: values are exactly what the format read.
-So `yaconfiglib.load("app.yaml")` still returns `{'country': False, ...}` —
+So `anycfg.load("app.yaml")` still returns `{'country': False, ...}` —
 quote such values, or load into a type.
 
 ## Coercion
@@ -113,8 +113,8 @@ That makes the environment usable as typed configuration:
 import dataclasses
 from typing import Optional
 
-from yaconfiglib import Loader
-from yaconfiglib.sources import Env
+from anycfg import Loader
+from anycfg.sources import Env
 
 
 @dataclasses.dataclass
@@ -179,7 +179,7 @@ class Server(TypedDict):
     port: int
 
 
-print(yaconfiglib.loads("host: example.org\nport: '8080'\n", format="yaml", into=Server))
+print(anycfg.loads("host: example.org\nport: '8080'\n", format="yaml", into=Server))
 # {'host': 'example.org', 'port': 8080}
 ```
 
@@ -214,7 +214,7 @@ coercion, validators and errors apply — and it receives the scalars' texts:
 ```python
 from pydantic import BaseModel
 
-import yaconfiglib
+import anycfg
 
 
 class DBConfig(BaseModel):
@@ -222,10 +222,10 @@ class DBConfig(BaseModel):
     port: int
 
 
-db = yaconfiglib.load("config.yaml", into=DBConfig)
+db = anycfg.load("config.yaml", into=DBConfig)
 ```
 
-Pydantic stays optional: yaconfiglib never imports it, and recognizes a model
+Pydantic stays optional: anycfg never imports it, and recognizes a model
 only through a Pydantic that your code has already imported.
 
 ## Building a type from a value
@@ -260,7 +260,7 @@ class Lan:
     gateway: str
 
 
-lan = yaconfiglib.loads("subnet: 10.0.0.0/8\ngateway: 10.0.0.1\n", format="yaml", into=Lan)
+lan = anycfg.loads("subnet: 10.0.0.0/8\ngateway: 10.0.0.1\n", format="yaml", into=Lan)
 print(lan.subnet.cidr.num_addresses)    # 16777216
 ```
 
@@ -269,7 +269,7 @@ field finds them too.
 
 ## Writing typed results back
 
-`yaconfiglib.dehydrate(obj)` turns typed data back into plain data a format
+`anycfg.dehydrate(obj)` turns typed data back into plain data a format
 can write — the inverse of `hydrate`:
 
 - a type's `_dump_()` result;
@@ -283,11 +283,11 @@ can write — the inverse of `hydrate`:
 writes directly, and a load into a type followed by a dump round-trips:
 
 ```python
-yaconfiglib.dump(lan, "lan.yaml")
+anycfg.dump(lan, "lan.yaml")
 print(open("lan.yaml").read())
 # subnet: 10.0.0.0/8
 # gateway: 10.0.0.1
-print(yaconfiglib.load("lan.yaml", into=Lan).subnet.cidr)    # 10.0.0.0/8
+print(anycfg.load("lan.yaml", into=Lan).subnet.cidr)    # 10.0.0.0/8
 ```
 
 ## Errors
@@ -299,7 +299,7 @@ the field's path and the model you asked for — in the message and as
 ```python
 try:
     hydrate(App, {"name": "web", "hosts": [{"name": "a", "port": "eighty"}]})
-except yaconfiglib.ConfigError as error:
+except anycfg.ConfigError as error:
     print(error.config_key, error.config_model)    # ('hosts', 0, 'port') App
 ```
 

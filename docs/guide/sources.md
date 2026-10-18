@@ -6,8 +6,8 @@ one-document functions take one; `Loader.load()` and `Loader.load_all()` take
 any number, possibly nested in lists or tuples, and combine them in order.
 
 ```python
-from yaconfiglib import Loader
-from yaconfiglib.sources import Env, Text
+from anycfg import Loader
+from anycfg.sources import Env, Text
 
 config = Loader(base_dir="conf").load(
     "base.yaml",                          # a path, relative to base_dir
@@ -62,7 +62,7 @@ its own `read_bytes()`, **exactly as given**: it is never joined to `base_dir`.
 
 ```python
 from pathapi import MemPath
-from yaconfiglib import Loader
+from anycfg import Loader
 
 doc = MemPath("/conf/app.yaml")
 doc.parent.mkdir(parents=True, exist_ok=True)
@@ -77,13 +77,13 @@ its includes resolve against `base_dir` like other in-memory content. While
 is inside no local root) and a `MemPath` is exempt.
 
 A document can only ever name a local path: every `str` becomes a `LocalPath`,
-and yaconfiglib never builds a remote path itself. So the paths you pass are the
+and anycfg never builds a remote path itself. So the paths you pass are the
 only remote ones, and you decide how to vet them — the policy's `check_path`
 is asked about every path before it is read (see
 [Your own rules](security.md#your-own-rules)):
 
 ```python
-from yaconfiglib import policies
+from anycfg import policies
 
 loader = Loader(policy=[policies.LocalPathsOnly])
 ```
@@ -97,12 +97,12 @@ real name, so they need `format=`. It may read `str` or `bytes`.
 
 ```python
 import io
-import yaconfiglib
+import anycfg
 
 with open("settings.toml", "rb") as handle:
-    config = yaconfiglib.load(handle)
+    config = anycfg.load(handle)
 
-print(yaconfiglib.load(io.StringIO('{"a": 1}'), format="json"))   # {'a': 1}
+print(anycfg.load(io.StringIO('{"a": 1}'), format="json"))   # {'a': 1}
 ```
 
 When `name` is a real file, it is checked against confinement and is the
@@ -110,12 +110,12 @@ origin of the document's relative includes, just as the path would be.
 
 ## Python data
 
-A mapping passed as a source is wrapped in `yaconfiglib.sources.Data` and
+A mapping passed as a source is wrapped in `anycfg.sources.Data` and
 merged like any other document. It is **deep-copied when read**, so merging
 and interpolation never reach back into your object:
 
 ```python
-from yaconfiglib.sources import Data
+from anycfg.sources import Data
 
 defaults = {"server": {"port": 8080}}
 config = Loader(merge="deep").load(defaults, "server.yaml")
@@ -128,11 +128,11 @@ document a name (for messages and for `collect="hash"`); its default name is
 
 ## In-memory text
 
-`yaconfiglib.sources.Text(data, *, format, name="")` is content in a named
+`anycfg.sources.Text(data, *, format, name="")` is content in a named
 format — the layered counterpart of `loads()`:
 
 ```python
-from yaconfiglib.sources import Text
+from anycfg.sources import Text
 
 overlay = Text("server:\n  port: 9090\n", format="yaml", name="overlay")
 config = Loader(merge="deep").load("server.yaml", overlay)
@@ -143,7 +143,7 @@ includes inside it resolve against the loader's `base_dir`.
 
 ## Content in pieces
 
-`yaconfiglib.sources.Chunks(chunks, *, format=None, name="")` is one source
+`anycfg.sources.Chunks(chunks, *, format=None, name="")` is one source
 whose content arrives as an iterable of `str` or `bytes` chunks — a response's
 `iter_content()`, a generator. The chunks are joined as they arrive and the
 read stops once they pass `max_bytes`; the format is `format`, else `name`'s
@@ -152,12 +152,12 @@ suffix. Async streams and async chunk iterables go to
 
 ## The environment
 
-`yaconfiglib.sources.Env(prefix="", *, nested=None, lowercase=False,
+`anycfg.sources.Env(prefix="", *, nested=None, lowercase=False,
 coerce=False, environ=None)` reads environment variables starting with `prefix`, with the
 prefix removed:
 
 ```python
-from yaconfiglib.sources import Env
+from anycfg.sources import Env
 
 environ = {"APP_DEBUG": "true", "APP_DB__HOST": "db", "APP_DB__PORT": "5432", "HOME": "/root"}
 print(Loader().load(Env("APP_", nested="__", environ=environ)))
@@ -187,7 +187,7 @@ are refused unless the policy allows them** — `Policy(allow_commands=True)`,
 or `Policy.trusted()` — with `CommandsDisabledError`, before anything runs.
 
 ```python
-from yaconfiglib import Loader, Policy
+from anycfg import Loader, Policy
 
 loader = Loader(policy=Policy.trusted())
 secrets = loader.load('cmd+json://python -c "import json; print(json.dumps(dict(token=42)))"')
@@ -195,11 +195,11 @@ print(secrets)    # {'token': 42}
 ```
 
 A string `cmd://...`, `exec://...` or `sh://...` runs everything after the
-`://` through the shell, exactly as written. `yaconfiglib.sources.Command`
+`://` through the shell, exactly as written. `anycfg.sources.Command`
 builds the same source explicitly, and also takes a bare command line:
 
 ```python
-from yaconfiglib.sources import Command
+from anycfg.sources import Command
 
 source = Command("vault kv get -format=json secret/app", format="json", timeout=30)
 ```
@@ -253,10 +253,10 @@ Name a script after its output: `secrets.json.sh` is parsed as JSON.
 
 ## Writing a source
 
-Subclass `yaconfiglib.sources.Source` and return a `Payload` from `read()`:
+Subclass `anycfg.sources.Source` and return a `Payload` from `read()`:
 
 ```python
-from yaconfiglib.sources import Payload, Source
+from anycfg.sources import Payload, Source
 
 
 class Vault(Source):
@@ -291,7 +291,7 @@ policy and the encoding.
 `factory(text)`, which returns a `Source`:
 
 ```python
-from yaconfiglib import sources
+from anycfg import sources
 
 sources.register_scheme("vault", lambda text: Vault(client, text.split("://", 1)[1]))
 config = Loader().load("base.yaml", "vault://secret/app")
@@ -300,7 +300,7 @@ config = Loader().load("base.yaml", "vault://secret/app")
 `sources.schemes()` lists them, `sources.unregister_scheme()` removes one, and
 `sources.from_text(text)` returns the source a string names, or `None`.
 
-Another distribution adds schemes through the `yaconfiglib.sources` entry-point
+Another distribution adds schemes through the `anycfg.sources` entry-point
 group (`vault = "mypackage.sources:factory"`). Like a plugin format, an
 entry-point scheme is usable in your own top-level sources but never from a
 document: an `!include 'vault://...'` reaches only built-in and code-registered

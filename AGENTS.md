@@ -1,23 +1,23 @@
-# Working on yaconfiglib
+# Working on anycfg
 
 Orientation for a checkout: layout, environments, how to run things, and what CI
 and a release actually do. Not the API reference — that is
-[`src/yaconfiglib/AGENTS.md`](src/yaconfiglib/AGENTS.md), which ships inside the
+[`src/anycfg/AGENTS.md`](src/anycfg/AGENTS.md), which ships inside the
 installed package.
 
 ## Layout
 
 | Path | Holds |
 | --- | --- |
-| `src/yaconfiglib/` | the package. `_api.py` holds `load`/`loads`/`dump`/`dumps`; `_loader.py` the layered `Loader`; `formats/` the `Format` contract, its registry and one private module per built-in format; `sources/` the `Source` contract, `Command`/`Env`/`Data`/`Text` and the scheme registry; `_context.py` the `Policy`; `_paths.py` source resolution and globs; `_confine.py` confinement; `_async.py` the awaitable twins; `_merge.py`, `_hydrate.py`, `_templating.py`, `_dotaccess.py`; `exceptions.py`; `testing.py` the shipped `FormatContract` |
-| `src/yaconfiglib/AGENTS.md` | the shipped API header: every public name with its signature, defaults and gotchas. Keep it current in the same commit as an API change |
+| `src/anycfg/` | the package. `_api.py` holds `load`/`loads`/`dump`/`dumps`; `_loader.py` the layered `Loader`; `formats/` the `Format` contract, its registry and one private module per built-in format; `sources/` the `Source` contract, `Command`/`Env`/`Data`/`Text` and the scheme registry; `_context.py` the `Policy`; `_paths.py` source resolution and globs; `_confine.py` confinement; `_async.py` the awaitable twins; `_merge.py`, `_hydrate.py`, `_templating.py`, `_dotaccess.py`; `exceptions.py`; `testing.py` the shipped `FormatContract` |
+| `src/anycfg/AGENTS.md` | the shipped API header: every public name with its signature, defaults and gotchas. Keep it current in the same commit as an API change |
 | `tests/` | pytest suite. `conftest.py` has the shared fixtures, `_extras.py` the skip marks for optional dependencies |
 | `docs/` | MkDocs sources for the published site |
 | `examples/` | runnable scripts; see below |
 | `benchmarks/` | micro-benchmarks and committed results; see [`benchmarks/README.md`](benchmarks/README.md) |
 | `.github/workflows/` | `test.yml`, `release.yml`, `docs.yml` |
 
-`README.md` and `src/yaconfiglib/AGENTS.md` ship inside the wheel; this file and
+`README.md` and `src/anycfg/AGENTS.md` ship inside the wheel; this file and
 `benchmarks/` are excluded from both artifacts.
 
 ## Environments
@@ -61,7 +61,7 @@ skipped, which is how you tell a missing extra from a real skip. A test that nee
 an extra uses a `needs_*` fixture from `tests/conftest.py` or a mark from
 `tests/_extras.py`, so an install without it skips rather than fails.
 
-A new format runs `yaconfiglib.testing.FormatContract` unmodified
+A new format runs `anycfg.testing.FormatContract` unmodified
 (`tests/formats/`).
 
 ## Formatting

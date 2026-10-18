@@ -1,35 +1,35 @@
 # Merging and typed results
 
 Merge strategies, typed hydration and dot access, all importable from
-`yaconfiglib`. See [Merging](../guide/merging.md) and
+`anycfg`. See [Merging](../guide/merging.md) and
 [Typed results](../guide/models.md).
 
 ## Merging
 
-::: yaconfiglib.DELETE
+::: anycfg.DELETE
 
-::: yaconfiglib.INHERIT
+::: anycfg.INHERIT
 
-::: yaconfiglib.Merge
+::: anycfg.Merge
 
-::: yaconfiglib.register_merge
+::: anycfg.register_merge
 
-::: yaconfiglib.merge_strategies
+::: anycfg.merge_strategies
 
 ## Typed results
 
-::: yaconfiglib.hydrate
+::: anycfg.hydrate
 
-::: yaconfiglib.dehydrate
+::: anycfg.dehydrate
 
-::: yaconfiglib.typed_merge
+::: anycfg.typed_merge
 
-::: yaconfiglib.OpaqueMerge
+::: anycfg.OpaqueMerge
 
-::: yaconfiglib.opaque
+::: anycfg.opaque
 
-::: yaconfiglib.TypedNamespace
+::: anycfg.TypedNamespace
 
 ## Dot access
 
-::: yaconfiglib.DotAccessibleDict
+::: anycfg.DotAccessibleDict

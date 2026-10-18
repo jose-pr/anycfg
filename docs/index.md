@@ -1,9 +1,11 @@
-# yaconfiglib
+# anycfg
 
-**yaconfiglib** loads, layers and writes configuration in any registered
-format with one `json`-style API — `load`, `loads`, `dump`, `dumps` — plus a
-`Loader` that merges many sources in order, YAML `!include`, typed hydration,
-and a trust policy that is **untrusted by default**.
+**anycfg** loads, layers and writes configuration in any registered
+format with the standard Python serialization API — `load`, `loads`, `dump`,
+`dumps`, as `json` and `tomllib` spell it — plus a `Loader` that merges many
+sources in order, YAML `!include`, typed hydration, and a trust policy that is
+**untrusted by default**. It was published as `yaconfiglib` up to 0.13.1; see
+[Migrating from yaconfiglib](guide/migrating.md).
 
 It has one required dependency, [pathapi](https://github.com/jose-pr/pathapi),
 the path layer: glob expansion with a portable `**`, directory-loop bounding,
@@ -11,7 +13,7 @@ and path objects for in-memory and remote files. Everything format- or
 feature-specific (PyYAML, `tomli`, `tomli-w`, tplx and Jinja2, Pydantic) is
 optional and imported only when it is used.
 
-## Why yaconfiglib
+## Why anycfg
 
 - **One vocabulary.** `load(path)` and `dump(obj, path)` pick the format from
   the file name, so `dump(x, "a.json")` then `load("a.json")` round-trips;
@@ -47,13 +49,13 @@ optional and imported only when it is used.
 ## Installation
 
 ```bash
-pip install yaconfiglib
+pip install anycfg
 ```
 
 That brings pathapi with it. Add the extras for the features you use:
 
 ```bash
-pip install "yaconfiglib[yaml,toml,templates]"
+pip install "anycfg[yaml,toml,templates]"
 ```
 
 | Extra | Adds | Needed for |
@@ -66,7 +68,7 @@ pip install "yaconfiglib[yaml,toml,templates]"
 A template engine other than Jinja needs its own tplx extra
 (`pip install "tplx[liquid]"`). JSON, INI and dotenv need nothing beyond the
 standard library. `import
-yaconfiglib` imports none of the extras; a feature whose extra is missing
+anycfg` imports none of the extras; a feature whose extra is missing
 raises `MissingDependencyError` naming the extra to install.
 
 ## Quick start
@@ -74,17 +76,17 @@ raises `MissingDependencyError` naming the extra to install.
 One document:
 
 ```python
-import yaconfiglib
+import anycfg
 
-config = yaconfiglib.load("settings.yaml")          # format from the extension
-data = yaconfiglib.loads('{"a": 1}', format="json")
-yaconfiglib.dump(config, "settings.json")           # written as JSON
+config = anycfg.load("settings.yaml")          # format from the extension
+data = anycfg.loads('{"a": 1}', format="json")
+anycfg.dump(config, "settings.json")           # written as JSON
 ```
 
 Layers, with dot access:
 
 ```python
-from yaconfiglib import Loader
+from anycfg import Loader
 
 loader = Loader(base_dir="conf", merge="deep", wrap=True)
 config = loader.load("base.yaml", "conf.d/*.yaml", "local.toml", None)
@@ -98,15 +100,15 @@ Typed:
 
 ```python
 import dataclasses
-import yaconfiglib
+import anycfg
 
 @dataclasses.dataclass
 class Database:
     host: str
     port: int
 
-db = yaconfiglib.load("db.json", into=Database)     # "5432" becomes 5432
-yaconfiglib.dump(db, "db.yaml")                     # typed data writes back
+db = anycfg.load("db.json", into=Database)     # "5432" becomes 5432
+anycfg.dump(db, "db.yaml")                     # typed data writes back
 ```
 
 Includes and interpolation, in `app.yaml`:
@@ -124,8 +126,8 @@ config = Loader(interpolate=True).load("app.yaml")
 The environment and commands, which you opt into:
 
 ```python
-from yaconfiglib import Loader, Policy
-from yaconfiglib.sources import Env
+from anycfg import Loader, Policy
+from anycfg.sources import Env
 
 config = Loader(policy=Policy.trusted()).load(
     "base.yaml",
@@ -146,5 +148,5 @@ config = Loader(policy=Policy.trusted()).load(
   organized by module.
 - **[Changelog](changelog.md)** — release history.
 
-The installed package also carries its API header, `yaconfiglib/AGENTS.md`:
+The installed package also carries its API header, `anycfg/AGENTS.md`:
 every public name with its signature, defaults and gotchas, in one file.

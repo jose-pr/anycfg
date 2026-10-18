@@ -1,8 +1,8 @@
-site_name: yaconfiglib
+site_name: anycfg
 site_description: Load, layer and write configuration in any registered format, with includes, typed hydration and a trust policy that is untrusted by default.
-site_url: https://jose-pr.github.io/yaconfiglib/
-repo_url: https://github.com/jose-pr/yaconfiglib
-repo_name: jose-pr/yaconfiglib
+site_url: https://jose-pr.github.io/anycfg/
+repo_url: https://github.com/jose-pr/anycfg
+repo_name: jose-pr/anycfg
 edit_uri: edit/main/docs/
 docs_dir: docs
 

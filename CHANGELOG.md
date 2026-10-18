@@ -9,20 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.14.0] - 2026-10-16
 
+**The project is now `anycfg`**: the distribution (`pip install anycfg`), the
+import package (`import anycfg`), the repository, the entry-point groups
+(`anycfg.formats`, `anycfg.sources`) and the `ANYCFG_CONFINE_TO` environment
+variable all take the new name; `YACONFIGLIB_CONFINE_TO` is not read.
+`yaconfiglib` 0.13.1 remains the last release under the old name.
+
 This release replaces the public API. Every entry point, keyword and backend class
 changed; the migration guide in the documentation maps each old name to its
 replacement.
 
 ### Changed
-- **`load`/`dump` choose the format from the file extension; `loads`/`dumps` need
-  `format=`.** `dump(obj, "a.json")` writes JSON (it always wrote YAML), so `dump`
-  then `load` round-trips. A name no format claims raises `UnsupportedFormatError`
-  before the file is opened, where it used to fall back to YAML for streams and
-  `loads`. What to do: pass `format="yaml"` to `loads`/`dumps`, and name files by
-  their format.
-- **A `str` is always a location.** `loads()` takes content; the `"#!name\n..."`
-  in-memory form is gone — use `yaconfiglib.sources.Text(data, format=...)` in a
-  layered load.
+- **`load`/`dump` choose the format from the file extension; `dumps` needs
+  `format=`, and `loads` takes it or a document that names its own.** `dump(obj,
+  "a.json")` writes JSON (it always wrote YAML), so `dump` then `load` round-trips.
+  A name no format claims raises `UnsupportedFormatError` before the file is opened,
+  where it used to fall back to YAML for streams and `loads`. What to do: pass
+  `format="yaml"` to `loads`/`dumps` (or start the document with `#!yaml`), and name
+  files by their format.
+- **A `str` is always a location.** `loads()` takes content; a `"#!name\n..."`
+  string given to `load()` as content is gone — pass it to `loads()`, or use
+  `anycfg.sources.Text(data)` in a layered load.
 - **`ConfigLoader` is now `Loader`**, keyword-only, and no longer a backend.
   `.load(*sources)` merges; `.load_all(*sources)` yields every document of every
   source, including each document of a `---` YAML stream. Settings are the same
@@ -56,7 +63,7 @@ replacement.
   `PermissionError`); `CommandsDisabledError` was a `ValueError`.
   `UnsupportedFormatError` is a `ValueError`, no longer a `NotImplementedError`;
   `UnknownLoaderError` is merged into it. Template and interpolation failures are
-  `TemplateError`. `yaconfiglib.errors` is now `yaconfiglib.exceptions`.
+  `TemplateError`. `anycfg.errors` is now `anycfg.exceptions`.
 - **Command sources need a format** (`cmd+json://`, `format=`, a `#!json` first
   line, or a script's inner suffix like `secrets.json.sh`); output is never sniffed.
   The scheme must be written `cmd://`, not `cmd:`. A command now has a 60-second
@@ -91,13 +98,13 @@ replacement.
   needs its own tplx extra (`tplx[liquid]`).
 
 ### Added
-- `yaconfiglib.formats`: the `Format` base class and a registry
+- `anycfg.formats`: the `Format` base class and a registry
   (`register_format`, `get`, `for_filename`, `names`), with the
-  `yaconfiglib.formats` entry-point group. A plugin's formats are reachable from
+  `anycfg.formats` entry-point group. A plugin's formats are reachable from
   documents only when named in `Loader(formats=...)`.
-- `yaconfiglib.sources`: `Source`, `Text`, `Data`, `Env`, `Command`, and the
-  `yaconfiglib.sources` entry-point group for schemes.
-- `yaconfiglib.testing.FormatContract`, the suite every format passes.
+- `anycfg.sources`: `Source`, `Text`, `Data`, `Env`, `Command`, and the
+  `anycfg.sources` entry-point group for schemes.
+- `anycfg.testing.FormatContract`, the suite every format passes.
 - `load_all`/`loads_all` (both with `into=`), writers for TOML (`tomli-w`), INI and
   dotenv (the INI writer escapes for the interpolation the file will be read with and
   raises `ConfigValueError` for anything that would not load back as written), `DELETE`,
@@ -105,13 +112,13 @@ replacement.
   `MissingDependencyError`, `TemplateError`.
 - `Policy.max_includes`, `max_depth`, `max_bytes`: a load's budget.
 - `Policy` is a class to subclass: `check_path`, `check_command` and
-  `check_template` narrow what its fields allow. `yaconfiglib.policies` has
+  `check_template` narrow what its fields allow. `anycfg.policies` has
   mixins that stack (`LocalPathsOnly`, `AllowedSuffixes`, `AllowedCommands`,
   `AllowedEngines`), with `Mixin.using(**settings)` and `compose()`; `policy=` also
   takes a list of mixin classes, applied to the default policy in order.
 - YAML `dialect="1.2"` (the YAML 1.2 core schema); `Env(coerce=)` and the dotenv
   `coerce=` option read values by the same rules or a callable.
-- `yaconfiglib.dig(data, *keys, default=None)` (and `DotAccessibleDict.dig`):
+- `anycfg.dig(data, *keys, default=None)` (and `DotAccessibleDict.dig`):
   Puppet's `dig` over plain results — keys as given, a miss is `default`.
 - `INHERIT` (`!inherit`) and the merge option `nulls="replace"`, which makes `None`
   set a key while `INHERIT` keeps the earlier value.
@@ -146,14 +153,14 @@ replacement.
 - `ConfigLoader`, `ConfigBackend` and every backend class, `loader=`,
   `loader_factory=`, `path_factory=`, `DEFAULT_LOADER`, `load_as`, `MergeMethod`,
   `ConfigLoaderMergeMethod`, `parse_sources`, `has_glob_pattern`, the
-  `yaconfiglib.utils` package, `load_error_types`, and backend instances used as
+  `anycfg.utils` package, `load_error_types`, and backend instances used as
   PyYAML tag constructors.
 - Scheme strings no longer reach a URI path layer: a `str` is a local path. Pass a
   pathapi `Path` object (an `HTTPPath`, an `SFTPPath`) to read a remote source.
 
 ### Fixed
-- `import yaconfiglib` no longer imports PyYAML, Jinja2 or tomllib, and no longer
-  fails when `YACONFIGLIB_CONFINE_TO` holds a relative path (the load raises
+- `import anycfg` no longer imports PyYAML, Jinja2 or tomllib, and no longer
+  fails when `ANYCFG_CONFINE_TO` holds a relative path (the load raises
   instead).
 - A pathapi `Path` source is no longer joined to `base_dir`, which broke every
   remote path object.
@@ -1177,8 +1184,8 @@ see Fixed.
 ### Removed
 - Legacy references and code blocks tied to `hiyapyco`.
 
-[Unreleased]: https://github.com/jose-pr/yaconfiglib/compare/v0.14.0...HEAD
-[0.14.0]: https://github.com/jose-pr/yaconfiglib/compare/v0.13.1...v0.14.0
+[Unreleased]: https://github.com/jose-pr/anycfg/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/jose-pr/anycfg/compare/v0.13.1...v0.14.0
 [0.13.1]: https://github.com/jose-pr/yaconfiglib/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/jose-pr/yaconfiglib/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/jose-pr/yaconfiglib/compare/v0.11.2...v0.12.0

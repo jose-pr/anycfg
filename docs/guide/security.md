@@ -3,7 +3,7 @@
 A configuration document can do more than hold values: it can include other
 files, and — when you allow it — run commands and render templates. What a load
 may do beyond parsing what you named is its **policy**, a
-`yaconfiglib.Policy`, and **the default policy is the untrusted posture**.
+`anycfg.Policy`, and **the default policy is the untrusted posture**.
 
 ## The trust model
 
@@ -18,7 +18,7 @@ With the default policy, a load:
 Configuration you wrote yourself can do more, and says so explicitly:
 
 ```python
-from yaconfiglib import Loader, Policy
+from anycfg import Loader, Policy
 
 loader = Loader(policy=Policy.trusted())      # commands and templates on, sandbox off
 ```
@@ -48,7 +48,7 @@ Policy().replace(max_bytes=1_000_000)       # a copy with changes
 ```
 
 A policy is given to a `Loader` (`policy=`, also per call) or to a
-one-document function (`yaconfiglib.load(path, policy=...)`).
+one-document function (`anycfg.load(path, policy=...)`).
 
 **A document can never change the policy.** An include mapping cannot carry a
 policy field — any key outside the [include options](includes.md#forms) is
@@ -72,7 +72,7 @@ refuses:
 | `check_command(command)` | a command's text or a script's path, once `allow_commands` is on | `CommandsDisabledError` |
 | `check_template(name, engine)` | a template file and its tplx engine class, once `allow_templates` allows it | `TemplatesDisabledError` |
 
-`yaconfiglib.policies` has ready-made ones. Each overrides one hook and calls
+`anycfg.policies` has ready-made ones. Each overrides one hook and calls
 `super()`, so they stack and nothing has to implement every check:
 
 | Mixin | Narrows to | Setting |
@@ -86,7 +86,7 @@ The simplest way to use them is a list, applied to the default policy in that
 order; `Mixin.using(...)` gives a mixin its setting:
 
 ```python
-from yaconfiglib import Loader, policies
+from anycfg import Loader, policies
 
 loader = Loader(
     policy=[policies.LocalPathsOnly, policies.AllowedSuffixes.using(suffixes={".yaml"})]
@@ -171,7 +171,7 @@ is raised **before the file is opened**:
 ```python
 from pathlib import Path
 
-from yaconfiglib import Loader, Policy
+from anycfg import Loader, Policy
 
 conf = Path("conf").resolve()
 loader = Loader(base_dir=conf, policy=Policy(confine_to=[conf]))
@@ -193,7 +193,7 @@ is". Use `confine_to=True` for "wherever `base_dir` points". A whole UNC share
 (`\\server\share`) is a valid root. Empty entries are dropped, so `[""]` is an
 **empty allowlist**, which refuses every read rather than meaning "off".
 
-When `confine_to` is `None`, the `YACONFIGLIB_CONFINE_TO` environment variable
+When `confine_to` is `None`, the `ANYCFG_CONFINE_TO` environment variable
 is read by the same rules: unset means no confinement, and set but empty
 refuses every local read. An explicit `confine_to` ignores the variable, so the
 environment can never widen an allowlist your code set.
@@ -236,7 +236,7 @@ read.
 
 ### Confinement needs the sandbox
 
-`confine_to` confines the reads yaconfiglib performs **for** a document. It
+`confine_to` confines the reads anycfg performs **for** a document. It
 cannot contain code the document gets to run: a non-sandboxed template
 expression can open files with no path for the check to see, and a command can
 read anything. Keep `sandbox` on and commands off for any document you confine
@@ -274,7 +274,7 @@ compares items once per node.
 ```python
 from pathlib import Path
 
-from yaconfiglib import Loader, Policy
+from anycfg import Loader, Policy
 
 conf = Path("conf").resolve()                 # roots must be absolute
 

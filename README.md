@@ -1,16 +1,19 @@
-# yaconfiglib
+# anycfg
 
-[![Version](https://img.shields.io/pypi/v/yaconfiglib.svg)](https://pypi.org/project/yaconfiglib/)
-[![Python versions](https://img.shields.io/pypi/pyversions/yaconfiglib.svg)](https://pypi.org/project/yaconfiglib/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/jose-pr/yaconfiglib/blob/main/LICENSE)
-[![Docs](https://img.shields.io/badge/docs-latest-blue.svg)](https://jose-pr.github.io/yaconfiglib/)
-[![CI](https://img.shields.io/github/actions/workflow/status/jose-pr/yaconfiglib/test.yml)](https://github.com/jose-pr/yaconfiglib/actions/workflows/test.yml)
+[![Version](https://img.shields.io/pypi/v/anycfg.svg)](https://pypi.org/project/anycfg/)
+[![Python versions](https://img.shields.io/pypi/pyversions/anycfg.svg)](https://pypi.org/project/anycfg/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/jose-pr/anycfg/blob/main/LICENSE)
+[![Docs](https://img.shields.io/badge/docs-latest-blue.svg)](https://jose-pr.github.io/anycfg/)
+[![CI](https://img.shields.io/github/actions/workflow/status/jose-pr/anycfg/test.yml)](https://github.com/jose-pr/anycfg/actions/workflows/test.yml)
 
-**yaconfiglib loads, layers and writes configuration in any registered format
-with one `json`-style API** — `load`, `loads`, `dump`, `dumps` — plus a `Loader`
-that merges many sources in order, YAML `!include`, typed hydration, and a
-trust policy that is **untrusted by default**. Documentation:
-<https://jose-pr.github.io/yaconfiglib/>.
+**anycfg loads, layers and writes configuration in any registered format
+with the standard Python serialization API** — `load`, `loads`, `dump`, `dumps`,
+as `json` and `tomllib` spell it — plus a `Loader` that merges many sources in
+order, YAML `!include`, typed hydration, and a trust policy that is **untrusted by
+default**. Documentation: <https://jose-pr.github.io/anycfg/>.
+
+anycfg was published as `yaconfiglib` up to 0.13.1; see
+[Migrating from yaconfiglib](https://jose-pr.github.io/anycfg/guide/migrating/).
 
 ## Features
 
@@ -19,9 +22,9 @@ trust policy that is **untrusted by default**. Documentation:
   `loads(text, format=...)` and `dumps(obj, format=...)` take content. An
   extension no format claims is an error, never a guess.
 - **Formats as plugins.** JSON, YAML, TOML, INI and dotenv are built in; a
-  `Format` subclass registers in code or through the `yaconfiglib.formats`
+  `Format` subclass registers in code or through the `anycfg.formats`
   entry-point group. Every format passes the shipped contract suite
-  (`yaconfiglib.testing.FormatContract`).
+  (`anycfg.testing.FormatContract`).
 - **Layering.** `Loader(merge="deep").load("base.yaml", "conf.d/*.yaml",
   "local.toml")` merges in order, with deterministic glob ordering, `simple`,
   `substitute` or `deep` strategies (or your own), `DELETE` to remove a key,
@@ -47,7 +50,7 @@ trust policy that is **untrusted by default**. Documentation:
 ## Installation
 
 ```bash
-pip install yaconfiglib
+pip install anycfg
 ```
 
 [pathapi](https://github.com/jose-pr/pathapi) is installed with it. Extras:
@@ -59,7 +62,7 @@ pip install yaconfiglib
 | `templates` | `tplx[jinja]` | interpolation and template files |
 | `all` | every extra above | |
 
-`import yaconfiglib` imports none of them; a feature whose extra is missing
+`import anycfg` imports none of them; a feature whose extra is missing
 raises `MissingDependencyError` naming it.
 
 ## Quick start
@@ -67,17 +70,17 @@ raises `MissingDependencyError` naming it.
 One document:
 
 ```python
-import yaconfiglib
+import anycfg
 
-config = yaconfiglib.load("settings.yaml")          # format from the extension
-data = yaconfiglib.loads('{"a": 1}', format="json")
-yaconfiglib.dump(config, "settings.json")           # written as JSON
+config = anycfg.load("settings.yaml")          # format from the extension
+data = anycfg.loads('{"a": 1}', format="json")
+anycfg.dump(config, "settings.json")           # written as JSON
 ```
 
 Layers, with dot access:
 
 ```python
-from yaconfiglib import Loader
+from anycfg import Loader
 
 loader = Loader(base_dir="conf", merge="deep", wrap=True)
 config = loader.load("base.yaml", "conf.d/*.yaml", "local.toml", None)
@@ -88,14 +91,14 @@ Typed:
 
 ```python
 import dataclasses
-import yaconfiglib
+import anycfg
 
 @dataclasses.dataclass
 class Database:
     host: str
     port: int
 
-db = yaconfiglib.load("db.json", into=Database)     # "5432" becomes 5432
+db = anycfg.load("db.json", into=Database)     # "5432" becomes 5432
 ```
 
 Includes and interpolation, in `app.yaml`:
@@ -113,8 +116,8 @@ config = Loader(interpolate=True).load("app.yaml")
 The environment and commands, which you opt into:
 
 ```python
-from yaconfiglib import Loader, Policy
-from yaconfiglib.sources import Env
+from anycfg import Loader, Policy
+from anycfg.sources import Env
 
 config = Loader(policy=Policy.trusted()).load(
     "base.yaml",
@@ -127,12 +130,12 @@ config = Loader(policy=Policy.trusted()).load(
 
 | Module | Purpose |
 | --- | --- |
-| `yaconfiglib` | `load`, `loads`, `load_all`, `loads_all`, `dump`, `dumps`; `aload`, `aload_all`, `adump`; `Loader`, `Policy`; merging (`DELETE`, `register_merge`); `hydrate`, `typed_merge`; `DotAccessibleDict`; interpolation; every exception |
-| `yaconfiglib.formats` | the `Format` contract and the registry: `register_format`, `get`, `for_filename`, `names` |
-| `yaconfiglib.sources` | `Source`, `Text`, `Chunks`, `Data`, `Env`, `Command`, and the scheme registry |
-| `yaconfiglib.testing` | `FormatContract`, the suite every format passes |
+| `anycfg` | `load`, `loads`, `load_all`, `loads_all`, `dump`, `dumps`; `aload`, `aload_all`, `adump`; `Loader`, `Policy`; merging (`DELETE`, `register_merge`); `hydrate`, `typed_merge`; `DotAccessibleDict`; interpolation; every exception |
+| `anycfg.formats` | the `Format` contract and the registry: `register_format`, `get`, `for_filename`, `names` |
+| `anycfg.sources` | `Source`, `Text`, `Chunks`, `Data`, `Env`, `Command`, and the scheme registry |
+| `anycfg.testing` | `FormatContract`, the suite every format passes |
 
-The installed package carries its API header, `yaconfiglib/AGENTS.md`.
+The installed package carries its API header, `anycfg/AGENTS.md`.
 
 ## Trust policy
 
@@ -167,18 +170,18 @@ export PATH="$PWD/.venv/3.9-nt-amd64/Scripts:$PATH"
 python -m pytest -q -rs
 ```
 
-[`AGENTS.md`](https://github.com/jose-pr/yaconfiglib/blob/main/AGENTS.md) is the
+[`AGENTS.md`](https://github.com/jose-pr/anycfg/blob/main/AGENTS.md) is the
 orientation file for a checkout: layout, environments, CI and the release
 procedure. Micro-benchmarks live in
-[`benchmarks/`](https://github.com/jose-pr/yaconfiglib/tree/main/benchmarks).
+[`benchmarks/`](https://github.com/jose-pr/anycfg/tree/main/benchmarks).
 
 ### Releasing
 
 The project follows [Semantic Versioning](https://semver.org/) and keeps a
-[changelog](https://github.com/jose-pr/yaconfiglib/blob/main/CHANGELOG.md).
+[changelog](https://github.com/jose-pr/anycfg/blob/main/CHANGELOG.md).
 Pushing a `v*` tag runs the release workflow: test gate, build, GitHub release,
 PyPI publish; the docs site is deployed after it.
 
 ## License
 
-MIT — see [LICENSE](https://github.com/jose-pr/yaconfiglib/blob/main/LICENSE).
+MIT — see [LICENSE](https://github.com/jose-pr/anycfg/blob/main/LICENSE).

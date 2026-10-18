@@ -7,28 +7,28 @@ twin; see the [Async guide](../guide/async.md).
 
 ## One document
 
-::: yaconfiglib.load
+::: anycfg.load
 
-::: yaconfiglib.loads
+::: anycfg.loads
 
-::: yaconfiglib.load_all
+::: anycfg.load_all
 
-::: yaconfiglib.loads_all
+::: anycfg.loads_all
 
-::: yaconfiglib.dump
+::: anycfg.dump
 
-::: yaconfiglib.dumps
+::: anycfg.dumps
 
 ## Async
 
-::: yaconfiglib.aload
+::: anycfg.aload
 
-::: yaconfiglib.aload_all
+::: anycfg.aload_all
 
-::: yaconfiglib.adump
+::: anycfg.adump
 
 ## Layers
 
-::: yaconfiglib.Loader
+::: anycfg.Loader
 
-::: yaconfiglib.LoadEvent
+::: anycfg.LoadEvent

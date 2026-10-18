@@ -1,15 +1,24 @@
-# Migrating from the previous API
+# Migrating from yaconfiglib
 
-This release replaced the public API. Every entry point, keyword and backend
+**`yaconfiglib` is now `anycfg`.** Install `anycfg` instead
+(`pip install anycfg`, with the same extras), and replace `import yaconfiglib`
+with `import anycfg`. The entry-point groups are `anycfg.formats` and
+`anycfg.sources`, and the confinement variable is `ANYCFG_CONFINE_TO`
+(`YACONFIGLIB_CONFINE_TO` is not read). `yaconfiglib` 0.13.1 is the last
+release under the old name.
+
+The same release replaced the public API. Every entry point, keyword and backend
 class changed; the behaviour you relied on is still there, under the names
 below. Three changes affect code that otherwise looks fine:
 
 - **The default policy is untrusted.** Commands and template files used to run
   by default; now they are refused until a `Policy` allows them. Configuration
   you wrote yourself loads as before with `Loader(policy=Policy.trusted())`.
-- **Formats are never guessed.** `loads()`/`dumps()` need `format=`, `dump()`
-  picks the format from the file name instead of always writing YAML, and a
-  name no format claims raises instead of being read as YAML.
+- **Formats are never guessed.** `dumps()` needs `format=`; `loads()` takes
+  it, or a document that names its own (a `#!json` first line, a `%YAML`
+  directive). `dump()` picks the format from the file name instead of always
+  writing YAML, and a name no format claims raises instead of being read as
+  YAML.
 - **Results are plain `dict`/`list`.** Pass `wrap=True` for dot access.
 
 ## Every removed name
@@ -21,11 +30,11 @@ below. Three changes affect code that otherwise looks fine:
 | `DEFAULT_LOADER` | the one-document functions, or a `Loader()` of your own |
 | `ConfigLoader.base_dir = ...` (setter) | read-only `Loader.base_dir`; make a new `Loader` |
 | `ConfigLoader.confine_to` | `Loader.policy.confine_to` |
-| `yaconfiglib.loader` (module) | `yaconfiglib` |
-| `yaconfiglib.errors` | `yaconfiglib.exceptions` (also re-exported at the root) |
+| `yaconfiglib.loader` (module) | `anycfg` |
+| `yaconfiglib.errors` | `anycfg.exceptions` (also re-exported at the root) |
 | `load_error_types()` | `(ConfigError, OSError)` |
 | `UnknownLoaderError` | `UnsupportedFormatError` |
-| `ConfigBackend` | `yaconfiglib.formats.Format`, registered with `register_format` |
+| `ConfigBackend` | `anycfg.formats.Format`, registered with `register_format` |
 | `ConfigBackend.PATHNAME_REGEX`, `.NAME`, `.can_load_path` | `Format.suffixes`, `Format.name`, `Format.claims_name` |
 | `YamlConfig`, `JsonConfig`, `TomlConfig`, `IniConfig`, `DotenvBackend` | the formats `"yaml"`, `"json"`, `"toml"`, `"ini"`, `"dotenv"` (`formats.get(name)`) |
 | `EnvVarBackend(prefix, lowercase, nested_delimiter, coerce)` | `sources.Env(prefix, nested=..., lowercase=...)`; types via `into=` |
@@ -36,7 +45,7 @@ below. Three changes affect code that otherwise looks fine:
 | `ConfigLoaderMergeMethod.Last` / `.List` / `.Hash` | `collect="last"` / `"list"` / `"hash"` |
 | `MergeMethod.extend(...)`, `utils.enum.IntEnum` | `register_merge(name, strategy)` |
 | `MergeMethod.Deep(a, b)` called directly | `Loader(merge="deep").load(a, b)` |
-| `utils.merge.Merge` | `yaconfiglib.Merge` |
+| `utils.merge.Merge` | `anycfg.Merge` |
 | `utils.merge.is_scalar`, `is_array` | removed |
 | `utils.jinja2.interpolate`, `compile`, `eval`, `references`, `load_template`, `get_environment`, `DEFAULT_ENV` | `Loader(interpolate=True)`; `TemplateInterpolator().render(text, scope)` and `.references(text)` |
 | `utils.source.parse_sources`, `has_glob_pattern` | `Loader.load()` resolves sources itself |
@@ -65,7 +74,7 @@ below. Three changes affect code that otherwise looks fine:
 | `lowercase=` (dotenv and env, default `True`) | `lowercase=`, default `False` |
 | `json_decoder_options=` | the JSON format options as keywords (`parse_float=`, ...) |
 | `loader_cls=` (YAML) | removed |
-| `coerce=` (env) | `into=` |
+| `coerce=` (env) | `Env(coerce=True)` (YAML 1.2 rules), or types via `into=` |
 | `base_dir=""` | `base_dir=None` |
 | `!include {transform: ..., key_factory: ...}` | removed (dropped with a warning); `format:` is new |
 
@@ -91,7 +100,7 @@ print(config.database.host)
 
 ```python
 # now
-from yaconfiglib import Loader
+from anycfg import Loader
 
 loader = Loader(base_dir="conf", merge="deep", wrap=True)   # commands are off by default
 config = loader.load("base.yaml", "local.yaml")
@@ -112,7 +121,7 @@ settings = yaconfiglib.load_as(Settings, "base.yaml", "local.yaml", merge="deep"
 ```python
 # now
 settings = Loader(merge="deep").load("base.yaml", "local.yaml", into=Settings)
-one = yaconfiglib.load("settings.yaml", into=Settings)
+one = anycfg.load("settings.yaml", into=Settings)
 ```
 
 Hydration now coerces every field — `"false"` becomes `False`, `"8080"`
@@ -132,7 +141,7 @@ config = ConfigLoader(loader_factory=lambda path: IniConfig(interpolation=None))
 
 ```python
 # now
-config = yaconfiglib.load("settings.conf", format="ini", interpolation=None)
+config = anycfg.load("settings.conf", format="ini", interpolation=None)
 config = Loader(format_options={"ini": {"interpolation": None}}).load("*.ini")
 ```
 
@@ -147,9 +156,9 @@ yaconfiglib.dump(data, "out.json")           # YAML, despite the name
 
 ```python
 # now
-data = yaconfiglib.loads("a: 1", format="yaml")
-text = yaconfiglib.dumps(data, format="yaml")
-yaconfiglib.dump(data, "out.json")           # JSON, by the name
+data = anycfg.loads("a: 1", format="yaml")
+text = anycfg.dumps(data, format="yaml")
+anycfg.dump(data, "out.json")           # JSON, by the name
 ```
 
 A stream with no real name (`sys.stdin`) needs `format=` too.
@@ -163,7 +172,7 @@ config = loader.load("base.yaml", "#!override.yaml\nport: 9090\n")
 
 ```python
 # now
-from yaconfiglib.sources import Text
+from anycfg.sources import Text
 
 config = Loader().load("base.yaml", Text("port: 9090\n", format="yaml", name="override"))
 ```
@@ -196,7 +205,7 @@ config = ConfigLoader().load(loader=EnvVarBackend(prefix="APP_", nested_delimite
 
 ```python
 # now
-from yaconfiglib.sources import Env
+from anycfg.sources import Env
 
 config = Loader().load(Env("APP_", nested="__", lowercase=True))     # values stay strings
 settings = Loader().load(Env("APP_", nested="__", lowercase=True), into=Settings)
@@ -214,7 +223,7 @@ secrets = loader.load("cmd:vault kv get secret/app")
 
 ```python
 # now
-from yaconfiglib import Policy
+from anycfg import Policy
 
 loader = Loader(policy=Policy.trusted())
 secrets = loader.load("cmd+json://vault kv get -format=json secret/app")
@@ -276,7 +285,7 @@ config = yaconfiglib.load(
 
 ```python
 # now
-from yaconfiglib import Policy
+from anycfg import Policy
 
 loader = Loader(base_dir="conf", policy=Policy(strict=True, confine_to=True))
 config = loader.load("untrusted.yaml")
@@ -331,7 +340,7 @@ config = yaconfiglib.load("settings.yaml.j2", environment=my_env)
 
 ```python
 # now
-from yaconfiglib import Policy
+from anycfg import Policy
 
 config = Loader(policy=Policy(allow_templates=True), inject_env=True).load("settings.yaml.j2")
 ```
@@ -360,10 +369,10 @@ print(config.server.port)
 ```
 
 `wrap=` also takes a callable applied to the result. To reach a nested value
-without wrapping, `yaconfiglib.dig` follows Puppet's `dig`:
+without wrapping, `anycfg.dig` follows Puppet's `dig`:
 
 ```python
-yaconfiglib.dig(config, "server", "port", default=8080)   # the default when a step is missing
+anycfg.dig(config, "server", "port", default=8080)   # the default when a step is missing
 ```
 
 ### Errors
@@ -379,8 +388,8 @@ except (yaml.YAMLError, *yaconfiglib.load_error_types()) as error:
 ```python
 # now
 try:
-    config = yaconfiglib.load("app.yaml")
-except (yaconfiglib.ConfigError, OSError) as error:
+    config = anycfg.load("app.yaml")
+except (anycfg.ConfigError, OSError) as error:
     ...
 ```
 
@@ -399,7 +408,7 @@ pip install "yaconfiglib[yaml,jinja2]"
 
 ```bash
 # now
-pip install "yaconfiglib[yaml,templates]"
+pip install "anycfg[yaml,templates]"
 ```
 
 `templates` installs tplx 0.2+ with Jinja; another template engine needs its

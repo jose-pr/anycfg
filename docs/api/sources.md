@@ -1,37 +1,37 @@
 # Sources
 
-`yaconfiglib.sources`: what a loader reads that is not a file path, and the
+`anycfg.sources`: what a loader reads that is not a file path, and the
 registry of `<scheme>://` strings. See the [Sources guide](../guide/sources.md)
 for how each kind of source is resolved.
 
 ## The contract
 
-::: yaconfiglib.sources.Source
+::: anycfg.sources.Source
 
-::: yaconfiglib.sources.Payload
+::: anycfg.sources.Payload
 
 ## Built-in sources
 
-::: yaconfiglib.sources.Text
+::: anycfg.sources.Text
 
-::: yaconfiglib.sources.Chunks
+::: anycfg.sources.Chunks
 
-::: yaconfiglib.sources.Data
+::: anycfg.sources.Data
 
-::: yaconfiglib.sources.Env
+::: anycfg.sources.Env
 
-::: yaconfiglib.sources.Command
+::: anycfg.sources.Command
 
 ## Schemes
 
-::: yaconfiglib.sources.register_scheme
+::: anycfg.sources.register_scheme
 
-::: yaconfiglib.sources.unregister_scheme
+::: anycfg.sources.unregister_scheme
 
-::: yaconfiglib.sources.schemes
+::: anycfg.sources.schemes
 
-::: yaconfiglib.sources.from_text
+::: anycfg.sources.from_text
 
-::: yaconfiglib.sources.SCHEME_REGEX
+::: anycfg.sources.SCHEME_REGEX
 
-::: yaconfiglib.sources.ENTRY_POINT_GROUP
+::: anycfg.sources.ENTRY_POINT_GROUP

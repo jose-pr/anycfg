@@ -22,14 +22,14 @@ file is opened**, listing the registered names. Nothing is sniffed and nothing
 falls back to YAML:
 
 ```python
-import yaconfiglib
+import anycfg
 
 try:
-    yaconfiglib.load("settings.conf")
-except yaconfiglib.UnsupportedFormatError as error:
+    anycfg.load("settings.conf")
+except anycfg.UnsupportedFormatError as error:
     print(error)    # no format reads settings.conf; pass format=<name> (registered: ...)
 
-config = yaconfiglib.load("settings.conf", format="ini")
+config = anycfg.load("settings.conf", format="ini")
 ```
 
 `loads()` and `dumps()` take content, which has no name. `dumps()` needs
@@ -37,8 +37,8 @@ config = yaconfiglib.load("settings.conf", format="ini")
 format**:
 
 ```python
-yaconfiglib.loads('#!json\n{"port": 80}')          # a #! first line, removed before parsing
-yaconfiglib.loads("%YAML 1.1\n---\nport: 80\n")    # YAML's own directive
+anycfg.loads('#!json\n{"port": 80}')          # a #! first line, removed before parsing
+anycfg.loads("%YAML 1.1\n---\nport: 80\n")    # YAML's own directive
 ```
 
 Every registered format is asked, through its `claims_document(data)`; a
@@ -54,7 +54,7 @@ Bytes are decoded with `encoding=` (UTF-8 by default), **strictly**: a byte
 that does not decode raises `ParseError` naming its offset rather than turning
 into U+FFFD. One leading byte-order mark is dropped.
 
-Every malformed document raises `yaconfiglib.ParseError`, whatever the parser
+Every malformed document raises `anycfg.ParseError`, whatever the parser
 underneath. It carries `path` (the source; `None` for in-memory content),
 `lineno` and `colno` (1-based, or `None` where the parser does not say) and
 reads as `path:line:col: message`. The message may name document
@@ -64,13 +64,13 @@ because the line that failed may be a secret.
 
 ```python
 try:
-    yaconfiglib.loads('{"port": }', format="json")
-except yaconfiglib.ParseError as error:
+    anycfg.loads('{"port": }', format="json")
+except anycfg.ParseError as error:
     print(error.lineno, error.colno)    # 1 10
 ```
 
 `ParseError` is also a `ValueError`. A missing file is not a parse failure: it
-raises `FileNotFoundError` as itself, so `except (yaconfiglib.ConfigError,
+raises `FileNotFoundError` as itself, so `except (anycfg.ConfigError,
 OSError)` covers every load failure.
 
 ## Built-in formats
@@ -83,7 +83,7 @@ OSError)` covers every load failure.
 | `ini` (alias `cfg`) | `.ini`, `.cfg` | — | yes | `interpolation`, `default_section` | `interpolation` |
 | `dotenv` | `.env`, `*.env`, `.env.<stage>` | — | yes | `lowercase`, `strict` | — |
 
-Every format is always listed by `yaconfiglib.formats.names()`, whether or not
+Every format is always listed by `anycfg.formats.names()`, whether or not
 its extra is installed; using one whose extra is missing raises
 `MissingDependencyError` (an `ImportError`) naming the extra.
 
@@ -97,13 +97,13 @@ insertion order.
 ```python
 from decimal import Decimal
 
-yaconfiglib.loads('{"price": 1.10}', format="json", parse_float=Decimal)
-print(yaconfiglib.dumps({"a": [1, 2]}, format="json", indent=None))   # {"a": [1, 2]}
+anycfg.loads('{"price": 1.10}', format="json", parse_float=Decimal)
+print(anycfg.dumps({"a": [1, 2]}, format="json", indent=None))   # {"a": [1, 2]}
 ```
 
 ### YAML
 
-PyYAML's safe loader (`yaconfiglib[yaml]`), so no Python object is ever
+PyYAML's safe loader (`anycfg[yaml]`), so no Python object is ever
 constructed. The default dialect is **YAML 1.1** as PyYAML implements it:
 
 - `yes`, `no`, `on` and `off` are booleans;
@@ -117,7 +117,7 @@ schema instead: only `true`/`false` are booleans, `0755` is the decimal 755
 document's includes too, and a loader can set it for every YAML document:
 
 ```python
-yaconfiglib.loads("country: NO\nmode: 0755\n", format="yaml", dialect="1.2")
+anycfg.loads("country: NO\nmode: 0755\n", format="yaml", dialect="1.2")
 # {'country': 'NO', 'mode': 755}
 Loader(format_options={"yaml": {"dialect": "1.2"}})
 ```
@@ -134,15 +134,15 @@ overridden by an explicit key next to it, which is what merge keys are for.
 Three tags are understood: `!include` and `!load` pull in another source (see
 [Includes](includes.md)), and `!delete` removes a key when the document is
 merged over another (see [Merging](merging.md#none-and-delete)). They live on
-yaconfiglib's own `SafeLoader` subclass, so a plain `yaml.safe_load()`
+anycfg's own `SafeLoader` subclass, so a plain `yaml.safe_load()`
 elsewhere in your process never resolves them.
 
-A `---`-separated stream is several documents. `yaconfiglib.load()` refuses one
+A `---`-separated stream is several documents. `anycfg.load()` refuses one
 with `ParseError`; `load_all()` yields each, and `Loader.load()` merges them in
 order.
 
 ```python
-print(list(yaconfiglib.loads_all("a: 1\n---\na: 2\n", format="yaml")))   # [{'a': 1}, {'a': 2}]
+print(list(anycfg.loads_all("a: 1\n---\na: 2\n", format="yaml")))   # [{'a': 1}, {'a': 2}]
 ```
 
 `dumps` writes plain data only: mappings, sequences, scalars, dates and sets.
@@ -154,7 +154,7 @@ always loads back. Keys keep their order and non-ASCII text is written as is.
 ### TOML
 
 The standard library's `tomllib` on Python 3.11+, its `tomli` backport below
-(`yaconfiglib[toml]`) — never the third-party `toml` package, which implements
+(`anycfg[toml]`) — never the third-party `toml` package, which implements
 TOML 0.5 and reads some 1.0 documents differently. TOML 1.0 is the portable
 dialect: `tomli` 2.4+ accepts some TOML 1.1 syntax that the 3.11–3.14 `tomllib`
 refuses.
@@ -178,7 +178,7 @@ alembic format line is not a reference, so reading such a file needs
 interpolation off:
 
 ```python
-config = yaconfiglib.load("logging.ini", interpolation=None)
+config = anycfg.load("logging.ini", interpolation=None)
 # format = %(levelname)s [%(name)s] %(message)s, verbatim
 ```
 
@@ -192,7 +192,7 @@ warning. To read those keys as a section, point `default_section` at a name
 the file does not use:
 
 ```python
-config = yaconfiglib.load("defaults.ini", default_section="__none__")
+config = anycfg.load("defaults.ini", default_section="__none__")
 print(config)    # {'DEFAULT': {'timeout': '30'}}
 ```
 
@@ -232,7 +232,7 @@ the file.
 
 ```python
 text = 'export HOST=example.org\nNAME="two\\nlines"   # comment\n'
-print(yaconfiglib.loads(text, format="dotenv"))   # {'HOST': 'example.org', 'NAME': 'two\nlines'}
+print(anycfg.loads(text, format="dotenv"))   # {'HOST': 'example.org', 'NAME': 'two\nlines'}
 ```
 
 Values are strings unless the load option **`coerce`** is set: `True` reads
@@ -248,15 +248,15 @@ A format's options are checked against what it declares. The one-document
 functions take them as keywords:
 
 ```python
-yaconfiglib.load("logging.ini", interpolation=None)
-yaconfiglib.dumps({"b": 1, "a": 2}, format="json", sort_keys=True)
+anycfg.load("logging.ini", interpolation=None)
+anycfg.dumps({"b": 1, "a": 2}, format="json", sort_keys=True)
 ```
 
 A `Loader` takes them per format, applied whenever that format reads a source —
 including through an include:
 
 ```python
-from yaconfiglib import Loader
+from anycfg import Loader
 
 loader = Loader(format_options={"ini": {"interpolation": None}, "dotenv": {"lowercase": True}})
 ```
@@ -272,8 +272,8 @@ name — so a value written with `dump` loads back with `load`:
 
 ```python
 config = {"name": "app", "port": 8080}
-yaconfiglib.dump(config, "out.json")
-print(yaconfiglib.load("out.json") == config)    # True
+anycfg.dump(config, "out.json")
+print(anycfg.load("out.json") == config)    # True
 ```
 
 The target may be:
@@ -288,7 +288,7 @@ The target may be:
 format cannot write leaves an existing file untouched. A trailing newline is
 ensured. A format that cannot write raises `UnsupportedFormatError`.
 
-Both functions first pass `obj` through `yaconfiglib.dehydrate`, so typed data
+Both functions first pass `obj` through `anycfg.dehydrate`, so typed data
 writes directly: a dataclass, namespace or `NamedTuple` as a mapping, an `Enum`
 member as its value, a path, `Decimal` or `UUID` as its text, and a type with a
 `_dump_()` method as what that returns. A load `into=` a type followed by a
@@ -296,13 +296,13 @@ member as its value, a path, `Decimal` or `UUID` as its text, and a type with a
 
 ## Writing a format
 
-Subclass `yaconfiglib.formats.Format`, set its class attributes, override
+Subclass `anycfg.formats.Format`, set its class attributes, override
 `loads` (and `dumps` to write), and register it:
 
 ```python
-import yaconfiglib
-from yaconfiglib.exceptions import ConfigTypeError, ParseError
-from yaconfiglib.formats import Format, register_format
+import anycfg
+from anycfg.exceptions import ConfigTypeError, ParseError
+from anycfg.formats import Format, register_format
 
 
 @register_format
@@ -338,7 +338,7 @@ class KeyValueFormat(Format):
         return "".join(lines)
 
 
-print(yaconfiglib.loads("Host = example.org", format="kv", lowercase=True))   # {'host': 'example.org'}
+print(anycfg.loads("Host = example.org", format="kv", lowercase=True))   # {'host': 'example.org'}
 ```
 
 From then on `load("app.kv")`, `format="kv"` and `!include app.kv` all reach
@@ -359,7 +359,7 @@ The contract a format keeps:
   decoded text and returns plain data. It is required.
 - **`loads_all`** is optional, for a multi-document format; without it, a
   source is one document. **`dumps(obj, /, **options) -> str`** is optional;
-  `yaconfiglib.formats.capabilities(fmt)` reports `"load_all"` and `"dump"`
+  `anycfg.formats.capabilities(fmt)` reports `"load_all"` and `"dump"`
   from what is overridden.
 - **A malformed document raises `ParseError`**, translated from the parser's
   own error and raised *outside* the `except` block, so neither `__cause__` nor
@@ -398,11 +398,11 @@ the new format's names, or one of its suffixes at the same `priority`; pass
 
 ### Testing a format
 
-`yaconfiglib.testing.FormatContract` is the suite every built-in format passes,
+`anycfg.testing.FormatContract` is the suite every built-in format passes,
 shipped so yours runs it too. Subclass it in a pytest module:
 
 ```python
-from yaconfiglib.testing import FormatContract
+from anycfg.testing import FormatContract
 
 
 class TestKeyValueFormat(FormatContract):
@@ -421,11 +421,11 @@ error, its chain nor the log. A format is not done until it passes unmodified.
 
 ### Distributing a format
 
-Another distribution registers formats through the `yaconfiglib.formats`
+Another distribution registers formats through the `anycfg.formats`
 entry-point group:
 
 ```toml
-[project.entry-points."yaconfiglib.formats"]
+[project.entry-points."anycfg.formats"]
 kv = "mypackage.formats:KeyValueFormat"
 ```
 
@@ -442,7 +442,7 @@ formats documents may select in `Loader(formats=...)`, which **replaces** the
 default set:
 
 ```python
-from yaconfiglib import Loader, formats
+from anycfg import Loader, formats
 
 loader = Loader(formats=[*formats.document_formats(), "kv"])
 ```
@@ -459,7 +459,7 @@ loader = Loader(formats=[*formats.document_formats(), "kv"])
 | `formats.capabilities(fmt)` | `{"load"}`, plus `"load_all"` and `"dump"` when overridden |
 
 ```python
-from yaconfiglib import formats
+from anycfg import formats
 
 print(formats.for_filename("app.env.yaml").name)       # yaml
 print(formats.for_filename(".env.production").name)    # dotenv

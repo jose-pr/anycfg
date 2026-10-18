@@ -1,6 +1,6 @@
 # Templating
 
-yaconfiglib renders templates in two places, and they are separate features:
+anycfg renders templates in two places, and they are separate features:
 
 - **Interpolation** renders template text inside the *values* of the loaded,
   merged document, so one value can refer to another. It runs at value time,
@@ -12,7 +12,7 @@ yaconfiglib renders templates in two places, and they are separate features:
 Both run on [tplx](https://github.com/jose-pr/tplx) — except
 `interpolate="vars"`, which is built in — and both are governed by the load's
 [`Policy`](security.md). The `templates` extra
-(`pip install "yaconfiglib[templates]"`) installs tplx 0.2+ with Jinja, the
+(`pip install "anycfg[templates]"`) installs tplx 0.2+ with Jinja, the
 default engine; another engine needs its own tplx extra (`pip install
 "tplx[liquid]"`). Without the engine's extra, using it raises
 `MissingDependencyError` naming what to install.
@@ -30,7 +30,7 @@ port: 8080
 ```
 
 ```python
-from yaconfiglib import Loader
+from anycfg import Loader
 
 config = Loader(interpolate=True).load("app.yaml")
 print(config["url"])      # http://localhost:8080
@@ -42,7 +42,7 @@ from one layer can refer to a key from another, and a value pulled in with
 that happens to contain `{{` stays as it is.
 
 Interpolation is a `Loader` setting, off by default. The one-document
-functions (`yaconfiglib.load()`, `loads()`) never interpolate.
+functions (`anycfg.load()`, `loads()`) never interpolate.
 
 ### References between values
 
@@ -103,7 +103,7 @@ By default an undefined name renders as an empty string. With
 `Policy(strict=True)` it raises instead, which catches a misspelled key early:
 
 ```python
-from yaconfiglib import Loader, Policy
+from anycfg import Loader, Policy
 
 loader = Loader(interpolate=True, policy=Policy(strict=True))
 ```
@@ -112,7 +112,7 @@ loader = Loader(interpolate=True, policy=Policy(strict=True))
 
 Every interpolation failure — a syntax error, an undefined name under strict
 mode, an exception inside an expression such as `{{ 1 / 0 }}` — raises
-`yaconfiglib.TemplateError`, with the engine's own exception as `__cause__`
+`anycfg.TemplateError`, with the engine's own exception as `__cause__`
 when there is one (tplx's wrapper around it is removed), and the failing
 value's key path in the message and on `error.config_key`:
 
@@ -189,7 +189,7 @@ code and reads no attribute — each step of a reference is a mapping key or a
 list index — so it needs neither tplx nor a sandbox:
 
 ```python
-from yaconfiglib import Loader
+from anycfg import Loader
 
 doc = {"db": {"host": "db", "ports": [5432]}, "url": "pg://${db.host}:${db.ports.0}/app", "port": "${db.ports.0}"}
 print(Loader(interpolate="vars").load(doc))
@@ -209,7 +209,7 @@ resolve in any order:
 ```python
 import re
 
-from yaconfiglib import Loader
+from anycfg import Loader
 
 
 class NameInterpolator:
@@ -251,7 +251,7 @@ source: {{ filename }}
 ```
 
 ```python
-from yaconfiglib import Loader, Policy
+from anycfg import Loader, Policy
 
 loader = Loader(policy=Policy(allow_templates=True), inject_env=True)
 config = loader.load("settings.yaml.j2")

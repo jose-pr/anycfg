@@ -12,7 +12,7 @@ database: !include db/settings.toml
 ```
 
 ```python
-from yaconfiglib import Loader
+from anycfg import Loader
 
 config = Loader().load("app.yaml")
 print(config["database"]["host"])      # from db/settings.toml
@@ -70,7 +70,7 @@ local: !include {pathname: "local*.yaml", default: {}}
 - **Content that is not a file** — `loads()`, `sources.Text`, a stream without
   a real name, command output, a `MemPath` — has no directory of its own, so
   its includes resolve against the loader's `base_dir`, which is the working
-  directory by default. `yaconfiglib.loads()` therefore resolves includes
+  directory by default. `anycfg.loads()` therefore resolves includes
   against the working directory.
 - A **template file**'s includes resolve next to the template.
 
