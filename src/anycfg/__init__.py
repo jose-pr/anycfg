@@ -35,6 +35,7 @@ from ._hydrate import (
     typed_merge,
 )
 from ._loader import LoadEvent, Loader
+from ._locations import system_config_path, user_config_path
 from ._merge import DELETE, INHERIT, Merge, merge_strategies, register_merge
 from ._templating import Interpolator, TemplateInterpolator, VarsInterpolator
 from .exceptions import (
@@ -77,6 +78,9 @@ __all__ = [
     "LoadEvent",
     "Policy",
     "LoadContext",
+    # standard locations
+    "user_config_path",
+    "system_config_path",
     # merging and typed results
     "DELETE",
     "INHERIT",
