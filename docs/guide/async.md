@@ -5,7 +5,7 @@ over the network or from an async file:
 
 | Sync | Async |
 | --- | --- |
-| `load(source)` | `await aload(source)` |
+| `load(*sources)` | `await aload(*sources)` |
 | `load_all(source)` | `async for doc in aload_all(source)` |
 | `dump(obj, target)` | `await adump(obj, target)` |
 | `Loader().load(*sources)` | `await Loader().aload(*sources)` |

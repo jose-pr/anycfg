@@ -77,6 +77,13 @@ data = anycfg.loads('{"a": 1}', format="json")
 anycfg.dump(config, "settings.json")           # written as JSON
 ```
 
+A few layers, later over earlier, `None` for one that is absent:
+
+```python
+config = anycfg.load("base.toml", "local.toml", merge="deep")
+config = anycfg.load(*anycfg.default_configs("app.toml"), default={})
+```
+
 Layers, with dot access:
 
 ```python

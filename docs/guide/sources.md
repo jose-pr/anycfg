@@ -75,7 +75,7 @@ import anycfg
 anycfg.default_configs("app.toml")
 # [PosixPath('/etc/app.toml'), None]  -- no ~/.config/app.toml yet
 
-config = anycfg.Loader().load(*anycfg.default_configs("app.toml"), default={})
+config = anycfg.load(*anycfg.default_configs("app.toml"), default={})
 ```
 
 With neither file present the load returns `default`.

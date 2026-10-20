@@ -14,7 +14,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (else `~/.config`) / `/etc` elsewhere. They create nothing.
 - `anycfg.default_configs(name)`: the system and user files called `name`, user
   last, with `None` for one that does not exist, to pass straight to a load:
-  `Loader().load(*default_configs("app.toml"), default={})`.
+  `load(*default_configs("app.toml"), default={})`.
+- `anycfg.load(*sources)` and `aload(*sources)` take several sources and merge
+  their documents in order, later over earlier, with the new `merge=` (a
+  strategy as `Loader` takes it, `"simple"` by default). `None` is skipped as an
+  absent layer, and the new `default=` is the result when every source is
+  `None`. Each source still gives exactly one document. One source behaves as
+  before, including `load(None)` raising `TypeError`.
 
 ## [0.15.0] - 2026-10-20
 

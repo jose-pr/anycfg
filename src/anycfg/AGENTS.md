@@ -25,17 +25,25 @@ The standard Python serialization API, as `json`, `tomllib` and `pickle` spell
 it: `loads` takes **content**, `load` takes a **location**. A `str` given to `load`
 is always a path, never content. Each has an awaitable twin (see "Async").
 
-- **`load(source, /, *, format=None, encoding="utf-8", policy=None, into=None, **options) -> Any`**
-  — one document from a path (`str`, `os.PathLike`), a pathapi `Path`, an open file
+- **`load(*sources, format=None, encoding="utf-8", policy=None, into=None, default=<missing>, merge=None, **options) -> Any`**
+  — one document from each source, merged in order (later over earlier) with
+  `merge` (a strategy as `Loader` takes it; `None` is `"simple"`: top-level keys
+  update, so `merge="deep"` merges nested sections). A source is a path (`str`, `os.PathLike`), a pathapi `Path`, an open file
   (anything with `read()`), or an `anycfg.sources.Source`. The format is
   `format=` (a name or a `Format` class), else the one the file name's suffix selects;
   when neither decides, `UnsupportedFormatError` is raised **before the file is
   opened**. A multi-document source (YAML `---`) raises `ParseError`; use `load_all`.
-  A glob pattern is one location: matching no file or more than one raises
-  `ConfigValueError`; a list of sources is `TypeError` (layer them with `Loader`).
-  `options` go to the format and are checked against its `load_options` (an unknown
-  one is `TypeError`). `into=` hydrates the result (see `hydrate`). `load(None)` is
-  `TypeError`, `load("")` is `ValueError`, `load(b"...")` is `TypeError`.
+  Each source gives exactly one document: a glob pattern is one location, and
+  matching no file or more than one raises `ConfigValueError` (expand globs with
+  `Loader`); a list is `TypeError` (unpack it, `load(*sources)`). Every source is
+  checked before any is read. `None` is an absent layer and skipped; when every
+  source is `None` the result is `default`, and without one that is `TypeError`
+  (`load(None)`, as before). `load()` with no argument is `TypeError`. `default`
+  is never merged with a document. `format=` and `options` apply to every source;
+  `options` are checked against the format's `load_options` (an unknown one is
+  `TypeError`). `into=` hydrates the merged result (see `hydrate`). `load("")` is
+  `ValueError`, `load(b"...")` is `TypeError`. `loads` takes neither `merge` nor
+  `default` (they are refused as format options).
 - **`loads(data, /, *, format=None, encoding="utf-8", policy=None, into=None, **options) -> Any`**
   — `data` is `str`, or `bytes`/`bytearray` decoded with `encoding`. Without
   `format=` the document must name its own (`formats.declared`): a `#!<format>`
@@ -84,7 +92,7 @@ parsing, merging, hydration — is the sync pipeline in a worker thread
 finishes. A sync `load`/`Loader.load` given an async source raises `TypeError`
 pointing here.
 
-- **`await aload(source, /, *, format=None, encoding="utf-8", policy=None, into=None, **options)`**
+- **`await aload(*sources, format=None, encoding="utf-8", policy=None, into=None, **options)`**
   — `load`, plus async sources. The format is `format=`, else the source's `name`.
 - **`aload_all(source, /, ...) -> AsyncIterator[Any]`** — `load_all`'s documents.
 - **`await adump(obj, target, /, *, format=None, encoding="utf-8", **options)`** — a
@@ -565,7 +573,7 @@ nothing is created or checked for existence, and the environment is read at each
 - **`default_configs(name) -> list[Optional[pathlib.Path]]`** — `[system, user]` for
   `name`, user last so it overrides, with `None` for a file that does not exist (a
   directory does not count), since `Loader.load` skips `None` but fails on a missing
-  file: `Loader().load(*default_configs("app.toml"), default={})`. With neither file
+  file: `load(*default_configs("app.toml"), default={})`. With neither file
   the load returns `default`. Never empty — `Loader.load()` with no arguments raises
   `TypeError`. `name` is a file name, not a pattern; empty or `None` is `ValueError`.
 
