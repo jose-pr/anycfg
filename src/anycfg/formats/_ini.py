@@ -92,8 +92,7 @@ class INIFormat(Format):
     """
 
     name = "ini"
-    aliases = ("cfg",)
-    suffixes = (".ini", ".cfg")
+    suffixes = (".ini",)
     load_options = frozenset({"interpolation", "default_section"})
     dump_options = frozenset({"interpolation"})
 

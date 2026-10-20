@@ -868,7 +868,7 @@ class TestNonYamlIncludes:
         _write(tmp_path / "x.json", '{"k": 1}')
         _write(tmp_path / "x.ini", "[s]\nk = v\n")
         _write(tmp_path / "x.env", "K=v\n")
-        _write(tmp_path / "x.cfg", "[c]\nk = w\n")
+        _write(tmp_path / "x.cfg", "#!ini\n[c]\nk = w\n")
         _write(
             tmp_path / "app.yaml",
             "j: !include x.json\ni: !include x.ini\ne: !include x.env\n"

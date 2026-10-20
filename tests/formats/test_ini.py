@@ -28,17 +28,17 @@ class TestINIContract(FormatContract):
 class TestRegistration:
     def test_names_and_suffixes(self):
         assert INIFormat.name == "ini"
-        assert INIFormat.aliases == ("cfg",)
-        assert formats.get("CFG") is INIFormat
-        assert formats.for_filename("setup.cfg") is INIFormat
-        assert formats.for_filename("x.env.cfg") is INIFormat
+        assert INIFormat.suffixes == (".ini",)
+        assert formats.get("INI") is INIFormat
+        # .cfg names no format of its own; see tests/formats/test_cfg.py.
+        assert formats.for_filename("setup.cfg").name == "cfg"
 
     def test_capabilities(self):
         assert formats.capabilities(INIFormat) == {"load", "dump"}
 
-    def test_cfg_file_loads_as_ini(self, tmp_path):
+    def test_a_cfg_file_that_names_ini(self, tmp_path):
         source = tmp_path / "app.cfg"
-        source.write_text("[s]\nk = v\n", encoding="utf-8")
+        source.write_text("#!ini\n[s]\nk = v\n", encoding="utf-8")
         assert anycfg.load(str(source)) == {"s": {"k": "v"}}
 
 

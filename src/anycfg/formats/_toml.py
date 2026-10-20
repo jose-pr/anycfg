@@ -1,4 +1,4 @@
-"""TOML: tomllib (or its tomli backport) to read, tomli-w to write."""
+"""TOML: tomllib (or its tomli backport, required below 3.11) to read, tomli-w to write."""
 
 from __future__ import annotations
 
@@ -26,9 +26,10 @@ def _reader() -> _ty.Any:
     try:
         import tomli
     except ImportError:
+        # anycfg requires tomli below 3.11; this is a broken environment.
         raise MissingDependencyError(
-            'TOML on Python < 3.11 needs the "toml" extra: '
-            'pip install "anycfg[toml]"'
+            "TOML on Python < 3.11 needs tomli, which anycfg requires: "
+            'pip install "tomli>=2.0,<3"'
         ) from None
     return tomli
 

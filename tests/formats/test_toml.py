@@ -189,7 +189,8 @@ class TestMissingDependencies:
         assert "toml" in formats.names()
         with pytest.raises(anycfg.MissingDependencyError) as caught:
             anycfg.loads("a = 1\n", format="toml")
-        assert "anycfg[toml]" in str(caught.value)
+        # tomli is a dependency below 3.11, so only a broken install gets here.
+        assert "tomli" in str(caught.value)
         assert isinstance(caught.value, ImportError)
 
     def test_reader_missing_on_a_file_load(self, monkeypatch, tmp_path):
@@ -197,7 +198,7 @@ class TestMissingDependencies:
         monkeypatch.setitem(sys.modules, "tomli", None)
         source = tmp_path / "cfg.toml"
         source.write_text("a = 1\n", encoding="utf-8")
-        with pytest.raises(anycfg.MissingDependencyError, match=r"\[toml\]"):
+        with pytest.raises(anycfg.MissingDependencyError, match="tomli"):
             anycfg.load(str(source))
 
     @pytest.mark.usefixtures("needs_toml")

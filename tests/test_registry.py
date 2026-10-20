@@ -17,7 +17,7 @@ import anycfg
 from anycfg import formats, sources
 from anycfg.formats import Format
 
-BUILTIN_FORMATS = ["dotenv", "ini", "json", "toml", "yaml"]
+BUILTIN_FORMATS = ["cfg", "dotenv", "ini", "json", "toml", "yaml"]
 
 
 # -- fixtures ------------------------------------------------------------------
@@ -142,7 +142,6 @@ class TestFormatLookup:
             ("JSON", "json"),
             ("yml", "yaml"),
             ("YaMl", "yaml"),
-            ("cfg", "ini"),
             ("Dotenv", "dotenv"),
         ],
     )
@@ -167,7 +166,7 @@ class TestFormatLookup:
             ("a.yaml", "yaml"),
             ("a.toml", "toml"),
             ("a.ini", "ini"),
-            ("a.cfg", "ini"),
+            ("a.cfg", "cfg"),
             ("a.env", "dotenv"),
             (".env", "dotenv"),
             (".env.production", "dotenv"),
@@ -788,18 +787,18 @@ class TestSchemeEntryPoints:
 
 class TestReplaceTakesOnlyWhatCollides:
     def test_taking_an_alias_leaves_the_other_format(self, format_registry):
-        class Cfg(Format):
-            name = "cfg"
-            suffixes = (".cfgx",)
+        class Yml(Format):
+            name = "yml"
+            suffixes = (".ymlx",)
 
             def loads(self, data, /, *, context=None, **options):
                 return {}
 
-        format_registry.register_format(Cfg, replace=True)
-        assert "ini" in format_registry.names()
-        assert format_registry.get("cfg") is Cfg
-        assert format_registry.for_filename("a.ini").name == "ini"
-        assert anycfg.loads("[s]\nk = v\n", format="ini") == {"s": {"k": "v"}}
+        format_registry.register_format(Yml, replace=True)
+        assert "yaml" in format_registry.names()
+        assert format_registry.get("yml") is Yml
+        assert format_registry.get("yaml").name == "yaml"
+        assert format_registry.for_filename("a.yaml").name == "yaml"
 
     def test_taking_the_name_replaces_the_format(self, format_registry):
         class Json(Format):

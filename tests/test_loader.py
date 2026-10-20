@@ -845,12 +845,11 @@ class TestFormatSelection:
         )
         assert loader.load("a.ini") == {"s": {"k": "%(missing)s"}}
 
+    @needs_yaml
     def test_format_options_by_alias(self, tmp_path):
-        _write(tmp_path / "a.cfg", "[s]\nk = %(missing)s\n")
-        loader = Loader(
-            base_dir=tmp_path, format_options={"cfg": {"interpolation": None}}
-        )
-        assert loader.load("a.cfg") == {"s": {"k": "%(missing)s"}}
+        _write(tmp_path / "a.yaml", "v: no\n")
+        loader = Loader(base_dir=tmp_path, format_options={"yml": {"dialect": "1.2"}})
+        assert loader.load("a.yaml") == {"v": "no"}
 
     def test_format_options_per_call(self, tmp_path):
         _write(tmp_path / "a.json", '{"n": 1}')

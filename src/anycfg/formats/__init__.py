@@ -48,6 +48,7 @@ _BUILTINS = {
     "toml": "anycfg.formats._toml:TOMLFormat",
     "ini": "anycfg.formats._ini:INIFormat",
     "dotenv": "anycfg.formats._dotenv:DotenvFormat",
+    "cfg": "anycfg.formats._cfg:CfgFormat",
 }
 
 #: Where a registration came from. A document can select only built-in and

@@ -24,12 +24,14 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "pathapi>=0.1.0,<0.2"
+    "pathapi>=0.1.0,<0.2",
+    # TOML reads everywhere: tomllib is in the standard library from 3.11.
+    "tomli>=2.0,<3; python_version < '3.11'",
 ]
 
 [project.optional-dependencies]
 yaml = ["pyyaml>=6.0,<7"]
-toml = ["tomli>=2.0,<3; python_version < '3.11'", "tomli-w>=1.0,<2"]
+toml = ["tomli-w>=1.0,<2"]
 # 0.2: eval takes a whole value and keeps one expression's type,
 # Template.is_template, and a sandbox that bounds what a value may allocate.
 templates = ["tplx[jinja]>=0.2.0,<0.3"]

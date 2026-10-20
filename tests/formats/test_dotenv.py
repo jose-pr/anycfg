@@ -51,7 +51,7 @@ class TestDispatch:
             (".env.json", "json"),
             ("x.env.toml", "toml"),
             ("x.env.ini", "ini"),
-            ("x.env.cfg", "ini"),
+            ("x.env.cfg", "cfg"),
         ],
     )
     def test_another_formats_suffix_wins(self, name, expected):
