@@ -60,13 +60,13 @@ def system_config_path(name: Optional[Union[str, os.PathLike]] = None) -> pathli
 
 
 def default_configs(name: Union[str, os.PathLike]) -> List[Optional[pathlib.Path]]:
-    """The system and user files called ``name``, as layers for :meth:`Loader.load`.
+    """The system and user files called ``name``, as layers for :func:`~anycfg.load`.
 
     ``[system_config_path(name), user_config_path(name)]``, in that order so
     the user's file overrides, with ``None`` in place of a file that does not
     exist — the loader skips ``None``, so the list goes straight in::
 
-        config = anycfg.Loader().load(*anycfg.default_configs("app.toml"), default={})
+        config = anycfg.load(*anycfg.default_configs("app.toml"), default={})
 
     With neither file present the load returns its ``default``. ``name`` is a
     file name (subdirectories allowed), not a glob pattern.

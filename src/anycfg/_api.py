@@ -40,14 +40,30 @@ def _documents(
     single: bool,
     into: _ty.Any = None,
 ) -> _ty.Iterator[_ty.Any]:
-    loader = Loader(policy=policy, encoding=encoding)
-    session = _Session(loader._defaults)
-    session.keep_text = into is not None
-    explicit = None if format is None else _format_class(format)
+    session = _session(policy, encoding, into)
     for _name, value in session.each(
-        [source], session.context(), explicit=explicit, options=options, single=single
+        [source],
+        session.context(),
+        explicit=_explicit(format),
+        options=options,
+        single=single,
     ):
         yield session.finish(value, into=into)
+
+
+def _session(
+    policy: "_ty.Optional[Policy]", encoding: str, into: _ty.Any, merge: _ty.Any = None
+) -> _Session:
+    settings: _ty.Dict[str, _ty.Any] = {"policy": policy, "encoding": encoding}
+    if merge is not None:
+        settings["merge"] = merge
+    session = _Session(Loader(**settings)._defaults)
+    session.keep_text = into is not None
+    return session
+
+
+def _explicit(format: FormatLike) -> "_ty.Optional[_ty.Type[_formats.Format]]":
+    return None if format is None else _format_class(format)
 
 
 def _check_location(source: _ty.Any, name: str, allow_async: bool = False) -> None:
@@ -67,61 +83,125 @@ def _check_location(source: _ty.Any, name: str, allow_async: bool = False) -> No
             f"a {type(source).__name__} is read asynchronously; use "
             f"await anycfg.a{name}(...)"
         )
+    if isinstance(source, (list, tuple)):
+        raise TypeError(
+            f"{name}() takes locations, not a {type(source).__name__}; unpack it: "
+            f"{name}(*sources)"
+        )
     if not isinstance(
         source, (str, os.PathLike, Path, Source, _ty.Mapping)
     ) and not is_stream(source):
-        raise TypeError(
-            f"{name}() takes one location, not a {type(source).__name__}; "
-            "layer several sources with anycfg.Loader().load(...)"
-        )
+        raise TypeError(f"{name}() takes a location, not a {type(source).__name__}")
+
+
+_MISSING = object()
 
 
 def load(
-    source: _ty.Any,
-    /,
-    *,
+    *sources: _ty.Any,
     format: FormatLike = None,
     encoding: str = "utf-8",
     policy: "_ty.Optional[Policy]" = None,
     into: _ty.Any = None,
+    default: _ty.Any = _MISSING,
+    merge: _ty.Any = None,
     **options: _ty.Any,
 ) -> _ty.Any:
-    """Read one document from *source*: a path, a pathapi ``Path`` or an open file.
+    """Read one document from each source and merge them in order.
 
-    The format is *format*, or else the one the file name's suffix selects; a
-    name no format claims raises `UnsupportedFormatError`. A ``str`` is always a
-    location, never content (see :func:`loads`). Bytes are decoded with
-    *encoding*, strictly, one BOM ignored. *options* go to the format and are
-    checked against what it accepts. *into* builds that type from the result
-    (:func:`~anycfg.hydrate`).
+    A source is a path, a pathapi ``Path`` or an open file, and each gives
+    exactly one document. Several are merged later over earlier with *merge*,
+    a strategy as :class:`~anycfg.Loader` takes it (``"simple"`` when `None`:
+    top-level keys update, so pass ``merge="deep"`` to merge nested sections).
+    ``None`` is an absent layer and is skipped, so
+    ``load(*default_configs("app.toml"), default={})`` works; with every source
+    ``None``, *default* is the result. For globs or tolerated failures, use
+    :class:`~anycfg.Loader`.
+
+    The format is *format*, or else the one each file name's suffix selects;
+    a name no format claims raises `UnsupportedFormatError`. A ``str`` is
+    always a location, never content (see :func:`loads`). Bytes are decoded
+    with *encoding*, strictly, one BOM ignored. *options* go to the format
+    and are checked against what it accepts. *into* builds that type from the
+    result (:func:`~anycfg.hydrate`).
 
     Includes, templates and commands follow *policy* (untrusted by default).
-    For several layered sources, use :class:`~anycfg.Loader`.
 
     Raises:
         UnsupportedFormatError: When no format is named or claimed.
-        ParseError: When the document is not valid.
-        TypeError: For an unknown option, or a source that is not a location.
+        ParseError: When a document is not valid.
+        ConfigValueError: When a source gives no document or several.
+        TypeError: For no source, every source ``None`` without *default*, an
+            unknown option, or a source that is not a location.
     """
-    _check_location(source, "load")
-    documents = _documents(
-        source,
+    return _load(
+        sources,
         format=format,
         encoding=encoding,
         policy=policy,
-        options=options,
-        single=True,
         into=into,
+        default=default,
+        merge=merge,
+        options=options,
     )
-    # Two at most: a glob pattern is one location that can name several files.
-    found = list(itertools.islice(documents, 2))
-    if len(found) != 1:
-        raise ConfigValueError(
-            f"load() reads one document, and {source!r} gave "
-            f"{'none' if not found else 'more than one'}; layer several sources "
-            "with anycfg.Loader().load(...)"
+
+
+def _load(
+    sources: _ty.Tuple[_ty.Any, ...],
+    *,
+    format: FormatLike,
+    encoding: str,
+    policy: "_ty.Optional[Policy]",
+    into: _ty.Any,
+    default: _ty.Any,
+    merge: _ty.Any,
+    options: _ty.Mapping[str, _ty.Any],
+) -> _ty.Any:
+    if not sources:
+        raise TypeError("load() needs at least one source")
+    present = [source for source in sources if source is not None]
+    for source in present:
+        _check_location(source, "load")
+    if not present and default is _MISSING:
+        raise TypeError(
+            "load() got None; pass a path or an open file, or default= for when "
+            "every layer is absent"
         )
-    return found[0]
+    session = _session(policy, encoding, into, merge)
+    explicit = _explicit(format)
+    context = session.context()
+
+    def documents() -> _ty.Iterator[_ty.Tuple[str, _ty.Any]]:
+        for source in present:
+            # Two at most: a glob pattern is one location that can name several files.
+            found = list(
+                itertools.islice(
+                    session.each(
+                        [source],
+                        context,
+                        explicit=explicit,
+                        options=options,
+                        single=True,
+                    ),
+                    2,
+                )
+            )
+            if len(found) != 1:
+                raise ConfigValueError(
+                    f"load() reads one document per source, and {source!r} gave "
+                    f"{'none' if not found else 'more than one'}; expand a glob "
+                    "with anycfg.Loader().load(...)"
+                )
+            yield found[0]
+
+    result, _loaded = session.combine(
+        documents(),
+        merge=session.call.merge,
+        merge_options=session.call.merge_options,
+        collect=None,
+        default=None if default is _MISSING else default,
+    )
+    return session.finish(result, into=into)
 
 
 def load_all(
@@ -191,13 +271,16 @@ def loads(
     cls = None if format is None else _format_class(format)
     if not isinstance(data, (str, bytes, bytearray)):
         raise TypeError(f"loads() takes str or bytes, not {type(data).__name__}")
-    return load(
-        _text(data, cls),
+    # Not load(): a stray merge= or default= stays an option the format refuses.
+    return _load(
+        (_text(data, cls),),
         format=cls,
         encoding=encoding,
         policy=policy,
         into=into,
-        **options,
+        default=_MISSING,
+        merge=None,
+        options=options,
     )
 
 

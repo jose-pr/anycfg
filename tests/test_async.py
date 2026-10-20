@@ -126,6 +126,20 @@ class TestAload:
             asyncio.run(anycfg.aload(source, policy=Policy(confine_to=[str(root)])))
         assert source.calls == 0
 
+    def test_several_sources_merge_in_order(self, tmp_path):
+        (tmp_path / "a.json").write_text('{"a": 1, "b": 1}')
+        got = asyncio.run(
+            anycfg.aload(
+                str(tmp_path / "a.json"),
+                None,
+                AsyncChunks([b'{"b": 2}'], name="b.json"),
+            )
+        )
+        assert got == {"a": 1, "b": 2}
+
+    def test_every_layer_absent_gives_the_default(self):
+        assert asyncio.run(anycfg.aload(None, default={})) == {}
+
     def test_sync_load_points_to_aload(self):
         with pytest.raises(TypeError, match="aload"):
             anycfg.load(AsyncChunks([b"{}"]))

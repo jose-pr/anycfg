@@ -707,8 +707,96 @@ class TestLoadReadsOneLocation:
 
     @pytest.mark.parametrize("sources", [["a.json", "b.json"], ("a.json",)])
     def test_a_list_is_not_a_location(self, sources):
-        with pytest.raises(TypeError, match="one location"):
+        with pytest.raises(TypeError, match=r"unpack it: load\(\*sources\)"):
             anycfg.load(sources)
+
+
+@dataclasses.dataclass
+class _Server:
+    host: str
+    port: int
+
+
+class TestLoadSeveralSources:
+    @pytest.fixture
+    def layers(self, tmp_path):
+        base = tmp_path / "base.json"
+        base.write_text('{"server": {"host": "a", "port": 1}, "x": [1]}')
+        local = tmp_path / "local.json"
+        local.write_text('{"server": {"port": 2}, "x": [2]}')
+        return base, local
+
+    def test_later_sources_win_key_by_key(self, layers):
+        assert anycfg.load(*layers) == {"server": {"port": 2}, "x": [2]}
+
+    def test_merge_deep(self, layers):
+        assert anycfg.load(*layers, merge="deep") == {
+            "server": {"host": "a", "port": 2},
+            "x": [1, 2],
+        }
+
+    @pytest.mark.parametrize("merge", [None, "simple", "substitute", "deep"])
+    def test_merged_as_the_loader_merges(self, layers, merge):
+        loader = anycfg.Loader() if merge is None else anycfg.Loader(merge=merge)
+        assert anycfg.load(*layers, merge=merge) == loader.load(*layers)
+
+    def test_none_is_an_absent_layer(self, layers):
+        base, _local = layers
+        assert anycfg.load(None, base, None) == anycfg.load(base)
+
+    def test_every_layer_absent_gives_the_default(self):
+        assert anycfg.load(None, None, default={}) == {}
+        assert anycfg.load(None, default=None) is None
+
+    def test_every_layer_absent_without_a_default(self):
+        with pytest.raises(TypeError, match="default="):
+            anycfg.load(None, None)
+
+    def test_no_source(self):
+        with pytest.raises(TypeError, match="at least one source"):
+            anycfg.load()
+
+    def test_a_default_is_not_merged(self, layers):
+        base, _local = layers
+        assert anycfg.load(base, default={"y": 1}) == anycfg.load(base)
+
+    def test_into_builds_the_merged_result(self, tmp_path):
+        (tmp_path / "a.json").write_text('{"host": "h", "port": "1"}')
+        (tmp_path / "b.json").write_text('{"port": "2"}')
+        got = anycfg.load(tmp_path / "a.json", tmp_path / "b.json", into=_Server)
+        assert got == _Server("h", 2)
+
+    def test_format_applies_to_every_source(self, tmp_path):
+        (tmp_path / "a.txt").write_text('{"a": 1}')
+        (tmp_path / "b.txt").write_text('{"b": 2}')
+        assert anycfg.load(tmp_path / "a.txt", tmp_path / "b.txt", format="json") == {
+            "a": 1,
+            "b": 2,
+        }
+
+    def test_mixed_source_kinds(self, layers):
+        base, _local = layers
+        got = anycfg.load(base, Data({"x": [3]}), Text('{"z": 1}', format="json"))
+        assert got["x"] == [3] and got["z"] == 1
+
+    def test_each_source_still_gives_one_document(self, tmp_path, layers):
+        base, _local = layers
+        with pytest.raises(ConfigValueError, match="per source.*gave none"):
+            anycfg.load(base, str(tmp_path / "*.yaml"))
+
+    def test_a_bad_source_is_refused_before_reading(self, layers):
+        base, _local = layers
+        with pytest.raises(TypeError, match="loads"):
+            anycfg.load(base, b"{}")
+
+    def test_default_configs(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("sys.platform", "win32")
+        monkeypatch.setenv("PROGRAMDATA", str(tmp_path / "system"))
+        monkeypatch.setenv("APPDATA", str(tmp_path / "user"))
+        assert anycfg.load(*anycfg.default_configs("app.json"), default={}) == {}
+        (tmp_path / "user").mkdir()
+        (tmp_path / "user" / "app.json").write_text('{"a": 1}')
+        assert anycfg.load(*anycfg.default_configs("app.json")) == {"a": 1}
 
 
 @dataclasses.dataclass

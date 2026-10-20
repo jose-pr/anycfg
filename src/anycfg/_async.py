@@ -149,30 +149,31 @@ async def _prepare(sources: tuple, session: _Session) -> list:
 
 
 async def aload(
-    source: _ty.Any,
-    /,
-    *,
+    *sources: _ty.Any,
     format: _ty.Any = None,
     encoding: str = "utf-8",
     policy: "_ty.Optional[Policy]" = None,
     into: _ty.Any = None,
     **options: _ty.Any,
 ) -> _ty.Any:
-    """:func:`~anycfg.load`, awaitable, and able to read an async source.
+    """:func:`~anycfg.load`, awaitable, and able to read async sources.
 
-    *source* is anything :func:`~anycfg.load` takes, or an async stream: an
+    Each source is anything :func:`~anycfg.load` takes, or an async stream: an
     async iterable of `str`/`bytes` chunks (``response.aiter_bytes()``) or an
     object with ``async def read()`` (aiofiles, `asyncio.StreamReader`). An
     async source is read whole first, stopping past ``max_bytes``; its format
-    comes from *format* or its ``name``.
+    comes from *format* or its ``name``. Several sources merge as in
+    :func:`~anycfg.load`, and ``default=`` is passed through.
     """
     from ._api import _check_location, load
 
-    _check_location(source, "aload", allow_async=True)
-    (prepared,) = await _prepare((source,), _session(policy, encoding))
+    for source in sources:
+        if source is not None:
+            _check_location(source, "aload", allow_async=True)
+    prepared = await _prepare(sources, _session(policy, encoding))
     return await asyncio.to_thread(
         load,
-        prepared,
+        *prepared,
         format=format,
         encoding=encoding,
         policy=policy,
