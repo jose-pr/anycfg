@@ -32,3 +32,9 @@ twin; see the [Async guide](../guide/async.md).
 ::: anycfg.Loader
 
 ::: anycfg.LoadEvent
+
+## Standard locations
+
+::: anycfg.user_config_path
+
+::: anycfg.system_config_path

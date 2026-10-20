@@ -550,6 +550,21 @@ value with segments left gives `default`; the final value is returned as stored,
 defines (`items`, `get`, ...) raise `AttributeError`; use `cfg[name]`. `copy()`,
 `|`, `|=` keep the class; values assigned later are stored as given.
 
+## Standard locations (`anycfg.user_config_path`, `anycfg.system_config_path`)
+
+Both return a `pathlib.Path`: the directory, or `name` (a `str` or `os.PathLike`,
+joined as pathlib joins, so `"app/app.toml"` works) inside it. They compute only:
+nothing is created or checked for existence, and the environment is read at each call.
+
+- **`user_config_path(name=None)`** — `%APPDATA%` on Windows (`~/AppData/Roaming` when
+  unset); elsewhere, macOS included, `$XDG_CONFIG_HOME` when it is set and absolute,
+  else `~/.config`.
+- **`system_config_path(name=None)`** — `%PROGRAMDATA%` on Windows (`C:\ProgramData`
+  when unset); `/etc` elsewhere. `$XDG_CONFIG_DIRS` is not consulted.
+
+A missing file is an error to `Loader.load`, so filter absent layers:
+`Loader().load(*(p for p in (system_config_path("app.toml"), user_config_path("app.toml")) if p.is_file()))`.
+
 ## Interpolation (`Loader(interpolate=...)`)
 
 Value interpolation and template files are two features. **Interpolation** runs at

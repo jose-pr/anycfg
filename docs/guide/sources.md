@@ -53,6 +53,30 @@ looked up as a registered source scheme. The built-in schemes are `cmd`,
 not registered is just part of a local file name — a `str` is never parsed as a
 URI. To read a remote file, pass a pathapi `Path` object for it.
 
+### Standard locations
+
+`user_config_path()` and `system_config_path()` give the platform's
+configuration directories, or a name inside them, as a `pathlib.Path`:
+
+| | Windows | Linux, macOS and other POSIX |
+| --- | --- | --- |
+| `user_config_path()` | `%APPDATA%` | `$XDG_CONFIG_HOME`, else `~/.config` |
+| `system_config_path()` | `%PROGRAMDATA%` | `/etc` |
+
+They only compute the path; nothing is created. A file that does not exist is
+an error to a load, so drop absent layers before passing them — the user's
+file last, so it overrides the system's:
+
+```python
+import anycfg
+
+layers = [
+    anycfg.system_config_path("app.toml"),     # /etc/app.toml
+    anycfg.user_config_path("app.toml"),       # ~/.config/app.toml
+]
+config = anycfg.Loader().load(*(p for p in layers if p.is_file()))
+```
+
 ## Path objects
 
 A [pathapi](https://github.com/jose-pr/pathapi) `Path` — a `LocalPath`, an

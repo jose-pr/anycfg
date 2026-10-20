@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `anycfg.user_config_path(name=None)` and `anycfg.system_config_path(name=None)`:
+  the platform's configuration directory, or `name` inside it, as a
+  `pathlib.Path` — `%APPDATA%` / `%PROGRAMDATA%` on Windows, `$XDG_CONFIG_HOME`
+  (else `~/.config`) / `/etc` elsewhere. They create nothing.
+
 ## [0.15.0] - 2026-10-20
 
 ### Changed
