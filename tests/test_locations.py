@@ -84,13 +84,59 @@ def test_name_accepts_a_path_and_creates_nothing(home, func):
     assert not (home / "AppData").exists()
 
 
-def test_layering_skips_an_absent_layer(posix, tmp_path):
-    system = tmp_path / "etc" / "app.toml"
-    system.parent.mkdir()
-    system.write_text('a = 1\nb = "system"\n')
-    user = anycfg.user_config_path("app.toml")
-    user.parent.mkdir()
-    user.write_text('b = "user"\n')
-    layers = [system, user, anycfg.user_config_path("absent.toml")]
-    config = anycfg.Loader().load(*(p for p in layers if p.is_file()))
-    assert config == {"a": 1, "b": "user"}
+class TestDefaultConfigs:
+    @pytest.fixture
+    def dirs(self, windows, monkeypatch, tmp_path):
+        system, user = tmp_path / "ProgramData", tmp_path / "Roaming"
+        system.mkdir()
+        user.mkdir()
+        monkeypatch.setenv("PROGRAMDATA", str(system))
+        monkeypatch.setenv("APPDATA", str(user))
+        return system, user
+
+    def test_both_layers_user_last(self, dirs):
+        system, user = dirs
+        (system / "app.toml").write_text('a = 1\nb = "system"\n')
+        (user / "app.toml").write_text('b = "user"\n')
+        layers = anycfg.default_configs("app.toml")
+        assert layers == [system / "app.toml", user / "app.toml"]
+        assert anycfg.Loader().load(*layers) == {"a": 1, "b": "user"}
+
+    @pytest.mark.parametrize("present", ["system", "user"])
+    def test_an_absent_layer_is_none(self, dirs, present):
+        system, user = dirs
+        here = system if present == "system" else user
+        (here / "app.toml").write_text("a = 1\n")
+        layers = anycfg.default_configs("app.toml")
+        assert layers == (
+            [here / "app.toml", None]
+            if present == "system"
+            else [None, here / "app.toml"]
+        )
+        assert anycfg.Loader().load(*layers) == {"a": 1}
+
+    def test_neither_present_loads_the_default(self, dirs):
+        assert anycfg.default_configs("app.toml") == [None, None]
+        assert anycfg.Loader().load(*anycfg.default_configs("app.toml")) is None
+        assert (
+            anycfg.Loader().load(*anycfg.default_configs("app.toml"), default={}) == {}
+        )
+
+    def test_a_directory_is_not_a_layer(self, dirs):
+        system, _ = dirs
+        (system / "app.toml").mkdir()
+        assert anycfg.default_configs("app.toml") == [None, None]
+
+    def test_subdirectories_in_the_name(self, dirs):
+        _, user = dirs
+        (user / "app").mkdir()
+        (user / "app" / "app.toml").write_text("a = 1\n")
+        assert anycfg.default_configs(pathlib.PurePath("app", "app.toml")) == [
+            None,
+            user / "app" / "app.toml",
+        ]
+
+    @pytest.mark.parametrize("name", [None, ""])
+    def test_needs_a_name(self, name):
+        with pytest.raises(ValueError, match="file name"):
+            anycfg.default_configs(name)

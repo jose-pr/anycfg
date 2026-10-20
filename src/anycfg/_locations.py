@@ -1,7 +1,6 @@
 """The platform's standard configuration directories.
 
-Both functions only compute a path: nothing is created, and nothing is
-checked for existence.
+Nothing here creates a file or directory.
 """
 
 from __future__ import annotations
@@ -9,9 +8,9 @@ from __future__ import annotations
 import os
 import pathlib
 import sys
-from typing import Optional, Union
+from typing import List, Optional, Union
 
-__all__ = ["system_config_path", "user_config_path"]
+__all__ = ["default_configs", "system_config_path", "user_config_path"]
 
 
 def user_config_path(name: Optional[Union[str, os.PathLike]] = None) -> pathlib.Path:
@@ -51,13 +50,30 @@ def system_config_path(name: Optional[Union[str, os.PathLike]] = None) -> pathli
     ``/etc`` elsewhere. ``$XDG_CONFIG_DIRS`` is not consulted: system
     configuration conventionally lives under ``/etc``.
 
-    Layer the two with the user's file last, so it overrides::
-
-        layers = [anycfg.system_config_path("app.toml"), anycfg.user_config_path("app.toml")]
-        config = anycfg.Loader().load(*(p for p in layers if p.is_file()))
+    :func:`default_configs` layers it under the user's file.
     """
     if sys.platform == "win32":
         base = pathlib.Path(os.environ.get("PROGRAMDATA") or "C:\\ProgramData")
     else:
         base = pathlib.Path("/etc")
     return base / name if name else base
+
+
+def default_configs(name: Union[str, os.PathLike]) -> List[Optional[pathlib.Path]]:
+    """The system and user files called ``name``, as layers for :meth:`Loader.load`.
+
+    ``[system_config_path(name), user_config_path(name)]``, in that order so
+    the user's file overrides, with ``None`` in place of a file that does not
+    exist — the loader skips ``None``, so the list goes straight in::
+
+        config = anycfg.Loader().load(*anycfg.default_configs("app.toml"), default={})
+
+    With neither file present the load returns its ``default``. ``name`` is a
+    file name (subdirectories allowed), not a glob pattern.
+    """
+    if not name:
+        raise ValueError("default_configs() needs a file name")
+    return [
+        path if path.is_file() else None
+        for path in (system_config_path(name), user_config_path(name))
+    ]
