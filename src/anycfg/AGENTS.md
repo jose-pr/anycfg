@@ -550,9 +550,9 @@ value with segments left gives `default`; the final value is returned as stored,
 defines (`items`, `get`, ...) raise `AttributeError`; use `cfg[name]`. `copy()`,
 `|`, `|=` keep the class; values assigned later are stored as given.
 
-## Standard locations (`anycfg.user_config_path`, `anycfg.system_config_path`)
+## Standard locations (`anycfg.user_config_path`, `anycfg.system_config_path`, `anycfg.default_configs`)
 
-Both return a `pathlib.Path`: the directory, or `name` (a `str` or `os.PathLike`,
+The first two return a `pathlib.Path`: the directory, or `name` (a `str` or `os.PathLike`,
 joined as pathlib joins, so `"app/app.toml"` works) inside it. They compute only:
 nothing is created or checked for existence, and the environment is read at each call.
 
@@ -562,8 +562,12 @@ nothing is created or checked for existence, and the environment is read at each
 - **`system_config_path(name=None)`** — `%PROGRAMDATA%` on Windows (`C:\ProgramData`
   when unset); `/etc` elsewhere. `$XDG_CONFIG_DIRS` is not consulted.
 
-A missing file is an error to `Loader.load`, so filter absent layers:
-`Loader().load(*(p for p in (system_config_path("app.toml"), user_config_path("app.toml")) if p.is_file()))`.
+- **`default_configs(name) -> list[Optional[pathlib.Path]]`** — `[system, user]` for
+  `name`, user last so it overrides, with `None` for a file that does not exist (a
+  directory does not count), since `Loader.load` skips `None` but fails on a missing
+  file: `Loader().load(*default_configs("app.toml"), default={})`. With neither file
+  the load returns `default`. Never empty — `Loader.load()` with no arguments raises
+  `TypeError`. `name` is a file name, not a pattern; empty or `None` is `ValueError`.
 
 ## Interpolation (`Loader(interpolate=...)`)
 

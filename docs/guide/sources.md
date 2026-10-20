@@ -63,19 +63,22 @@ configuration directories, or a name inside them, as a `pathlib.Path`:
 | `user_config_path()` | `%APPDATA%` | `$XDG_CONFIG_HOME`, else `~/.config` |
 | `system_config_path()` | `%PROGRAMDATA%` | `/etc` |
 
-They only compute the path; nothing is created. A file that does not exist is
-an error to a load, so drop absent layers before passing them — the user's
-file last, so it overrides the system's:
+They only compute the path; nothing is created.
+
+`default_configs(name)` gives both files as layers, the user's last so it
+overrides the system's, with `None` for one that does not exist. A load skips
+`None` (a missing file would be an error), so the list goes straight in:
 
 ```python
 import anycfg
 
-layers = [
-    anycfg.system_config_path("app.toml"),     # /etc/app.toml
-    anycfg.user_config_path("app.toml"),       # ~/.config/app.toml
-]
-config = anycfg.Loader().load(*(p for p in layers if p.is_file()))
+anycfg.default_configs("app.toml")
+# [PosixPath('/etc/app.toml'), None]  -- no ~/.config/app.toml yet
+
+config = anycfg.Loader().load(*anycfg.default_configs("app.toml"), default={})
 ```
+
+With neither file present the load returns `default`.
 
 ## Path objects
 

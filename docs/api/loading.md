@@ -38,3 +38,5 @@ twin; see the [Async guide](../guide/async.md).
 ::: anycfg.user_config_path
 
 ::: anycfg.system_config_path
+
+::: anycfg.default_configs

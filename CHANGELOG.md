@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the platform's configuration directory, or `name` inside it, as a
   `pathlib.Path` — `%APPDATA%` / `%PROGRAMDATA%` on Windows, `$XDG_CONFIG_HOME`
   (else `~/.config`) / `/etc` elsewhere. They create nothing.
+- `anycfg.default_configs(name)`: the system and user files called `name`, user
+  last, with `None` for one that does not exist, to pass straight to a load:
+  `Loader().load(*default_configs("app.toml"), default={})`.
 
 ## [0.15.0] - 2026-10-20
 

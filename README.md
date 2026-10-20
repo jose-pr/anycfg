@@ -130,7 +130,7 @@ config = Loader(policy=Policy.trusted()).load(
 
 | Module | Purpose |
 | --- | --- |
-| `anycfg` | `load`, `loads`, `load_all`, `loads_all`, `dump`, `dumps`; `aload`, `aload_all`, `adump`; `Loader`, `Policy`; `user_config_path`, `system_config_path`; merging (`DELETE`, `register_merge`); `hydrate`, `typed_merge`; `DotAccessibleDict`; interpolation; every exception |
+| `anycfg` | `load`, `loads`, `load_all`, `loads_all`, `dump`, `dumps`; `aload`, `aload_all`, `adump`; `Loader`, `Policy`; `user_config_path`, `system_config_path`, `default_configs`; merging (`DELETE`, `register_merge`); `hydrate`, `typed_merge`; `DotAccessibleDict`; interpolation; every exception |
 | `anycfg.formats` | the `Format` contract and the registry: `register_format`, `get`, `for_filename`, `names` |
 | `anycfg.sources` | `Source`, `Text`, `Chunks`, `Data`, `Env`, `Command`, and the scheme registry |
 | `anycfg.testing` | `FormatContract`, the suite every format passes |
