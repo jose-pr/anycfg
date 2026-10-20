@@ -79,8 +79,9 @@ OSError)` covers every load failure.
 | --- | --- | --- | --- | --- | --- |
 | `json` | `.json` | — | yes | `object_hook`, `object_pairs_hook`, `parse_float`, `parse_int` | `indent`, `sort_keys`, `ensure_ascii`, `separators`, `default` |
 | `yaml` (alias `yml`) | `.yaml`, `.yml` | `yaml` | yes | — | `indent`, `width`, `default_flow_style`, `sort_keys`, `allow_unicode`, `explicit_start`, `explicit_end` |
-| `toml` | `.toml` | `toml` below 3.11, and to write | yes | — | — |
-| `ini` (alias `cfg`) | `.ini`, `.cfg` | — | yes | `interpolation`, `default_section` | `interpolation` |
+| `toml` | `.toml` | `toml` to write | yes | — | — |
+| `cfg` | `.cfg` | as the format it names | as TOML | — | as TOML |
+| `ini` | `.ini` | — | yes | `interpolation`, `default_section` | `interpolation` |
 | `dotenv` | `.env`, `*.env`, `.env.<stage>` | — | yes | `lowercase`, `strict` | — |
 
 Every format is always listed by `anycfg.formats.names()`, whether or not
@@ -154,7 +155,7 @@ always loads back. Keys keep their order and non-ASCII text is written as is.
 ### TOML
 
 The standard library's `tomllib` on Python 3.11+, its `tomli` backport below
-(`anycfg[toml]`) — never the third-party `toml` package, which implements
+(installed with anycfg there) — never the third-party `toml` package, which implements
 TOML 0.5 and reads some 1.0 documents differently. TOML 1.0 is the portable
 dialect: `tomli` 2.4+ accepts some TOML 1.1 syntax that the 3.11–3.14 `tomllib`
 refuses.
@@ -163,6 +164,30 @@ Duplicate keys raise, datetimes load as `datetime` objects, and there is no
 null. Writing needs `tomli-w` (also in the `toml` extra); the document must be a
 table, and a `None` anywhere raises `ConfigTypeError` before anything is
 written.
+
+### `.cfg` files
+
+Many formats use `.cfg`, so the name decides nothing. A `.cfg` file is read in
+the format it **names itself** — a `#!<format>` first line, removed before
+parsing, or a marker of the format's own such as YAML's `%YAML` directive —
+and as **TOML** when it names none:
+
+```ini
+#!ini
+[server]
+port = 8080
+```
+
+```toml
+# no #! line: TOML
+[server]
+port = 8080
+```
+
+A named format is one documents may select by default (built-in or registered
+in code). `dump(x, "app.cfg")` writes TOML, so it loads back. To read an
+existing INI `setup.cfg` without editing it, name the format:
+`anycfg.load("setup.cfg", format="ini")`.
 
 ### INI
 

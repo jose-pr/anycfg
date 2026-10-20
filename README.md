@@ -58,7 +58,7 @@ pip install anycfg
 | Extra | Adds | Needed for |
 | --- | --- | --- |
 | `yaml` | PyYAML 6 | the YAML format and `!include` |
-| `toml` | `tomli` (Python < 3.11), `tomli-w` | reading TOML below 3.11; writing TOML |
+| `toml` | `tomli-w` | writing TOML (reading needs no extra: `tomli` comes with anycfg below Python 3.11) |
 | `templates` | `tplx[jinja]` | interpolation and template files |
 | `all` | every extra above | |
 

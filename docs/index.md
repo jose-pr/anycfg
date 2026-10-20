@@ -7,11 +7,11 @@ sources in order, YAML `!include`, typed hydration, and a trust policy that is
 **untrusted by default**. It was published as `yaconfiglib` up to 0.13.1; see
 [Migrating from yaconfiglib](guide/migrating.md).
 
-It has one required dependency, [pathapi](https://github.com/jose-pr/pathapi),
-the path layer: glob expansion with a portable `**`, directory-loop bounding,
-and path objects for in-memory and remote files. Everything format- or
-feature-specific (PyYAML, `tomli`, `tomli-w`, tplx and Jinja2, Pydantic) is
-optional and imported only when it is used.
+It requires [pathapi](https://github.com/jose-pr/pathapi), the path layer:
+glob expansion with a portable `**`, directory-loop bounding, and path objects
+for in-memory and remote files — and, below Python 3.11, `tomli`, so TOML
+always reads. Everything else format- or feature-specific (PyYAML, `tomli-w`,
+tplx and Jinja2, Pydantic) is optional and imported only when it is used.
 
 ## Why anycfg
 
@@ -61,7 +61,7 @@ pip install "anycfg[yaml,toml,templates]"
 | Extra | Adds | Needed for |
 | --- | --- | --- |
 | `yaml` | PyYAML 6 | the YAML format and `!include` |
-| `toml` | `tomli` (Python < 3.11), `tomli-w` | reading TOML below 3.11; writing TOML |
+| `toml` | `tomli-w` | writing TOML (reading needs no extra: `tomli` comes with anycfg below Python 3.11) |
 | `templates` | `tplx[jinja]` 0.2+ | interpolation and template files, with Jinja |
 | `all` | every extra above | |
 

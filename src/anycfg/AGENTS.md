@@ -9,8 +9,9 @@ Everything public is importable from `anycfg`, `anycfg.formats`,
 `anycfg.sources`, `anycfg.policies`, `anycfg.exceptions` (also re-exported at the root) and
 `anycfg.testing`. Every other module starts with `_` and is private.
 
-`pip install anycfg` brings pathapi, the path layer. Extras: `yaml` (PyYAML 6),
-`toml` (`tomli` below Python 3.11, and `tomli-w` to write), `templates`
+`pip install anycfg` brings pathapi, the path layer, and `tomli` below Python 3.11
+(TOML always reads). Extras: `yaml` (PyYAML 6), `toml` (`tomli-w`, to write TOML),
+`templates`
 (`tplx[jinja]` 0.2+: template files and engine interpolation; other engines need
 their own tplx extra; `interpolate="vars"` needs none), `all`. `import anycfg`
 imports none of them; a feature whose extra is missing raises
@@ -341,10 +342,15 @@ Built-in formats and their dialects:
   value; anything else raises `ConfigTypeError` before writing. Dump options:
   `indent`, `width`, `default_flow_style` (False), `sort_keys` (False),
   `allow_unicode` (True), `explicit_start`, `explicit_end`.
-- **`toml`** (`.toml`; extra `toml`) — `tomllib` (3.11+) or `tomli`; never the `toml`
-  package (TOML 0.5). TOML 1.0 is the portable dialect. No null. `dumps` needs
-  `tomli-w` (extra `toml`); the document must be a table.
-- **`ini`** (`.ini`, `.cfg`; alias `cfg`) — `configparser`. `{section: {option:
+- **`toml`** (`.toml`) — `tomllib` (3.11+) or `tomli` (a dependency below 3.11); never
+  the `toml` package (TOML 0.5). TOML 1.0 is the portable dialect. No null. `dumps`
+  needs `tomli-w` (extra `toml`); the document must be a table.
+- **`cfg`** (`.cfg`) — the name decides nothing: the document is read in the format
+  it names (`formats.declared`: a `#!<format>` first line, removed, or a marker such
+  as `%YAML`), restricted to the formats documents may select by default, and as
+  **TOML** when it names none (`#!cfg` is TOML too). No load option; `loads_all`
+  follows the named format. `dumps` writes TOML, so `dump(x, "a.cfg")` round-trips.
+- **`ini`** (`.ini`) — `configparser`. `{section: {option:
   str}}`; option names lower-cased, sections kept; `[DEFAULT]` keys are inherited,
   not returned (a DEFAULT-only file warns). Load options: `interpolation` (`"basic"`
   default, `"extended"`, `"none"`/`None`, or a `configparser.Interpolation`),

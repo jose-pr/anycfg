@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **A `.cfg` file is no longer INI.** It is read in the format it names — a
+  `#!<format>` first line (removed before parsing) or a format's own marker such
+  as `%YAML` — and as TOML when it names none, through the new `cfg` format;
+  `dump(x, "a.cfg")` writes TOML. The INI format lost its `.cfg` suffix and its
+  `cfg` alias. What to do: start an INI `.cfg` file with `#!ini`, or load it with
+  `format="ini"`.
+- **`tomli` is a dependency below Python 3.11**, so TOML always reads; the `toml`
+  extra now installs only `tomli-w`, the writer.
+
 ## [0.14.0] - 2026-10-18
 
 **The project is now `anycfg`**: the distribution (`pip install anycfg`), the
